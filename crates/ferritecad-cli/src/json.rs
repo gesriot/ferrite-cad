@@ -151,11 +151,7 @@ struct RevolveDiscovery {
     extent: &'static str,
     operation: &'static str,
     profile: RevolveProfile,
-    /// §27C, additive: `"radial_clear"` for a part with a bore, whose every
-    /// profile point is off the axis, or `"axis_closed"` for a solid part
-    /// closed on the axis along `axis_curve_id`. What the Revolve states.
-    closure: &'static str,
-    /// The saved Line on the axis of a solid part; null for a part with a bore.
+    /// A chosen axis Line, including construction geometry; null for a sketch axis.
     axis_curve_id: Option<StableEntityId>,
     /// §27D, additive: the stored angle of a partial turn, in degrees
     /// (`extent` is then `"partial_turn"`); null for a full turn.
@@ -164,7 +160,7 @@ struct RevolveDiscovery {
 
 #[derive(Serialize)]
 struct RevolveProfile {
-    /// Whether the stored profile is the class this build turns.
+    /// Whether the stored profile can be read for inspection.
     available: bool,
     refusal: Option<String>,
     /// The Lines in stored order, with their saved identities; `null` when the
@@ -189,6 +185,8 @@ impl RevolveDiscovery {
             plane_id: r.plane,
             axis: match r.axis {
                 ferritecad_document::RevolveAxis::SketchY => "sketch_y",
+                ferritecad_document::RevolveAxis::SketchX => "sketch_x",
+                ferritecad_document::RevolveAxis::Line(_) => "line",
                 _ => "unknown",
             },
             extent: match r.extent {
@@ -209,12 +207,10 @@ impl RevolveDiscovery {
                 ferritecad_document::SolidOperation::Intersect => "intersect",
                 _ => "unknown",
             },
-            closure: if r.axis_segment.is_some() {
-                "axis_closed"
-            } else {
-                "radial_clear"
+            axis_curve_id: match r.axis {
+                ferritecad_document::RevolveAxis::Line(id) => Some(id),
+                _ => None,
             },
-            axis_curve_id: r.axis_segment,
             profile: RevolveProfile {
                 available: r.profile_refusal.is_none(),
                 refusal: r.profile_refusal,

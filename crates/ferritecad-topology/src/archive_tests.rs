@@ -383,6 +383,22 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
     }
     let good = archive_feature(&mut kernel, &model, feature).expect("archive");
     let name = *good.entities.values().next().expect("name");
+    for operation in [NamingOperation::Fuse, NamingOperation::Common] {
+        let mut graph = good.derivations.clone();
+        expression(
+            &mut graph,
+            SubShapeKind::Face,
+            "generated",
+            Some(feature),
+            [name],
+            operation.tag(),
+        )
+        .expect("hash");
+        crate::derivation::validate(&graph).expect("known boolean tag");
+        model
+            .check_derivations(feature, &graph)
+            .expect_err("an Extrude feature must not claim boolean provenance");
+    }
     let mut bad = good.clone();
     let parent = bad.derivations[&name.digest]
         .inputs()

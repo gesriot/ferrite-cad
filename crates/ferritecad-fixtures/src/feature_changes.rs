@@ -93,7 +93,8 @@ pub fn circular_tool(
                 object: feature,
                 body,
                 name: Some("Cut".into()),
-                feature: FeatureAddition::Cut {
+                feature: FeatureAddition::Extrude {
+                    operation: ferritecad_document::SolidOperation::Cut,
                     profile: sketch,
                     end_condition,
                     reversed: false,

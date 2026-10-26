@@ -82,14 +82,13 @@ fn measure_solid(
         ferritecad_eval::rebuild_cold(&d, &mut kernel, &context).expect("cold")
     };
     let objects = d.objects().expect("objects");
-    let (revolve, axis) = objects
+    let revolve = objects
         .iter()
         .find_map(|o| match &o.payload {
-            ObjectPayload::Revolve(r) => Some((o.id, r.axis_segment)),
+            ObjectPayload::Revolve(_) => Some(o.id),
             _ => None,
         })
         .expect("revolve");
-    let axis = axis.expect("a solid part states its axis Line");
     let body = objects
         .iter()
         .find_map(|o| matches!(o.payload, ObjectPayload::Body(_)).then_some(o.id))
@@ -122,6 +121,11 @@ fn measure_solid(
             _ => None,
         })
         .expect("profile");
+    let axis = *lines
+        .iter()
+        .find(|(_, (a, b))| a[0] == 0. && b[0] == 0.)
+        .expect("fixture has a Line on the axis")
+        .0;
     let (a, b) = lines[&axis];
     assert_eq!(
         (a[0], b[0]),
@@ -283,10 +287,25 @@ fn discovered(path: &Path) -> (Value, Vec<String>, String) {
         .iter()
         .map(|v| v["curve_id"].as_str().expect("id").to_owned())
         .collect();
-    let axis = c["revolves"][0]["axis_curve_id"]
-        .as_str()
-        .expect("axis-closed kind")
-        .to_owned();
+    assert_eq!(c["revolves"][0]["axis"], "sketch_y");
+    assert_eq!(c["revolves"][0]["axis_curve_id"], Value::Null);
+    let d = Document::open_read_only(path).expect("document");
+    let axis = d
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find_map(|o| {
+            let ObjectPayload::Sketch(sketch) = o.payload else {
+                return None;
+            };
+            sketch.curves.into_iter().find_map(|c| match c.geometry {
+                SketchGeometry::Line { start, end } if start.x == 0. && end.x == 0. => {
+                    Some(c.id.to_string())
+                }
+                _ => None,
+            })
+        })
+        .expect("fixture axis boundary");
     (c, ids, axis)
 }
 
@@ -323,13 +342,12 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
             request(&input, &p);
             reply(create(&input, &out).output().expect("create"), 0);
             let (c, ids, axis) = discovered(&out);
-            let _row = &c["sketches"][0];
 
             let at = axis_index(&p);
             assert_eq!(axis, ids[at], "the axis Line by its own UUID");
             let r = &c["revolves"][0];
-            assert_eq!(r["closure"], "axis_closed");
-            assert_eq!(r["axis_curve_id"], axis.as_str());
+            assert!(r.get("closure").is_none());
+            assert_eq!(r["axis_curve_id"], Value::Null);
 
             assert_eq!(c["features"], json!([]));
 
@@ -392,7 +410,7 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
     reply(create(&input, &out).output().expect("create"), 0);
     let c = inspect(&out);
 
-    assert_eq!(c["revolves"][0]["closure"], "radial_clear");
+    assert!(c["revolves"][0].get("closure").is_none());
     assert_eq!(c["revolves"][0]["axis_curve_id"], Value::Null);
 }
 
@@ -470,7 +488,7 @@ fn native_solid_revolution_edits_keep_the_axis_names_sql_and_cache() {
             let (after, after_ids, after_axis) = discovered(&out);
             assert_eq!(after_ids, ids);
             assert_eq!(after_axis, axis, "the same axis Line");
-            assert_eq!(after["revolves"][0]["closure"], "axis_closed");
+            assert!(after["revolves"][0].get("closure").is_none());
             assert_eq!(after["bodies"], before["bodies"]);
             let cold = measure_solid(&out, &to, to_mm3, None);
             // The source's warmed sidecar beside the copy: a Miss, never the
@@ -501,7 +519,6 @@ fn native_solid_revolution_refusals_are_atomic() {
     }
     let d = tempfile::tempdir().expect("dir");
     collapsed_float_faces_refuse_publication(d.path());
-    let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
     // Creation: each exits 2 and writes nothing.
     let out = d.path().join("never.fcad");
     let input = d.path().join("refused.json");
@@ -509,34 +526,7 @@ fn native_solid_revolution_refusals_are_atomic() {
         (
             "crossing",
             vec![[-1., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "positive radial side",
-        ),
-        (
-            "isolated touch",
-            vec![[4., 0.], [10., 0.], [10., 15.], [0., 7.]],
-            "touches the axis alone",
-        ),
-        (
-            "two separate touches",
-            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.], [5., 7.5]],
-            "not the ends of one Line",
-        ),
-        (
-            "two axis Lines",
-            vec![
-                [0., 0.],
-                [0., 5.],
-                [5., 7.5],
-                [0., 10.],
-                [0., 15.],
-                [10., 7.5],
-            ],
-            "vertices lie on the axis",
-        ),
-        (
-            "near the axis",
-            vec![[clear / 2., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "not strictly on the positive radial side",
+            "axis",
         ),
         (
             "self-intersection",
@@ -578,36 +568,9 @@ fn native_solid_revolution_refusals_are_atomic() {
     };
     for (why, points, message) in [
         (
-            "the axis Line leaves the axis",
-            vec![[2., 0.], [10., 0.], [10., 15.], [2., 15.]],
-            "cannot change between solid and hollow",
-        ),
-        (
-            "one axis end leaves it",
-            vec![[0., 0.], [10., 0.], [10., 15.], [3., 15.]],
-            "touches the axis alone",
-        ),
-        // A third vertex on the axis of a four-Line profile is always
-        // collinear with the axis Line: the shared polygon rules refuse it.
-        (
-            "another Line joins the axis",
-            vec![[0., 0.], [0., -5.], [10., 15.], [0., 15.]],
-            "",
-        ),
-        (
-            "the axis Line moves to another Line",
-            vec![[10., 0.], [0., 0.], [0., 15.], [10., 15.]],
-            "the axis Line cannot change",
-        ),
-        (
             "crossing",
             vec![[0., 0.], [10., 0.], [10., 15.], [-0.5, 15.]],
-            "positive radial side",
-        ),
-        (
-            "near the axis",
-            vec![[1e-7, 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "not strictly on the positive radial side",
+            "axis",
         ),
         (
             "collapsed axis Line",
@@ -656,7 +619,7 @@ fn native_solid_revolution_refusals_are_atomic() {
     assert_eq!(std::fs::read(&taken).expect("taken"), b"keep");
     // Coordinate transactions keep constraints and let the solver rebuild them.
     let constrained = d.path().join("constrained.fcad");
-    let labels = write_solid_document(&constrained, &CYLINDER, Some(3));
+    let labels = write_solid_document(&constrained, &CYLINDER);
     rewrite_sketch(&constrained, |sketch| {
         sketch
             .constraints
@@ -717,26 +680,20 @@ fn native_solid_revolution_refusals_are_atomic() {
         assert!(!d.path().join("constrained-edited.fcad").exists());
     }
     assert_eq!(std::fs::read(&constrained).expect("constrained"), bytes);
-    // And a bored part may not become solid.
+    // Removing a bore is a topology change, not a forbidden profile class.
     let bushing = d.path().join("bushing.fcad");
     request(&input, &BUSHING);
     reply(create(&input, &bushing).output().expect("create"), 0);
     let b = saved(&bushing);
     write_edit(&request_path, &b.ids, &CYLINDER);
-    let names = entries(d.path());
-    let v = edit_reply(
+    edit_reply(
         edit(&bushing, &b.sketch, &b.version, &request_path, &out)
             .output()
             .expect("edit"),
-        2,
+        0,
     );
-    assert!(
-        v["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("cannot change between hollow and solid")
-    );
-    assert_eq!(entries(d.path()), names);
+    check_cells(&bushing, &out, &b.sketch);
+    measure_solid(&out, &CYLINDER, cylinder(10., 15.), None);
 }
 
 // Exercise the global tessellation filter on a pre-existing hollow profile,
@@ -780,16 +737,11 @@ fn collapsed_float_faces_refuse_publication(directory: &Path) {
 /// A solid Revolve document written without any kernel, the way §27A's
 /// kernel-free test writes a bored one: the stated axis Line in the payload,
 /// and one RevolveFace per other Line.
-pub(super) fn write_solid_document(
-    path: &Path,
-    points: &[[f64; 2]],
-    stated_axis: Option<usize>,
-) -> Vec<StableEntityId> {
+pub(super) fn write_solid_document(path: &Path, points: &[[f64; 2]]) -> Vec<StableEntityId> {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
     let n = points.len();
     let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
-    let axis = stated_axis.map(|i| labels[i]);
     d.write(|w| {
         w.put_object(
             plane,
@@ -833,7 +785,7 @@ pub(super) fn write_solid_document(
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
-                axis_segment: axis,
+                previous: None,
             }),
         )?;
         w.put_object(

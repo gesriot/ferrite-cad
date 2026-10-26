@@ -331,12 +331,13 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         .iter()
         .find_map(|s| match s.profile_use {
             Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
-                axis_segment, ..
-            }) => Some(axis_segment),
+                axis: revolve_axis,
+                ..
+            }) => Some(revolve_axis),
             _ => None,
         })
         .expect("partial profile");
-    assert_eq!(axis_line.is_some(), axis);
+    assert_eq!(axis_line, ferritecad_document::RevolveAxis::SketchY);
     // First step: the profile changes, leaving the user's file untouched.
     let mut vertices = opened.sketches[0].vertices.clone().expect("vertices");
     vertices[1].start_mm[0] = 8.75;
@@ -432,9 +433,9 @@ fn gate(axis: bool, constrained: bool, name: &str) {
             .iter()
             .find_map(|s| match s.profile_use {
                 Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
-                    axis_segment,
+                    axis: revolve_axis,
                     ..
-                }) => Some(axis_segment),
+                }) => Some(revolve_axis),
                 _ => None,
             })
             .expect("partial profile"),
@@ -592,7 +593,6 @@ fn stub_angle_apply_refuses_without_publication() {
         &source,
         &crate::sketch::tests::angle_apply::RADIAL,
         137.5,
-        None,
     );
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();

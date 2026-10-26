@@ -254,42 +254,11 @@ fn native_base_bounds_refs_sql_cache_and_mesh() {
 }
 
 #[test]
-fn native_base_refuses_one_bad_aspect_and_distant_walls() {
+fn native_base_refuses_invalid_vertices_and_addresses() {
     if !native() {
         return;
     }
-    for selected in [0, 8, 15] {
-        let root = tempfile::tempdir().expect("root");
-        let mut tools = history::tools(16);
-        tools[selected].center_mm[0] = 4.;
-        let path = history::fixture(root.path(), &tools);
-        let (catalog, base) = choice(&path);
-        let before = std::fs::read(&path).expect("bytes");
-        let dest = root.path().join("never.fcad");
-        let feature = history::ordered(&path)[selected].feature;
-        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM] {
-            let v = vertices(
-                &base,
-                [[4. - tools[selected].radius_mm - gap, 0.], [80., 50.]],
-            );
-            let error = reply(
-                command(
-                    &path,
-                    &dest,
-                    base.sketch,
-                    &catalog.version.content.to_string(),
-                    &v,
-                )
-                .output()
-                .expect("CLI"),
-                EDIT,
-                2,
-            );
-            assert!(error.to_string().contains(&feature.to_string()), "{error}");
-            assert!(!dest.exists());
-        }
-        assert_eq!(std::fs::read(&path).expect("bytes"), before);
-    }
+
     let root = tempfile::tempdir().expect("root");
     let path = history::fixture(root.path(), &history::tools(4));
     let (catalog, base) = choice(&path);

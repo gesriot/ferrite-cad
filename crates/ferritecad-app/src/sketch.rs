@@ -1997,9 +1997,8 @@ impl Editor {
         });
         if revolve {
             ui.label(
-                "X is the radius and Y runs along the axis, which is X = 0. Keep every point \
-                 at X > 0 for a part with a hole, or put exactly one whole edge on X = 0 for a \
-                 solid part. The profile may not cross the axis or touch it at a single point.",
+                "X is the radius and Y runs along the axis, which is X = 0. \
+                 The swept profile must form one valid solid.",
             );
         }
         let sector = self
@@ -2027,30 +2026,6 @@ impl Editor {
         if let Some((request, choice)) = &self.editing {
             for detail in &choice.details {
                 ui.label(detail);
-            }
-            // §27C: the saved class of a Revolve is fixed. A solid part names
-            // the one Line that lies on the axis; it stays there.
-            if let Some(
-                SketchProfileUse::FullTurnRevolve { axis_segment, .. }
-                | SketchProfileUse::PartialRevolve { axis_segment, .. },
-            ) = choice.profile_use
-            {
-                ui.label(match axis_segment {
-                    Some(line) => {
-                        let at = choice
-                            .vertices
-                            .as_ref()
-                            .expect("saved vertices")
-                            .iter()
-                            .position(|v| v.curve_id == line)
-                            .map_or(0, |i| i + 1);
-                        format!(
-                            "Solid part: edge {at} (Line {line}) stays on the axis at X = 0; \
-                             every other point stays at X > 0."
-                        )
-                    }
-                    None => "Part with a bore: every point stays at X > 0.".to_owned(),
-                });
             }
             ui.small(format!(
                 "Sketch {} · {}",
@@ -4889,16 +4864,11 @@ pub(crate) mod tests {
         let out = frame(&ctx, e, vec![]);
         click(&ctx, e, text_at(&out, "Redo draft"));
         assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-        // Onto the axis: the document refuses, no request, and Undo restores.
+        // Axis contact is decided by the kernel when building, not by this form.
         replace_field(&ctx, e, "4.000", "0");
-        // One vertex alone on the axis is not a Line on it (§27C).
-        let refused = e.content().expect_err("a vertex on the axis");
-        assert!(
-            refused.to_string().contains("touches the axis alone"),
-            "{refused}"
-        );
+        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
         let out = frame(&ctx, e, vec![]);
-        assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
             egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
         click(&ctx, e, text_at(&out, "Undo draft"));
         assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
@@ -4906,7 +4876,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn revolve_draft_widgets_name_the_axis_and_refuse_it() {
+    fn revolve_draft_widgets_name_the_axis_and_defer_contact_to_the_kernel() {
         let mut e = Editor::default();
         let ctx = draw_stepped_revolve_through_widgets(&mut e);
         let out = frame(&ctx, &mut e, vec![]);
@@ -7816,7 +7786,6 @@ pub(crate) mod tests {
             &path,
             &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
             90.0,
-            None,
         );
         let reading = crate::constraints::tests::revolve::reading(&path);
         let choice = reading
@@ -7998,7 +7967,6 @@ pub(crate) mod tests {
             &path,
             &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
             90.0,
-            None,
         );
         let reading = crate::constraints::tests::revolve::reading(&path);
         let angle = reading

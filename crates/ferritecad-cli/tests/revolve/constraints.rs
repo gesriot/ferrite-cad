@@ -314,14 +314,6 @@ pub(super) fn measure_solved(
             _ => None,
         })
         .expect("body");
-    // §27H: the Line the saved Revolve states is on the axis, if any.
-    let axis_segment = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Revolve(r) => Some(r.axis_segment),
-            _ => None,
-        })
-        .expect("revolve");
     let report = built.solve_report(sketch_id).expect("one solve report");
     let picture = built
         .sketch_presentation(sketch_id)
@@ -344,13 +336,17 @@ pub(super) fn measure_solved(
         assert!(near(*end, next, 1e-7), "joint {i}: {end:?} != {next:?}");
     }
     let points: Vec<[f64; 2]> = lines.iter().map(|(_, a, _)| *a).collect();
-    if let Some(axis) = axis_segment {
-        // The solved Line the Revolve states lies exactly on the axis; no
-        // other vertex does.
+    let collapsed_line = lines
+        .iter()
+        .find(|(_, a, b)| a[0] == 0. && b[0] == 0.)
+        .map(|(id, _, _)| *id);
+    if let Some(axis) = collapsed_line {
+        // This fixture boundary collapses onto the coordinate axis; its sweep
+        // produces no face. Other fixture vertices have positive radius.
         let (_, a, b) = lines
             .iter()
             .find(|(id, _, _)| *id == axis)
-            .expect("stated Line");
+            .expect("collapsed boundary");
         assert!(a[0] == 0. && b[0] == 0., "{a:?} {b:?} off the axis");
         for (id, a, _) in &lines {
             assert!(
@@ -358,7 +354,7 @@ pub(super) fn measure_solved(
             );
         }
     }
-    let n = points.len() - usize::from(axis_segment.is_some());
+    let n = points.len() - usize::from(collapsed_line.is_some());
     assert_eq!(built.shape_count(), 1);
     let shape = built.shape(body).expect("Body");
     assert_eq!(built.shape(revolve), Some(shape));
@@ -404,7 +400,7 @@ pub(super) fn measure_solved(
             ferritecad_kernel::NamingInput::Curve(profile_segment) => {
                 assert_ne!(
                     Some(profile_segment),
-                    axis_segment,
+                    collapsed_line,
                     "the axis Line raises a face"
                 );
                 let (a, b) = by_id[&profile_segment];
@@ -714,26 +710,42 @@ fn native_bushing_constraints_dimension_replace_remove_cache_and_exports() {
             .all(|c| known.contains(&c["constraint_id"]) || c["rule"]["kind"] == "equal_length")
     );
     let pin = stored_id(&catalog, "fixed", 0);
-    for (why, x, wanted) in [
-        ("crosses the axis", -1.0, "axis"),
-        ("reaches the axis", 0.0, "axis"),
-    ] {
-        let error = refuse(
-            &wide,
-            &request,
-            &transaction::constraints(
-                &catalog["sketches"][0],
-                std::slice::from_ref(&pin),
-                &[fixed(&catalog, 0, "start", x, -1.5)],
-            ),
-            &refused,
-        );
-        assert!(
-            error["message"].as_str().expect("message").contains(wanted),
-            "{why}: {error}"
-        );
-        assert!(error.get("constraint_conflict").is_none(), "{why}");
-    }
+    let crossing = refuse(
+        &wide,
+        &request,
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            std::slice::from_ref(&pin),
+            &[fixed(&catalog, 0, "start", -1., -1.5)],
+        ),
+        &refused,
+    );
+    assert!(
+        crossing["message"]
+            .as_str()
+            .expect("message")
+            .contains("axis"),
+        "{crossing}"
+    );
+    assert!(crossing.get("constraint_conflict").is_none());
+    // Reaching the axis changes a bored profile into a valid solid.
+    let contact = root.join("axis-contact.fcad");
+    publish(
+        &wide,
+        &request,
+        &transaction::constraints(
+            &catalog["sketches"][0],
+            std::slice::from_ref(&pin),
+            &[fixed(&catalog, 0, "start", 0., -1.5)],
+        ),
+        &contact,
+    );
+    check_constraint_cells(&wide, &contact, sketch);
+    let contact_shape = measure_solved(&contact, None, None);
+    assert_solved(
+        &contact_shape,
+        &[[0., -1.5], [7.5, -1.5], [7.5, 13.75], [0., 13.75]],
+    );
     // Only closure holds the saved bushing: one pinned corner moves alone.
     let catalog = inspect(&source);
     // A collapsed Line is refused by the shared profile reading — measured

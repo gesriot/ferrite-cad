@@ -15,7 +15,7 @@ mod naming;
 use std::f64::consts::PI;
 
 use ferritecad_kernel::{
-    CancelToken, CutRequest, ExtrudeExtent, ExtrudeRequest, FaceSurface, GeometryKernel,
+    BooleanRequest, CancelToken, ExtrudeExtent, ExtrudeRequest, FaceSurface, GeometryKernel,
     NamingRelation, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
     SegmentGeometry, ShapeHandle, SketchPlane, SubShapeHandle,
 };
@@ -98,8 +98,13 @@ fn a_blind_tool_through_a_plate_leaves_one_solid_with_a_cylindrical_hole() {
     track.extend(tool_faces.iter().copied());
     let target_before = kernel.encode_shape(built.shape).expect("archive target");
     let tool_before = kernel.encode_shape(cutter.shape).expect("archive tool");
-    let request = CutRequest::new(built.shape, cutter.shape).expect("two shapes");
-    let result = kernel.cut(&request, &context).expect("a real cut");
+    let request = BooleanRequest::new(
+        ferritecad_kernel::BooleanKind::Cut,
+        built.shape,
+        cutter.shape,
+    )
+    .expect("two shapes");
+    let result = kernel.boolean(&request, &context).expect("a real cut");
     let trace = kernel
         .naming_history(result.shape)
         .expect("complete history");
@@ -187,8 +192,13 @@ fn a_shallow_tool_leaves_a_pocket_with_a_floor() {
     let cutter = kernel.extrude(&tool_request, &context).expect("the tool");
 
     let tool_faces = naming::faces(&mut kernel, &cutter, &[circle]);
-    let request = CutRequest::new(built.shape, cutter.shape).expect("two shapes");
-    let result = kernel.cut(&request, &context).expect("a real cut");
+    let request = BooleanRequest::new(
+        ferritecad_kernel::BooleanKind::Cut,
+        built.shape,
+        cutter.shape,
+    )
+    .expect("two shapes");
+    let result = kernel.boolean(&request, &context).expect("a real cut");
     let trace = kernel
         .naming_history(result.shape)
         .expect("complete history");
@@ -243,8 +253,13 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     let (miss_request, _) = tool((200.0, 200.0), 5.0, 10.0).expect("a tool");
     let missed = kernel.extrude(&miss_request, &context).expect("the tool");
     let error = kernel
-        .cut(
-            &CutRequest::new(built.shape, missed.shape).expect("two shapes"),
+        .boolean(
+            &BooleanRequest::new(
+                ferritecad_kernel::BooleanKind::Cut,
+                built.shape,
+                missed.shape,
+            )
+            .expect("two shapes"),
             &context,
         )
         .expect_err("a tool that misses is refused");
@@ -254,8 +269,9 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     let (swallow, _) = tool((30.0, 20.0), 500.0, 40.0).expect("a tool");
     let big = kernel.extrude(&swallow, &context).expect("the tool");
     let error = kernel
-        .cut(
-            &CutRequest::new(built.shape, big.shape).expect("two shapes"),
+        .boolean(
+            &BooleanRequest::new(ferritecad_kernel::BooleanKind::Cut, built.shape, big.shape)
+                .expect("two shapes"),
             &context,
         )
         .expect_err("a cut that leaves nothing is refused");
@@ -269,8 +285,13 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
     token.cancel();
     let cancelled = OperationContext::default().with_cancel(token);
     let error = kernel
-        .cut(
-            &CutRequest::new(built.shape, other.shape).expect("two shapes"),
+        .boolean(
+            &BooleanRequest::new(
+                ferritecad_kernel::BooleanKind::Cut,
+                built.shape,
+                other.shape,
+            )
+            .expect("two shapes"),
             &cancelled,
         )
         .expect_err("a cancelled cut is refused");
@@ -287,10 +308,12 @@ fn a_tool_that_misses_a_foreign_handle_and_a_cancelled_run_are_all_refused() {
 fn a_cut_of_a_shape_with_itself_is_refused_before_any_kernel_is_asked() {
     let session = ferritecad_kernel::SessionId::new();
     let shape = ShapeHandle::new(session, 7);
-    let error = CutRequest::new(shape, shape).expect_err("a shape cannot cut itself");
+    let error = BooleanRequest::new(ferritecad_kernel::BooleanKind::Cut, shape, shape)
+        .expect_err("a shape cannot cut itself");
     assert_eq!(error.kind(), ErrorKind::Input, "{error}");
 
     let elsewhere = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 7);
-    let error = CutRequest::new(shape, elsewhere).expect_err("two sessions are not one");
+    let error = BooleanRequest::new(ferritecad_kernel::BooleanKind::Cut, shape, elsewhere)
+        .expect_err("two sessions are not one");
     assert_eq!(error.kind(), ErrorKind::Input, "{error}");
 }

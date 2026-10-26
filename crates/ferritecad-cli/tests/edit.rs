@@ -6,6 +6,8 @@ use ferritecad_document::*;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
+#[path = "support/generic_sweeps.rs"]
+mod generic_sweeps;
 #[path = "support/sketch_transactions.rs"]
 mod sketch_transactions;
 #[path = "support/transaction.rs"]
@@ -349,7 +351,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
                     angle: Expression::constant(std::f64::consts::PI)?,
                 },
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             })
         } else {
             ObjectPayload::Extrude(Extrude {

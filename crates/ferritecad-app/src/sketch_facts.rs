@@ -44,12 +44,12 @@ pub(crate) enum SketchProfileUse {
     FullTurnRevolve {
         feature: ObjectId,
         body: ObjectId,
-        axis_segment: Option<StableEntityId>,
+        axis: ferritecad_document::RevolveAxis,
     },
     PartialRevolve {
         feature: ObjectId,
         body: ObjectId,
-        axis_segment: Option<StableEntityId>,
+        axis: ferritecad_document::RevolveAxis,
         radians: ferritecad_document::RevolveAngle,
     },
 }
@@ -166,7 +166,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                     SketchProfileUse::PartialRevolve {
                                         feature: feature.id,
                                         body,
-                                        axis_segment: r.axis_segment,
+                                        axis: r.axis,
                                         radians: ferritecad_document::RevolveAngle::new(
                                             angle.value(),
                                         )
@@ -177,7 +177,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                     SketchProfileUse::FullTurnRevolve {
                                         feature: feature.id,
                                         body,
-                                        axis_segment: r.axis_segment,
+                                        axis: r.axis,
                                     }
                                 }
                                 _ => return None,

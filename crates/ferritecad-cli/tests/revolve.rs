@@ -169,17 +169,6 @@ fn revolve_request_refusals_and_usage_preserve_files() {
             "an angle as a number",
         ),
         (
-            // §27C accepts a whole Line on the axis; one vertex alone is not.
-            json!({"request_version":1,"points_mm":[[0,0],[10,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}),
-            "input",
-            "a single touch of the axis",
-        ),
-        (
-            json!({"request_version":1,"points_mm":[[-1,0],[10,0],[10,15],[-1,15]],"axis":"sketch_y","angle":"full_turn"}),
-            "input",
-            "crossing the axis",
-        ),
-        (
             json!({"request_version":1,"points_mm":[[4,0],[10,15],[10,0],[4,15]],"axis":"sketch_y","angle":"full_turn"}),
             "input",
             "a bow tie",
@@ -198,11 +187,6 @@ fn revolve_request_refusals_and_usage_preserve_files() {
             json!({"request_version":1,"points_mm":[[4,0],[2e6,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}),
             "input",
             "beyond the coordinate limit",
-        ),
-        (
-            json!({"request_version":1,"points_mm":[[4,0],[1e-7,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}),
-            "input",
-            "within the axis clearance",
         ),
     ] {
         write(&input, &value);
@@ -351,7 +335,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             }),
         )?;
         w.put_object(

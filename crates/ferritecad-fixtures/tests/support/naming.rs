@@ -64,7 +64,7 @@ pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<M
                 axis: ferritecad_document::RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             })
         } else {
             ObjectPayload::Extrude(Extrude {

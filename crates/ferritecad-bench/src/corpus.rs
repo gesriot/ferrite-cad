@@ -142,7 +142,7 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
                             ))?,
                         },
                         operation: SolidOperation::NewBody,
-                        axis_segment: None,
+                        previous: None,
                     }),
                     payload => payload,
                 };
@@ -158,6 +158,50 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
         })?;
         document.close()?;
         cases.push(describe("revolve", path, 1)?);
+        for (name, operation, distance) in [
+            ("plate_with_add", SolidOperation::Add, 14.),
+            ("intersect", SolidOperation::Intersect, 20.),
+            ("revolve_cut", SolidOperation::Cut, 20.),
+        ] {
+            let path = root.join(format!("{name}.fcad"));
+            ferritecad_fixtures::write_plate(&path)?;
+            let mut document = Document::open(&path)?;
+            let body = body_of(&document)?;
+            let tool = ferritecad_fixtures::feature_changes::circular_tool(
+                &document,
+                body,
+                [20., 20.],
+                3.,
+                EndCondition::Blind {
+                    distance: Expression::constant(distance)?,
+                },
+            )?;
+            let mut changes = tool.changes;
+            for change in &mut changes {
+                if let EditChange::AddFeature { feature, .. } = change {
+                    *feature = if name == "revolve_cut" {
+                        FeatureAddition::Revolve {
+                            profile: tool.sketch,
+                            axis: RevolveAxis::SketchY,
+                            extent: RevolveExtent::FullTurn,
+                            operation,
+                        }
+                    } else {
+                        FeatureAddition::Extrude {
+                            profile: tool.sketch,
+                            operation,
+                            reversed: false,
+                            end_condition: EndCondition::Blind {
+                                distance: Expression::constant(distance)?,
+                            },
+                        }
+                    };
+                }
+            }
+            document.write_changes(&changes)?;
+            document.close()?;
+            cases.push(describe(name, path, 1)?);
+        }
     }
     Ok(cases)
 }
@@ -237,6 +281,15 @@ fn describe(name: &str, path: PathBuf, bodies: usize) -> Result<Case> {
         body,
         extrude,
         fillet: find(|p| matches!(p, ObjectPayload::Fillet(_))),
-        revolve: find(|p| matches!(p, ObjectPayload::Revolve(_))),
+        // FullTurn has no angle expression to edit.
+        revolve: find(|p| {
+            matches!(
+                p,
+                ObjectPayload::Revolve(Revolve {
+                    extent: RevolveExtent::Partial { .. },
+                    ..
+                })
+            )
+        }),
     })
 }

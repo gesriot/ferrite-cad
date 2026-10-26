@@ -671,13 +671,25 @@ pub enum SolidOperation {
 
 /// The axis a [`Revolve`] turns its profile about.
 ///
-/// Named, not computed: the sketch's own local Y axis through its origin. On
-/// the canvas X is then the radial distance and Y the axial coordinate.
+/// A sketch coordinate axis or an infinite Line, directed from its stored
+/// start to its end. Construction Lines may supply the axis too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RevolveAxis {
+    SketchX,
     SketchY,
+    Line(StableEntityId),
+}
+
+impl std::fmt::Display for RevolveAxis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SketchX => f.write_str("the sketch X axis"),
+            Self::SketchY => f.write_str("the sketch Y axis"),
+            Self::Line(line) => write!(f, "Line {line}"),
+        }
+    }
 }
 
 /// How far a [`Revolve`] turns.
@@ -695,16 +707,16 @@ pub enum RevolveExtent {
 }
 
 /// The angle of a partial [`Revolve`], in radians: the one domain policy for
-/// it, applied by the UI draft, the CLI request, the create job, the payload
-/// decoder and the evaluator alike (§27D).
+/// it, applied by the UI draft, the CLI request, the create job and the payload
+/// decoder alike (§27D); the evaluator reads only payloads that passed it.
 ///
-/// A right-handed turn about the sketch's +Y axis, starting at the profile.
-/// Kept exactly as given: nothing is rounded, reduced modulo a turn or turned
-/// into another operation. Accepted from [`Self::MIN_RADIANS`] to
+/// A right-handed turn about the directed [`RevolveAxis`], starting at the
+/// profile. Kept exactly as given: nothing is rounded, reduced modulo a turn or
+/// turned into another operation. Accepted from [`Self::MIN_RADIANS`] to
 /// [`Self::MAX_RADIANS`], both inclusive; 0, negative angles, angles closer
 /// than the minimum to 0 or to a full turn, exactly 2π, several turns, NaN
 /// and infinities are refused. The limits come from kernel and single-precision
-/// mesh checks, recorded in `docs/partial-angle-revolve.md`.
+/// mesh checks.
 ///
 /// The refusals name no unit: the UI and the CLI take degrees, and each shows
 /// the accepted range in its own unit beside the value it took.
@@ -780,10 +792,8 @@ pub struct Revolve {
     pub axis: RevolveAxis,
     pub extent: RevolveExtent,
     pub operation: SolidOperation,
-    /// §27C: the saved profile Line that lies on the axis, for a solid part
-    /// closed on it. That Line raises no face; every other Line raises one.
-    ///
-    pub axis_segment: Option<StableEntityId>,
+    /// The result this feature combines with; absent exactly for NewBody.
+    pub previous: Option<ObjectId>,
 }
 
 impl Revolve {
@@ -794,9 +804,18 @@ impl Revolve {
         hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
         hasher.field("profile").bytes(&self.profile.to_bytes());
-        hasher.field("axis").str(match self.axis {
-            RevolveAxis::SketchY => "sketch_y",
-        });
+        hasher.field("axis");
+        match self.axis {
+            RevolveAxis::SketchX => {
+                hasher.str("sketch_x");
+            }
+            RevolveAxis::SketchY => {
+                hasher.str("sketch_y");
+            }
+            RevolveAxis::Line(line) => {
+                hasher.str("line").bytes(&line.to_bytes());
+            }
+        }
         match &self.extent {
             RevolveExtent::FullTurn => {
                 hasher.field("extent").str("full_turn");
@@ -812,8 +831,8 @@ impl Revolve {
             SolidOperation::Cut => "cut",
             SolidOperation::Intersect => "intersect",
         });
-        if let Some(axis) = self.axis_segment {
-            hasher.field("axis_segment").bytes(&axis.to_bytes());
+        if let Some(previous) = self.previous {
+            hasher.field("previous").bytes(&previous.to_bytes());
         }
         hasher.finish()
     }
@@ -1283,6 +1302,17 @@ impl ObjectPayload {
                             )));
                         }
                     }
+                    EndCondition::ThroughAll
+                        if matches!(
+                            extrude.operation,
+                            SolidOperation::NewBody | SolidOperation::Add
+                        ) =>
+                    {
+                        return Err(CadError::input(
+                            "a new body or additive boss has nothing to go ThroughAll; \
+                             ThroughAll requires Cut or Intersect",
+                        ));
+                    }
                     EndCondition::ThroughAll => {}
                 }
                 match (extrude.operation, extrude.previous.is_some()) {
@@ -1305,15 +1335,15 @@ impl ObjectPayload {
                     angle.validate()?;
                     RevolveAngle::new(angle.value())?;
                 }
-                match (revolve.axis, &revolve.extent, revolve.operation) {
-                    (
-                        RevolveAxis::SketchY,
-                        RevolveExtent::FullTurn | RevolveExtent::Partial { .. },
-                        SolidOperation::NewBody,
-                    ) => Ok(()),
-                    _ => Err(CadError::unsupported(
-                        "this build writes only a NewBody Revolve about the sketch Y axis",
+                match (revolve.operation, revolve.previous) {
+                    (SolidOperation::NewBody, None) => Ok(()),
+                    (SolidOperation::NewBody, Some(_)) => Err(CadError::input(
+                        "a new-body revolve consumes no earlier result",
                     )),
+                    (_, None) => Err(CadError::input(
+                        "an additive, cut, or intersect revolve must name the result it modifies",
+                    )),
+                    (_, Some(_)) => Ok(()),
                 }
             }
             // One finite positive radius. Whether it fits the edge is a
@@ -1358,6 +1388,7 @@ impl ObjectPayload {
     pub fn previous_feature(&self) -> Option<ObjectId> {
         match self {
             Self::Extrude(extrude) => extrude.previous,
+            Self::Revolve(revolve) => revolve.previous,
             Self::Fillet(fillet) => Some(fillet.previous),
             Self::Chamfer(chamfer) => Some(chamfer.previous),
             _ => None,
@@ -1411,7 +1442,7 @@ mod tests {
             axis: RevolveAxis::SketchY,
             extent: RevolveExtent::FullTurn,
             operation: SolidOperation::NewBody,
-            axis_segment: None,
+            previous: None,
         };
         let tolerance = Tolerance::default();
         let full = revolve.cache_key(tolerance);
@@ -1430,7 +1461,7 @@ mod tests {
             angle: crate::Expression::constant(f64::to_radians(90.000_000_001)).expect("sector"),
         };
         assert_ne!(quarter, revolve.cache_key(tolerance));
-        revolve.axis_segment = Some(StableEntityId::new());
+        revolve.axis = RevolveAxis::Line(StableEntityId::new());
         assert_ne!(quarter, revolve.cache_key(tolerance));
     }
 
@@ -1538,7 +1569,7 @@ mod tests {
                     axis: RevolveAxis::SketchY,
                     extent: RevolveExtent::Partial { angle: invalid },
                     operation: SolidOperation::NewBody,
-                    axis_segment: None,
+                    previous: None,
                 }),
             ] {
                 assert!(payload.to_storage_bytes().is_err());

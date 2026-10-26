@@ -28,6 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "open_slot",
         "overlapping_tools",
         "pocket",
+        "plate_with_add",
+        "intersect",
+        "revolve_cut",
     ] {
         let document = Document::open_read_only(root.join(format!("{case}.fcad")))?;
         let context = OperationContext::default();

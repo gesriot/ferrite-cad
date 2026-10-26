@@ -28,23 +28,22 @@ use std::collections::BTreeMap;
 
 use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    ChamferRequest, CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
+    BooleanRequest, ChamferRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
     ProgressSink, ShapeHandle, SketchPlane,
 };
 use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
-use ferritecad_types::{CadError, ObjectId, Result};
+use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::{
     DegradedBody, FailedFeature, RebuildRefusal, RebuildReport, RebuildStatus, SkippedFeature,
 };
 
 use crate::cache::{
-    chamfer_archive_key, cut_archive_key, extrude_archive_key, fillet_archive_key,
-    load_feature_archive, revolve_archive_key, store_feature_archive,
+    boolean_archive_key, chamfer_archive_key, extrude_archive_key, fillet_archive_key,
+    load_feature_archive, revolve_archive_key, store_feature_archive, through_all_profile_key,
 };
 use crate::convert::{
-    Reach, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
-    revolve_request,
+    extrude_request, plane_from_datum, profile_from_sketch, revolve_request, through_all_request,
 };
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
@@ -343,15 +342,6 @@ fn run<K: GeometryKernel + ?Sized>(
 
     state.topology.prepare(&objects)?;
     let mut planes: BTreeMap<ObjectId, SketchPlane> = BTreeMap::new();
-    // Recorded before any cache lookup, from the stored inputs alone, so a
-    // restored feature says exactly what a rebuilt one would.
-    let mut reaches: BTreeMap<ObjectId, Reach> = BTreeMap::new();
-    let mut cut_contacts = BTreeMap::<ObjectId, crate::cut_contact::CutContacts>::new();
-    let datum_of = |sketch: ObjectId| match objects.get(&sketch).map(|o| &o.payload) {
-        Some(ObjectPayload::Sketch(s)) => Ok(s.plane),
-        _ => Err(CadError::input(format!("{sketch} is not a sketch"))),
-    };
-
     let total = plan.order().len();
     for (position, id) in plan.order().iter().enumerate() {
         // Checked between features rather than only inside the kernel: a
@@ -445,195 +435,104 @@ fn run<K: GeometryKernel + ?Sized>(
                     }
                 }
 
-                ObjectPayload::Extrude(feature) => {
-                    let profile =
-                        state
-                            .profiles
-                            .get(&feature.profile)
-                            .cloned()
-                            .ok_or_else(|| {
+                ObjectPayload::Extrude(_) | ObjectPayload::Revolve(_) => {
+                    let (profile_id, operation, through_all) = match &object.payload {
+                        ObjectPayload::Extrude(e) => (
+                            e.profile,
+                            e.operation,
+                            matches!(e.end_condition, EndCondition::ThroughAll),
+                        ),
+                        ObjectPayload::Revolve(r) => (r.profile, r.operation, false),
+                        _ => unreachable!("sweep branch"),
+                    };
+                    let previous = object.payload.previous_feature();
+                    let profile = state.profiles.get(&profile_id).cloned().ok_or_else(|| {
+                        CadError::input(format!(
+                            "feature {id} reads {profile_id}, which produced no profile"
+                        ))
+                    })?;
+                    let target = previous
+                        .map(|p| {
+                            state.shapes.get(&p).copied().ok_or_else(|| {
                                 CadError::input(format!(
-                                    "extrude {id} reads {}, which produced no profile",
-                                    feature.profile
+                                    "feature {id} modifies {p}, which produced no result"
                                 ))
-                            })?;
-
-                    match feature.previous {
-                        // A feature that starts a body, exactly as before.
-                        None => {
-                            let request = extrude_request(feature, profile)?;
-                            if let Some(reach) =
-                                Reach::of_new_body(feature, datum_of(feature.profile)?)
-                            {
-                                reaches.insert(*id, reach);
-                                if let Some(contacts) = crate::cut_contact::CutContacts::new(
-                                    request.profile(),
-                                    reach.datum,
-                                ) {
-                                    cut_contacts.insert(*id, contacts);
-                                }
-                            }
-                            let key = extrude_archive_key(kernel.identity(), &request, &scoped);
-
-                            let key = state.topology.cache_key(*id, key);
-                            let restored = match cache.as_deref_mut() {
-                                Some(cache) => {
-                                    restore(kernel, cache, &scoped, key, *id, state, events)?
-                                }
-                                None => false,
-                            };
-
-                            if !restored {
-                                let result = kernel.extrude(&request, &scoped)?;
-
-                                // Register ownership before checking again: a
-                                // kernel can finish the operation and then invoke a
-                                // progress callback that cancels the rebuild. The
-                                // resulting shape still belongs to us and must
-                                // participate in error cleanup.
-                                state.owned.push(result.shape);
-                                context.check_cancelled()?;
-
-                                let names = state.topology.name_operation(
-                                    *id,
-                                    result.shape,
-                                    &[],
-                                    kernel,
-                                )?;
-                                state.topology.insert_feature(*id, names)?;
-                                state.shapes.insert(*id, result.shape);
-
-                                if let Some(cache) = cache.as_deref_mut() {
-                                    store(kernel, cache, key, *id, state, events);
-                                }
-                            }
-                            state.keys.insert(*id, key);
+                            })
+                        })
+                        .transpose()?;
+                    let request = match &object.payload {
+                        ObjectPayload::Extrude(e) if through_all => SweepRequest::ThroughAll {
+                            profile,
+                            reversed: e.reversed,
+                            target: target.ok_or_else(|| {
+                                CadError::input("ThroughAll has no target to go through")
+                            })?,
+                        },
+                        ObjectPayload::Extrude(e) => {
+                            SweepRequest::Extrude(extrude_request(e, profile, None)?)
                         }
-
-                        // A feature that changes the result of an earlier one. The
-                        // tool it removes with is an extrusion of its own sketch,
-                        // built here and released with everything else: it is the
-                        // shape the boolean consumed, not a body of the document,
-                        // and nothing outside this loop may name it.
-                        Some(previous) => {
-                            let reach = reaches.get(&previous).copied();
-                            let tool_request = cut_tool_request(
-                                feature,
-                                profile,
-                                datum_of(feature.profile)?,
-                                reach,
-                            )?;
-                            // Apply the same contact guard before both cache restore and kernel work.
-                            if let Some(mut contacts) = cut_contacts.get(&previous).cloned() {
-                                contacts.add(
-                                    *id,
-                                    tool_request.profile(),
-                                    datum_of(feature.profile)?,
-                                )?;
-                                cut_contacts.insert(*id, contacts);
-                            }
-                            if let Some(reach) = reach {
-                                reaches.insert(*id, reach);
-                            }
-                            let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
-                            CadError::input(format!(
-                                "feature {id} modifies {previous}, which produced no result to                                  modify"
-                            ))
-                        })?;
-                            let tool_key =
-                                extrude_archive_key(kernel.identity(), &tool_request, &scoped);
-                            let key = cut_archive_key(
-                                kernel.identity(),
-                                previous,
-                                &target_key,
-                                &tool_key,
-                                matches!(feature.end_condition, EndCondition::ThroughAll),
-                                &scoped,
-                            );
-
-                            let key = state.topology.cache_key(*id, key);
-                            let restored = match cache.as_deref_mut() {
-                                Some(cache) => {
-                                    restore(kernel, cache, &scoped, key, *id, state, events)?
-                                }
-                                None => false,
-                            };
-
-                            if !restored {
-                                let tool = kernel.extrude(&tool_request, &scoped)?;
-                                state.owned.push(tool.shape);
-                                context.check_cancelled()?;
-
-                                let tool_names =
-                                    state
-                                        .topology
-                                        .name_operation(*id, tool.shape, &[], kernel)?;
-                                let previous_names =
-                                    state.topology.feature(previous).ok_or_else(|| {
-                                        CadError::topology(format!(
-                                            "feature {id} modifies {previous}, which named nothing"
-                                        ))
-                                    })?;
-                                let target_shape = previous_names.shape().ok_or_else(|| {
-                                    CadError::topology(format!(
-                                        "feature {id} modifies {previous}, which built no shape"
-                                    ))
-                                })?;
-                                let request = CutRequest::new(target_shape, tool.shape)?;
-                                let result = kernel.cut(&request, &scoped)?;
-                                state.owned.push(result.shape);
-                                context.check_cancelled()?;
-                                let names = state.topology.name_operation(
-                                    *id,
-                                    result.shape,
-                                    &[previous_names, &tool_names],
-                                    kernel,
-                                )?;
-                                state.topology.insert_feature(*id, names)?;
-                                state.shapes.insert(*id, result.shape);
-
-                                if let Some(cache) = cache.as_deref_mut() {
-                                    store(kernel, cache, key, *id, state, events);
-                                }
-                            }
-                            state.keys.insert(*id, key);
-                        }
-                    }
-                }
-
-                // A body started by turning a profile. The same cold and cached
-                // path as a NewBody extrusion: one request, one key, restore or
-                // build, name while the result is whole, store. It records no
-                // reach, so nothing downstream can run ThroughAll against it.
-                ObjectPayload::Revolve(feature) => {
-                    let profile =
-                        state
-                            .profiles
-                            .get(&feature.profile)
-                            .cloned()
-                            .ok_or_else(|| {
-                                CadError::input(format!(
-                                    "revolve {id} reads {}, which produced no profile",
-                                    feature.profile
-                                ))
-                            })?;
-                    let request = revolve_request(feature, profile)?;
-                    let key = revolve_archive_key(kernel.identity(), &request, &scoped);
+                        ObjectPayload::Revolve(r) => SweepRequest::Revolve(revolve_request(
+                            r,
+                            profile,
+                            &state.presentations[&profile_id],
+                        )?),
+                        _ => unreachable!("sweep branch"),
+                    };
+                    let tool_key = request.key(kernel.identity(), &scoped);
+                    let key = if let Some(previous) = previous {
+                        boolean_archive_key(
+                            kernel.identity(),
+                            boolean_kind(operation)?,
+                            previous,
+                            &state.keys[&previous],
+                            &tool_key,
+                            through_all,
+                            &scoped,
+                        )
+                    } else {
+                        tool_key
+                    };
                     let key = state.topology.cache_key(*id, key);
                     let restored = match cache.as_deref_mut() {
                         Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
                         None => false,
                     };
                     if !restored {
-                        let result = kernel.revolve(&request, &scoped)?;
-                        state.owned.push(result.shape);
+                        let tool = request.build(kernel, &scoped)?;
+                        state.owned.push(tool.shape);
                         context.check_cancelled()?;
-                        let names =
+                        let tool_names =
                             state
                                 .topology
-                                .name_operation(*id, result.shape, &[], kernel)?;
+                                .name_operation(*id, tool.shape, &[], kernel)?;
+                        let (shape, names) = match (previous, target) {
+                            (Some(previous), Some(target)) => {
+                                let request = BooleanRequest::new(
+                                    boolean_kind(operation)?,
+                                    target,
+                                    tool.shape,
+                                )?;
+                                let result = kernel.boolean(&request, &scoped)?;
+                                state.owned.push(result.shape);
+                                context.check_cancelled()?;
+                                let previous_names =
+                                    state.topology.feature(previous).ok_or_else(|| {
+                                        CadError::topology(format!(
+                                            "feature {id} modifies {previous}, which named nothing"
+                                        ))
+                                    })?;
+                                let names = state.topology.name_operation(
+                                    *id,
+                                    result.shape,
+                                    &[previous_names, &tool_names],
+                                    kernel,
+                                )?;
+                                (result.shape, names)
+                            }
+                            _ => (tool.shape, tool_names),
+                        };
                         state.topology.insert_feature(*id, names)?;
-                        state.shapes.insert(*id, result.shape);
+                        state.shapes.insert(*id, shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
                         }
@@ -1151,4 +1050,66 @@ fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<Stri
         }
     }
     Ok(local)
+}
+
+fn boolean_kind(
+    operation: ferritecad_document::SolidOperation,
+) -> Result<ferritecad_kernel::BooleanKind> {
+    use ferritecad_document::SolidOperation as S;
+    use ferritecad_kernel::BooleanKind as B;
+    match operation {
+        S::Add => Ok(B::Fuse),
+        S::Cut => Ok(B::Cut),
+        S::Intersect => Ok(B::Common),
+        _ => Err(CadError::input(
+            "a boolean feature must specify Add, Cut or Intersect",
+        )),
+    }
+}
+
+enum SweepRequest {
+    ThroughAll {
+        profile: Profile,
+        reversed: bool,
+        target: ShapeHandle,
+    },
+    Extrude(ferritecad_kernel::ExtrudeRequest),
+    Revolve(ferritecad_kernel::RevolveRequest),
+}
+impl SweepRequest {
+    fn key(
+        &self,
+        kernel: &ferritecad_kernel::KernelIdentity,
+        context: &OperationContext,
+    ) -> ContentHash {
+        match self {
+            Self::ThroughAll {
+                profile, reversed, ..
+            } => through_all_profile_key(profile, *reversed),
+            Self::Extrude(r) => extrude_archive_key(kernel, r, context),
+            Self::Revolve(r) => revolve_archive_key(kernel, r, context),
+        }
+    }
+    fn build(
+        &self,
+        kernel: &mut (impl GeometryKernel + ?Sized),
+        context: &OperationContext,
+    ) -> Result<ferritecad_kernel::OperationResult> {
+        match self {
+            Self::ThroughAll {
+                profile,
+                reversed,
+                target,
+            } => {
+                let n = profile.plane().normal();
+                let sign = if *reversed { -1. } else { 1. };
+                let direction = ferritecad_types::Vec3::new(n.x * sign, n.y * sign, n.z * sign)?;
+                let bounds = kernel.projected_bounds(*target, direction)?;
+                let request = through_all_request(profile.clone(), *reversed, bounds)?;
+                kernel.extrude(&request, context)
+            }
+            Self::Extrude(r) => kernel.extrude(r, context),
+            Self::Revolve(r) => kernel.revolve(r, context),
+        }
+    }
 }

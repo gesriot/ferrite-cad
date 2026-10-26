@@ -13,11 +13,11 @@ use std::process::{Command, Output};
 
 use ferritecad_document::{
     Dependency, DependencyRole, Document, EndCondition, Expression, ExtrudeEditSource,
-    ObjectPayload, Parameter, SketchGeometry,
+    ObjectPayload, Parameter, Point2, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_jobs::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
 use ferritecad_kernel::OperationContext;
-use ferritecad_types::{Dimension, ObjectId, Unit};
+use ferritecad_types::{Dimension, ObjectId, StableEntityId, Unit};
 use serde_json::Value;
 
 #[path = "json_v1/stl.rs"]
@@ -403,6 +403,14 @@ fn mixed_catalog(path: &Path) {
     let ObjectPayload::Extrude(extrude) = &original.payload else {
         unreachable!()
     };
+    let ObjectPayload::Sketch(tool_source) = document
+        .object(extrude.profile)
+        .expect("profile")
+        .expect("profile row")
+        .payload
+    else {
+        unreachable!()
+    };
     let parameter = ObjectId::new();
     document
         .write(|writer| {
@@ -462,12 +470,32 @@ fn mixed_catalog(path: &Path) {
                 let id = ObjectId::new();
                 let mut feature = extrude.clone();
                 feature.end_condition = end;
-                writer.put_object(id, None, ordinal, name, &ObjectPayload::Extrude(feature))?;
-                writer.add_dependency(Dependency {
-                    dependent: id,
-                    dependency: extrude.profile,
-                    role: DependencyRole::Profile,
-                })?;
+                if feature.end_condition == EndCondition::ThroughAll {
+                    let profile = ObjectId::new();
+                    let mut sketch = tool_source.clone();
+                    sketch.constraints.clear();
+                    sketch.curves = vec![SketchCurve {
+                        id: StableEntityId::new(),
+                        construction: false,
+                        geometry: SketchGeometry::Circle {
+                            center: Point2::new(20., 20.)?,
+                            radius: 2.,
+                        },
+                    }];
+                    let payload = ObjectPayload::Sketch(sketch);
+                    writer.put_object(profile, None, 16, Some("Through tool"), &payload)?;
+                    for dependency in payload.dependencies(profile) {
+                        writer.add_dependency(dependency)?;
+                    }
+                    feature.profile = profile;
+                    feature.operation = SolidOperation::Cut;
+                    feature.previous = Some(original.id);
+                }
+                let payload = ObjectPayload::Extrude(feature);
+                writer.put_object(id, None, ordinal, name, &payload)?;
+                for dependency in payload.dependencies(id) {
+                    writer.add_dependency(dependency)?;
+                }
                 if parameterized {
                     writer.add_dependency(Dependency {
                         dependent: id,

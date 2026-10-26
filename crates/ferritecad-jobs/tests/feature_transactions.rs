@@ -134,10 +134,12 @@ fn ordered_additions_dependencies_names_and_end_transitions() {
         refs,
         "an unconsumed pocket floor may disappear"
     );
-    let contact = circular_tool(&d, b, [2., 15.], 2., EndCondition::ThroughAll).expect("contact");
+    // An entirely disjoint tool removes no material; exact contact is the kernel's decision.
+    let outside =
+        circular_tool(&d, b, [100., 100.], 2., EndCondition::ThroughAll).expect("outside tool");
     refuse(
-        &request(&src, &root.path().join("contact.fcad"), contact.changes),
-        contact.feature,
+        &request(&src, &root.path().join("outside.fcad"), outside.changes),
+        outside.feature,
     );
 }
 
@@ -169,7 +171,8 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             object: ObjectId::new(),
             body: ObjectId::new(),
             name: None,
-            feature: FeatureAddition::Cut {
+            feature: FeatureAddition::Extrude {
+                operation: ferritecad_document::SolidOperation::Cut,
                 profile: tool.sketch,
                 end_condition: blind(3.),
                 reversed: false,
@@ -179,7 +182,8 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             object: ObjectId::new(),
             body: b,
             name: None,
-            feature: FeatureAddition::Cut {
+            feature: FeatureAddition::Extrude {
+                operation: ferritecad_document::SolidOperation::Cut,
                 profile: ObjectId::new(),
                 end_condition: blind(3.),
                 reversed: false,

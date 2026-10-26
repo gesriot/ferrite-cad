@@ -390,19 +390,6 @@ fn native_l_profile_history_matrix() {
                 artifact += 1;
             }
         }
-        if n == 16 {
-            // A far wall tangent to link 11 (slot 9) is refused by the evaluator.
-            let mut near = L;
-            near[1][0] = tools[11].center_mm[0] + tools[11].radius_mm;
-            near[2][0] = near[1][0];
-            let out = sketch(&source, &never, &near, 2);
-            let message = out["error"]["message"].as_str().expect("message");
-            assert!(
-                message.contains(&ordered[11].feature.to_string()),
-                "{message}"
-            );
-            assert!(!never.exists());
-        }
         assert_eq!(std::fs::read(&source).expect("source"), original);
     }
     assert_eq!(artifact, 2);

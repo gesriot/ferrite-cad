@@ -56,6 +56,29 @@ impl std::fmt::Display for ExpressionSlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditChange {
+    AddBody {
+        object: ObjectId,
+        name: Option<String>,
+        feature_object: ObjectId,
+        feature_name: Option<String>,
+        feature: FeatureAddition,
+    },
+    SetOperation {
+        object: ObjectId,
+        operation: crate::SolidOperation,
+    },
+    SetReversed {
+        object: ObjectId,
+        reversed: bool,
+    },
+    SetRevolveAxis {
+        object: ObjectId,
+        axis: crate::RevolveAxis,
+    },
+    SetRevolveExtent {
+        object: ObjectId,
+        extent: RevolveExtent,
+    },
     AddSketch {
         object: ObjectId,
         name: Option<String>,
@@ -94,10 +117,17 @@ pub enum EditChange {
 /// A feature's stated inputs; the candidate Body supplies its predecessor.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeatureAddition {
-    Cut {
+    Extrude {
         profile: ObjectId,
         end_condition: EndCondition,
         reversed: bool,
+        operation: crate::SolidOperation,
+    },
+    Revolve {
+        profile: ObjectId,
+        axis: crate::RevolveAxis,
+        extent: RevolveExtent,
+        operation: crate::SolidOperation,
     },
     Fillet {
         edge: crate::SweptEdge,
@@ -110,30 +140,45 @@ pub enum FeatureAddition {
 }
 
 impl FeatureAddition {
-    pub fn payload(&self, previous: ObjectId) -> ObjectPayload {
-        match self {
-            Self::Cut {
+    pub fn payload(&self, previous: Option<ObjectId>) -> Result<ObjectPayload> {
+        Ok(match self {
+            Self::Extrude {
                 profile,
                 end_condition,
                 reversed,
+                operation,
             } => ObjectPayload::Extrude(crate::Extrude {
                 profile: *profile,
                 end_condition: end_condition.clone(),
                 reversed: *reversed,
-                operation: crate::SolidOperation::Cut,
-                previous: Some(previous),
+                operation: *operation,
+                previous,
+            }),
+            Self::Revolve {
+                profile,
+                axis,
+                extent,
+                operation,
+            } => ObjectPayload::Revolve(crate::Revolve {
+                profile: *profile,
+                axis: *axis,
+                extent: extent.clone(),
+                operation: *operation,
+                previous,
             }),
             Self::Fillet { edge, radius_mm } => ObjectPayload::Fillet(crate::Fillet {
-                previous,
+                previous: previous
+                    .ok_or_else(|| CadError::input("edge feature needs a predecessor"))?,
                 edge: *edge,
                 radius_mm: radius_mm.clone(),
             }),
             Self::Chamfer { edge, distance_mm } => ObjectPayload::Chamfer(crate::Chamfer {
-                previous,
+                previous: previous
+                    .ok_or_else(|| CadError::input("edge feature needs a predecessor"))?,
                 edge: *edge,
                 distance_mm: distance_mm.clone(),
             }),
-        }
+        })
     }
 }
 
@@ -154,7 +199,12 @@ impl EditChange {
 
     pub fn object(&self) -> ObjectId {
         match self {
-            Self::SetExpression { object, .. }
+            Self::AddBody { object, .. }
+            | Self::SetOperation { object, .. }
+            | Self::SetReversed { object, .. }
+            | Self::SetRevolveAxis { object, .. }
+            | Self::SetRevolveExtent { object, .. }
+            | Self::SetExpression { object, .. }
             | Self::SetEndCondition { object, .. }
             | Self::AddSketch { object, .. }
             | Self::AddFeature { object, .. } => *object,
@@ -180,6 +230,42 @@ impl EditChange {
         } = self
         {
             return set_expression(payload, *slot, expression.clone());
+        }
+        match self {
+            Self::SetOperation { operation, .. } => {
+                match payload {
+                    ObjectPayload::Extrude(e) => e.operation = *operation,
+                    ObjectPayload::Revolve(r) => r.operation = *operation,
+                    _ => {
+                        return Err(CadError::input(
+                            "operation belongs to an Extrude or Revolve",
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            Self::SetReversed { reversed, .. } => {
+                let ObjectPayload::Extrude(e) = payload else {
+                    return Err(CadError::input("reversed belongs to an Extrude"));
+                };
+                e.reversed = *reversed;
+                return Ok(());
+            }
+            Self::SetRevolveAxis { axis, .. } => {
+                let ObjectPayload::Revolve(r) = payload else {
+                    return Err(CadError::input("axis belongs to a Revolve"));
+                };
+                r.axis = *axis;
+                return Ok(());
+            }
+            Self::SetRevolveExtent { extent, .. } => {
+                let ObjectPayload::Revolve(r) = payload else {
+                    return Err(CadError::input("revolution extent belongs to a Revolve"));
+                };
+                r.extent = extent.clone();
+                return Ok(());
+            }
+            _ => {}
         }
         let ObjectPayload::Sketch(sketch) = payload else {
             return Err(CadError::input(format!(
@@ -222,12 +308,17 @@ impl EditChange {
                     })?;
                 sketch.constraints.remove(index);
             }
-            Self::AddSketch { .. } | Self::AddFeature { .. } => {
+            Self::AddBody { .. } | Self::AddSketch { .. } | Self::AddFeature { .. } => {
                 return Err(CadError::input(
                     "an object addition must be applied to the document",
                 ));
             }
-            Self::SetExpression { .. } | Self::SetEndCondition { .. } => {
+            Self::SetOperation { .. }
+            | Self::SetReversed { .. }
+            | Self::SetRevolveAxis { .. }
+            | Self::SetRevolveExtent { .. }
+            | Self::SetExpression { .. }
+            | Self::SetEndCondition { .. } => {
                 unreachable!("expressions were handled before reading the sketch")
             }
         }
@@ -371,6 +462,34 @@ impl Document {
             for change in changes {
                 let id = change.object();
                 match change {
+                    EditChange::AddBody {
+                        name,
+                        feature_object,
+                        feature_name,
+                        feature,
+                        ..
+                    } => {
+                        let payload = feature.payload(None)?;
+                        payload.validate()?;
+                        insert_candidate(
+                            document,
+                            &mut changed,
+                            &mut ordinal,
+                            *feature_object,
+                            feature_name,
+                            payload,
+                        )?;
+                        insert_candidate(
+                            document,
+                            &mut changed,
+                            &mut ordinal,
+                            id,
+                            name,
+                            ObjectPayload::Body(crate::Body {
+                                tip_feature: Some(*feature_object),
+                            }),
+                        )?;
+                    }
                     EditChange::AddSketch { name, sketch, .. } => {
                         insert_candidate(
                             document,
@@ -400,7 +519,7 @@ impl Document {
                             &mut ordinal,
                             id,
                             name,
-                            feature.payload(previous),
+                            feature.payload(Some(previous))?,
                         )?;
                         candidate_object(document, &mut changed, &parameters, *body)?.payload =
                             ObjectPayload::Body(crate::Body {

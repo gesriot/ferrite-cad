@@ -1,10 +1,8 @@
 # Model edit transactions
 
 `ferritecad edit source.fcad --expect-version HASH --request changes.json --output edited.fcad --json`
-applies an ordered list to one candidate, validates the final payload, reconciles
-output names and rebuilds it before publishing. UI Apply uses the same library path.
-An edit refuses every newly failed or skipped feature and every previously resolved
-name that would be lost. Existing failures may be repaired. A refusal leaves the
+applies an ordered list to one candidate, validates the final payload and rebuilds it before publishing. UI Apply uses the same library path.
+An edit refuses every newly failed or skipped feature ; an unresolved consumed reference fails its feature. Existing failures may be repaired. A refusal leaves the
 source and destination unchanged.
 
 Use `inspect source.fcad --json` to obtain `content_version`, object UUIDs and
@@ -41,15 +39,13 @@ side and reduce its Fillet radius together. The evaluator still requires the
 Fillet's rectangular profile. Moving only one corner therefore refuses that Fillet;
 a plain extrusion can accept the same nonrectangular profile.
 
-Cut additions and edits use this same path on open slots, overlapping tools and
-constrained tool sketches. Tangent circle rims within `WALL_CLEARANCE_MM` of a Line
-boundary or an earlier circular Cut are refused by the evaluator. Missing output
-names for Cut histories, Fillet chains and Chamfer are reconciled from the written
-candidate. Existing names are retained. Other structures build without newly
-catalogued names until generative naming is implemented.
+Sweep additions and edits use this path for every supported operation and axis.
+The kernel decides contact and validity. Every rebuilt feature has complete generative
+names; an unconsumed floor or collapsed axis face may disappear. A consuming feature
+whose reference no longer resolves refuses the candidate with its UUID and reason.
 
 `inspect --json` includes each Body's `history` from its first feature to its tip.
-Extrude/Cut rows include `profile_sketch_id`, `previous_feature_id`, `operation`,
+Extrude rows include `profile_sketch_id`, `previous_feature_id`, `operation`,
 `reversed` and a unitful `end_condition`. Fillet/Chamfer rows include their edge's
 feature and pair of segment UUIDs, previous feature, expression, `display_value`
 and `display_unit`. These are saved facts; they do not declare eligibility.
@@ -70,7 +66,7 @@ For example, add a circular tool and a Cut (replace every UUID placeholder):
     "center":{"x":{"value":20,"unit":"mm"},"y":{"value":20,"unit":"mm"}},
     "radius":{"value":2,"unit":"mm"}}}],"constraints":[]},
   {"kind":"add_feature","object":"<new Cut UUID>","body":"<Body UUID>","name":"Cut",
-   "feature":{"kind":"cut","profile":"<new Sketch UUID>","reversed":false,
+   "feature":{"kind":"extrude","operation":"cut","profile":"<new Sketch UUID>","reversed":false,
     "end_condition":{"kind":"blind","distance":{"value":3,"unit":"mm"}}}}
 ]}
 ```
@@ -84,7 +80,20 @@ and adjacent-Fillet policies still decide the result.
 
 `{"kind":"set_end_condition","object":"<Extrude or Cut UUID>",
 "end_condition":{"kind":"through_all"}}` changes the end condition; Blind uses
-the same unitful `distance` shown above. A Blind Cut becoming ThroughAll is refused
-when that would lose a previously resolved floor name. Circle and depth edits use
-`set_curve_geometry` and `set_expression` as before. All additions and edits return
-the same four result fields; there are no per-feature eligibility catalogues.
+the same unitful `distance` shown above. Unconsumed floors may disappear when
+changing Blind to ThroughAll. Consumed references
+must still resolve. Circle and depth edits use `set_curve_geometry` and `set_expression`.
+
+Generic sweeps accept `NewBody`, `Add`, `Cut` and `Intersect`. `add_feature` derives
+`previous` from the candidate Body tip. `add_body` supplies `object`, `name`,
+`feature_object`, `feature_name` and `feature`; its first feature must use `NewBody`.
+An existing feature's operation changes with `set_operation` (`object`, `operation`),
+its extrusion direction with `set_reversed` (`object`, `reversed`).
+
+A Revolve addition has `kind: "revolve"`, `profile`, `operation`, `axis` and `extent`.
+Axes are `"sketch_x"`, `"sketch_y"`, or `{"line":"<Line UUID>"}`.
+Extents are `{"kind":"full_turn"}` or
+`{"kind":"partial","angle":{"value":137.5,"unit":"deg"}}`.
+Use `set_revolve_axis` (`object`, `axis`) and `set_revolve_extent` (`object`, `extent`)
+for existing features. Numbers still use expression slots; no new numeric edit route
+is introduced. See [sweep semantics](generic-sweeps.md).

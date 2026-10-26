@@ -42,6 +42,8 @@ pub enum NamingOperation {
     Cut,
     Fillet,
     Chamfer,
+    Fuse,
+    Common,
 }
 
 impl NamingOperation {
@@ -52,6 +54,8 @@ impl NamingOperation {
             Self::Cut => 2,
             Self::Fillet => 3,
             Self::Chamfer => 4,
+            Self::Fuse => 5,
+            Self::Common => 6,
         }
     }
 
@@ -63,6 +67,8 @@ impl NamingOperation {
             Self::Cut,
             Self::Fillet,
             Self::Chamfer,
+            Self::Fuse,
+            Self::Common,
         ]
         .into_iter()
         .find(|operation| operation.tag() == tag)

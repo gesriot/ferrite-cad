@@ -123,7 +123,9 @@ pub(crate) fn validate(graph: &Derivations) -> Result<()> {
                                 })
                         }
                         "generated" | "modified" => {
-                            feature.is_some() && *extra <= 4 && inputs.len() == 1
+                            feature.is_some()
+                                && ferritecad_kernel::NamingOperation::from_tag(*extra).is_some()
+                                && inputs.len() == 1
                         }
                         "merge" | "split-boundary-history" => {
                             *kind == SubShapeKind::Face

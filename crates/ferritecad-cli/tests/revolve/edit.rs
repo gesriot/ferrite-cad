@@ -589,33 +589,20 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
     let refuse = |source: &Path, sketch: &str, version: &str, out: &Path, why: &str| {
         let names = entries(d.path());
         let bytes = std::fs::read(source).expect("source");
-        let v = edit_reply(
-            edit(source, sketch, version, &request_path, out)
-                .output()
-                .expect("edit"),
-            2,
-        );
+        let output = edit(source, sketch, version, &request_path, out)
+            .output()
+            .expect("edit");
+        assert_eq!(output.status.code(), Some(2), "{why}: {output:?}");
+        let v = edit_reply(output, 2);
         assert_eq!(std::fs::read(source).expect("source"), bytes, "{why}");
         assert_eq!(entries(d.path()), names, "{why}: nothing written");
         v["error"].to_string()
     };
     for (why, points, message) in [
         (
-            // §27C: a whole Line on the axis would make this bored part
-            // solid, which an edit may not do.
-            "axis contact",
-            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "cannot change between hollow and solid",
-        ),
-        (
             "axis crossing",
             vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
-            "positive radial side",
-        ),
-        (
-            "within the clearance",
-            vec![[1e-7, 0.], [10., 0.], [10., 15.], [1e-7, 15.]],
-            "positive radial side",
+            "axis",
         ),
         (
             "self-intersection",
@@ -627,16 +614,39 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
             vec![[4., 0.], [6., 0.], [8., 0.], [10., 0.]],
             "",
         ),
-        (
-            "beyond the limit",
-            vec![[4., 0.], [2e6, 0.], [10., 15.], [4., 15.]],
-            "",
-        ),
     ] {
         write_edit(&request_path, &s.ids, &points);
         let refusal = refuse(&source, &s.sketch, &s.version, &out, why);
         assert!(refusal.contains(message), "{why}: {refusal}");
     }
+    // Creation-template coordinate limits do not constrain a shared edit.
+    let large = [[4., 0.], [2e6, 0.], [10., 15.], [4., 15.]];
+    write_edit(&request_path, &s.ids, &large);
+    let expanded = d.path().join("expanded.fcad");
+    edit_reply(
+        edit(&source, &s.sketch, &s.version, &request_path, &expanded)
+            .output()
+            .expect("edit"),
+        0,
+    );
+    check_cells(&source, &expanded, &s.sketch);
+    let doc = Document::open_read_only(&expanded).expect("expanded");
+    let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built =
+        ferritecad_eval::rebuild_cold(&doc, &mut k, &OperationContext::default()).expect("rebuild");
+    assert!(built.all_built());
+    let feature = doc
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Revolve(_)))
+        .expect("feature")
+        .id;
+    let shape = built.shape(feature).expect("shape");
+    assert!(k.is_valid(shape).expect("valid"));
+    let exact = super::partial::pappus(&large);
+    assert!((k.shape_stats(shape).expect("volume").1 - exact).abs() < exact * 1e-8);
+    built.release_all(&mut k);
     // A foreign curve UUID is refused without changing the file.
     let foreign: Vec<String> = s
         .ids

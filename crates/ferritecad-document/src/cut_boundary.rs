@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! The outer wall a circular Cut must stay inside, read from the saved Lines.
-//!
-//! One value, read once per snapshot and carried by every catalogue, draft
-//! check, preparation and writer re-derivation. Its axis-aligned bounding box
-//! is reported as *bounds* and is never used to decide containment; see
-//! [`CutBoundary::disk_clearance`] for the rule that is.
+//! Saved polygon dimensions used by the existing creation and edge-edit forms.
 use ferritecad_types::{CadError, Result, StableEntityId};
 
 use crate::{PolygonExtrusion, SketchCurve, SketchGeometry};
@@ -12,7 +7,7 @@ use crate::{PolygonExtrusion, SketchCurve, SketchGeometry};
 /// How far one stored Line end may be from the next Line's start and still
 /// close the profile. The kernel's linear tolerance, as the rectangle reader
 /// that preceded this one used.
-const CLOSURE_MM: f64 = crate::WALL_CLEARANCE_MM;
+const CLOSURE_MM: f64 = ferritecad_types::Tolerance::DEFAULT_LINEAR;
 
 /// One saved side of the part, exactly as stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,55 +32,7 @@ pub struct CutBoundary {
     orientation: BoundaryOrientation,
 }
 
-/// Where a disk sits relative to the boundary.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DiskClearance {
-    /// Whether the centre is inside the polygon.
-    pub center_inside: bool,
-    /// The smallest distance from the disk's rim to any finite segment,
-    /// `min(distance(center, segment)) - radius`. Negative when the disk
-    /// crosses the wall.
-    pub clearance_mm: f64,
-    /// The saved Line that closest approach is measured to.
-    pub nearest: StableEntityId,
-}
-
 impl CutBoundary {
-    /// Read an already evaluated closed Line boundary without command policies.
-    pub fn from_profile(profile: &ferritecad_kernel::Profile) -> Option<Self> {
-        use ferritecad_kernel::SegmentGeometry;
-        if profile.segments().count() != profile.outer().segments().len() {
-            return None;
-        }
-        let segments: Vec<_> = profile
-            .outer()
-            .segments()
-            .iter()
-            .map(|segment| {
-                let SegmentGeometry::Line { start, end } = segment.geometry else {
-                    return None;
-                };
-                Some(BoundarySegment {
-                    curve_id: segment.label,
-                    start_mm: [start.x, start.y],
-                    end_mm: [end.x, end.y],
-                })
-            })
-            .collect::<Option<_>>()?;
-        if segments.len() < 3 {
-            return None;
-        }
-        let points: Vec<_> = segments.iter().map(|s| s.start_mm).collect();
-        Some(Self {
-            segments,
-            orientation: if signed_twice_area_xy(&points) > 0. {
-                BoundaryOrientation::CounterClockwise
-            } else {
-                BoundaryOrientation::Clockwise
-            },
-        })
-    }
-
     /// Reads the saved profile, or says why it is outside this class.
     ///
     /// Lines only, none construction, stored end to end and closing, and a
@@ -216,72 +163,6 @@ impl CutBoundary {
         };
         (two(0, min_x, max_x) && two(1, min_y, max_y)).then_some([[min_x, min_y], [max_x, max_y]])
     }
-
-    /// Where a disk sits: whether its centre is inside the polygon, and how
-    /// far its rim is from the closest point of any **finite** segment,
-    /// vertices included. Only relative vectors are used, so translation and
-    /// winding change nothing.
-    pub fn disk_clearance(&self, center_mm: [f64; 2], radius_mm: f64) -> DiskClearance {
-        let mut inside = false;
-        let mut nearest = (f64::INFINITY, self.segments[0].curve_id);
-        for s in &self.segments {
-            let (a, b) = (s.start_mm, s.end_mm);
-            // Crossing test on a ray towards +x, half-open in y so a ray
-            // through a vertex is counted once.
-            if (a[1] > center_mm[1]) != (b[1] > center_mm[1]) {
-                let t = (center_mm[1] - a[1]) / (b[1] - a[1]);
-                let x = a[0] + t * (b[0] - a[0]);
-                if center_mm[0] < x {
-                    inside = !inside;
-                }
-            }
-            let d = segment_distance(center_mm, a, b);
-            if d < nearest.0 {
-                nearest = (d, s.curve_id);
-            }
-        }
-        DiskClearance {
-            center_inside: inside,
-            clearance_mm: nearest.0 - radius_mm,
-            nearest: nearest.1,
-        }
-    }
-
-    /// Detect ambiguous contact with any finite side or vertex, including outside the part.
-    pub fn disk_contact(&self, center: [f64; 2], radius: f64) -> Option<(StableEntityId, f64)> {
-        for side in &self.segments {
-            for (a, b) in [
-                (side.start_mm, side.end_mm),
-                (side.start_mm, side.start_mm),
-                (side.end_mm, side.end_mm),
-            ] {
-                let gap = segment_distance(center, a, b) - radius;
-                if gap.abs() <= crate::WALL_CLEARANCE_MM {
-                    return Some((side.curve_id, gap));
-                }
-            }
-        }
-        None
-    }
-}
-
-/// Signed gaps to external and internal tangency of two circular rims.
-pub fn circle_clearances(a: [f64; 2], ar: f64, b: [f64; 2], br: f64) -> [f64; 2] {
-    let distance = (a[0] - b[0]).hypot(a[1] - b[1]);
-    [distance - ar - br, distance - (ar - br).abs()]
-}
-
-/// Distance from `p` to the closed segment `a`–`b`.
-fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let (px, py) = (p[0] - a[0], p[1] - a[1]);
-    let length2 = dx * dx + dy * dy;
-    let t = if length2 > 0. {
-        ((px * dx + py * dy) / length2).clamp(0., 1.)
-    } else {
-        0.
-    };
-    (px - t * dx).hypot(py - t * dy)
 }
 
 fn signed_twice_area(points: &[crate::Point2]) -> f64 {
@@ -337,118 +218,24 @@ mod tests {
         points.iter().rev().copied().collect()
     }
 
-    fn inside(b: &CutBoundary, c: [f64; 2], r: f64) -> bool {
-        let d = b.disk_clearance(c, r);
-        d.center_inside && d.clearance_mm > crate::WALL_CLEARANCE_MM
-    }
-
     #[test]
-    fn contact_checks_finite_sides_and_vertices_from_either_side() {
-        for points in [L.to_vec(), reversed(&L)] {
-            let b = boundary(&points);
-            for (center, radius) in [
-                ([40., 10.], 10.),
-                ([17., 17.], 18_f64.sqrt()),
-                ([-3., -4.], 5.),
-            ] {
-                let (side, gap) = b.disk_contact(center, radius).expect("contact");
-                assert!(b.segments.iter().any(|s| s.curve_id == side));
-                assert!(gap.abs() < 1e-12);
-                for delta in [-0.25, 0.25] {
-                    assert!(b.disk_contact(center, radius + delta).is_none());
-                }
-            }
-            // The bottom supporting line is tangent, but its finite side ends before the circle.
-            assert!(b.disk_contact([65., 10.], 10.).is_none());
-        }
-        assert_eq!(circle_clearances([0., 0.], 3., [5., 0.], 2.), [0., 4.]);
-        assert_eq!(circle_clearances([0., 0.], 3., [1., 0.], 2.), [-4., 0.]);
-        for separation in [0.75, 1.25, 4.75, 5.25] {
-            assert!(
-                circle_clearances([0., 0.], 3., [separation, 0.], 2.)
-                    .iter()
-                    .all(|gap| gap.abs() > crate::WALL_CLEARANCE_MM)
-            );
-        }
-    }
-
-    #[test]
-    fn an_l_profile_is_its_real_boundary_and_not_its_bounding_box() {
-        for points in [L.to_vec(), reversed(&L)] {
-            let b = boundary(&points);
-            assert_eq!(b.area_mm2(), 1600.);
-            assert_eq!(b.bounds_mm(), [[0., 0.], [60., 40.]]);
-            assert_eq!(b.rectangle_mm(), None, "an L is not a rectangle");
-            // Inside the bounding box, outside the part.
-            let notch = b.disk_clearance([40., 30.], 3.);
-            assert!(!notch.center_inside);
-            assert!(!inside(&b, [40., 30.], 3.));
-            // One in each branch.
-            assert!(inside(&b, [45., 10.], 5.));
-            assert!(inside(&b, [10., 30.], 5.));
-            // Centre inside, near the reflex vertex (20, 20). Both concave
-            // edges' supporting lines are 3 mm away, but those lines run on
-            // through the part; the finite edges are sqrt(18) mm away, at
-            // the vertex itself.
-            let c = [17., 17.];
-            let near = b.disk_clearance(c, 4.2);
-            assert!(near.center_inside);
-            assert!((near.clearance_mm - (18f64.sqrt() - 4.2)).abs() < 1e-12);
-            assert!(inside(&b, c, 4.2), "finite segments, not their lines");
-            assert!(!inside(&b, c, 4.3), "a disk over the reflex vertex");
-            // Centre inside, disk across the concave edge y = 20.
-            assert!(!inside(&b, [40., 17.], 4.));
-            // Exactly at the clearance is refused, a hair more is accepted.
-            let edge = b.disk_clearance([40., 10.], 10.);
-            assert_eq!(edge.clearance_mm, 0.);
-            assert!(!inside(&b, [40., 10.], 10.));
-            assert!(inside(&b, [40., 10.], 10. - 1e-3));
-        }
-        assert_eq!(
-            boundary(&L).orientation(),
-            BoundaryOrientation::CounterClockwise
-        );
+    fn polygon_dimensions_ignore_winding_and_translation() {
+        let here = boundary(&L);
+        assert_eq!(here.area_mm2(), 1600.);
+        assert_eq!(here.bounds_mm(), [[0., 0.], [60., 40.]]);
+        assert_eq!(here.rectangle_mm(), None);
+        assert_eq!(here.orientation(), BoundaryOrientation::CounterClockwise);
         assert_eq!(
             boundary(&reversed(&L)).orientation(),
             BoundaryOrientation::Clockwise
         );
-    }
-
-    #[test]
-    fn the_rule_ignores_winding_and_translation() {
-        let triangle = [[0., 0.], [50., 5.], [10., 40.]];
-        let quad = [[0., 0.], [50., 10.], [45., 45.], [-5., 35.]];
-        for shape in [&triangle[..], &quad[..], &L[..]] {
-            for shift in [[0., 0.], [1000., -250.], [-9.5e5, 9.5e5]] {
-                let moved: Vec<_> = shape
-                    .iter()
-                    .map(|p| [p[0] + shift[0], p[1] + shift[1]])
-                    .collect();
-                let there = boundary(&moved);
-                let back = boundary(&reversed(&moved));
-                let here = boundary(shape);
-                assert!((there.area_mm2() - here.area_mm2()).abs() < 1e-6);
-                for (c, r) in [([15., 12.], 3.), ([30., 10.], 2.), ([5., 30.], 4.)] {
-                    let at = [c[0] + shift[0], c[1] + shift[1]];
-                    assert_eq!(inside(&here, c, r), inside(&there, at, r), "{c:?}");
-                    assert_eq!(inside(&there, at, r), inside(&back, at, r), "{c:?}");
-                }
-            }
+        for shift in [[0., 0.], [1000., -250.], [-9.5e5, 9.5e5]] {
+            let moved: Vec<_> = L
+                .iter()
+                .map(|p| [p[0] + shift[0], p[1] + shift[1]])
+                .collect();
+            assert!((boundary(&moved).area_mm2() - here.area_mm2()).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn a_sloped_wall_is_measured_to_the_segment_not_its_bounding_box() {
-        // Hypotenuse from (40, 0) to (0, 40): x + y = 40.
-        let b = boundary(&[[0., 0.], [40., 0.], [0., 40.]]);
-        let c = [15., 15.];
-        let to_wall = (40. - 30.) / 2f64.sqrt();
-        let d = b.disk_clearance(c, 5.);
-        assert!((d.clearance_mm - (to_wall - 5.)).abs() < 1e-12);
-        assert_eq!(d.nearest, b.segments()[1].curve_id);
-        // Inside the bounding box at every rim point, but over the sloped wall.
-        assert!(!inside(&b, c, 7.1));
-        assert!(inside(&b, c, 7.));
     }
 
     #[test]

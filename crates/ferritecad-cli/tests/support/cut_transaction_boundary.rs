@@ -198,10 +198,7 @@ pub(super) fn run() {
     };
     let mut p = Pair::new(&[tool]);
     let saved = history::ordered(&p.path).remove(0);
-    let refusal = vec![saved.feature.to_string(), "touches side or vertex".into()];
-    p.apply(p.wall(saved.profile_sketch, 2.5), &refusal);
-    p.apply(vec![circle(&saved, [1.5, 7.], 1.5)], &refusal);
-    // Both sides of the guard are accepted, without nudging coordinates.
+    // A separated tool and an open slot are measured without an analytic guard.
     for left in [2.25, 2.75] {
         p.apply(p.wall(saved.profile_sketch, left), &[]);
         let d = 4. - left;
@@ -260,20 +257,12 @@ pub(super) fn run() {
         },
     ]);
     let cuts = history::ordered(&p.path);
-    p.apply(
-        vec![circle(&cuts[1], [7., 7.], 1.5)],
-        &[
-            cuts[0].feature.to_string(),
-            cuts[1].feature.to_string(),
-            "touches Cut".into(),
-        ],
-    );
     p.apply(vec![circle(&cuts[1], [6.75, 7.], 1.5)], &[]);
     p.continue_cut(&cuts[0]);
 }
 
 #[test]
-fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
+fn native_solved_tools_and_base_lines_build_across_the_boundary() {
     if !ferritecad_fixtures::native_dependencies(&[
         (ferritecad_occt::is_available(), "OCCT"),
         (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
@@ -299,10 +288,6 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
             },
         },
     };
-    pair.apply(
-        vec![radius(4.)],
-        &[saved.feature.to_string(), "touches side or vertex".into()],
-    );
     pair.apply(vec![radius(3.75)], &[]);
     pair.continue_cut(&saved);
     pair.apply(
@@ -340,11 +325,11 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
         curve: sketch.curves[0].id,
         kind: LineConstraintKind::Fixed {
             at: LineEndpoint::Start,
-            x: SketchCoordinateMm::new(2.5).expect("x"),
+            x: SketchCoordinateMm::new(2.75).expect("x"),
             y: SketchCoordinateMm::new(0.).expect("y"),
         },
     }));
-    for (index, length) in [(0, 77.5), (1, 50.)] {
+    for (index, length) in [(0, 77.25), (1, 50.)] {
         add.push(AddSketchConstraint::Line(AddLineConstraint::Line {
             curve: sketch.curves[index].id,
             kind: LineConstraintKind::Distance(LineLengthMm::new(length).expect("length")),
@@ -360,8 +345,6 @@ fn native_contacts_use_the_solved_tool_and_solved_base_lines() {
     )
     .expect("base constraints");
     d.close().expect("close");
-    pair.apply(
-        changes,
-        &[saved.feature.to_string(), "touches side or vertex".into()],
-    );
+    pair.apply(changes, &[]);
+    pair.continue_cut(&saved);
 }

@@ -87,9 +87,9 @@ impl Drop for CountingKernel {
 
 impl GeometryKernel for CountingKernel {
     /// Refused: this double counts shapes and computes none.
-    fn cut(
+    fn boolean(
         &mut self,
-        _request: &ferritecad_kernel::CutRequest,
+        _request: &ferritecad_kernel::BooleanRequest,
         _context: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
         Err(CadError::unsupported(

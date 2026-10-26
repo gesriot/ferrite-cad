@@ -52,12 +52,15 @@ impl CircularCut {
             constraints: vec![],
         };
         ObjectPayload::Sketch(payload.clone()).to_storage_bytes()?;
-        let feature = FeatureAddition::Cut {
+        let feature = FeatureAddition::Extrude {
+            operation: ferritecad_document::SolidOperation::Cut,
             profile: sketch,
             end_condition: self.extent.end()?,
             reversed: false,
         };
-        feature.payload(target.tip_feature).to_storage_bytes()?;
+        feature
+            .payload(Some(target.tip_feature))?
+            .to_storage_bytes()?;
         Ok(vec![
             EditChange::AddSketch {
                 object: sketch,
@@ -166,7 +169,9 @@ pub(crate) struct EdgeChoice {
 }
 impl EdgeTarget {
     pub fn addition(&self, feature: FeatureAddition, name: &str) -> Result<Vec<EditChange>> {
-        feature.payload(self.previous_feature).to_storage_bytes()?;
+        feature
+            .payload(Some(self.previous_feature))?
+            .to_storage_bytes()?;
         Ok(vec![EditChange::AddFeature {
             object: ObjectId::new(),
             body: self.body,
@@ -227,16 +232,23 @@ pub(crate) fn read(
             cursor = o.payload.previous_feature();
         }
         let Some(&base) = chain.last() else { continue };
-        let ObjectPayload::Extrude(extrude) = &base.payload else {
-            continue;
+        let (profile, height_mm) = match &base.payload {
+            ObjectPayload::Extrude(e) => (
+                e.profile,
+                match &e.end_condition {
+                    EndCondition::Blind { distance } => distance.value(),
+                    EndCondition::Symmetric { distance } => distance.value() * 2.,
+                    _ => 10.,
+                },
+            ),
+            // Only a suggested Blind depth for the existing Cut form, never a reach limit.
+            ObjectPayload::Revolve(r) => (r.profile, 10.),
+            _ => continue,
         };
         let Some(sketch) = objects.iter().find_map(|o| match &o.payload {
-            ObjectPayload::Sketch(s) if o.id == extrude.profile => Some(s),
+            ObjectPayload::Sketch(s) if o.id == profile => Some(s),
             _ => None,
         }) else {
-            continue;
-        };
-        let EndCondition::Blind { distance } = &extrude.end_condition else {
             continue;
         };
         let lines = sketch
@@ -253,7 +265,7 @@ pub(crate) fn read(
             plane: sketch.plane,
             tip_feature: tip,
             boundary: lines.iter().map(|(_, p, _)| [p.x, p.y]).collect(),
-            height_mm: distance.value(),
+            height_mm,
         };
         bodies.push(CutChoice {
             body: body.id,
@@ -280,20 +292,24 @@ pub(crate) fn read(
                 ],
             });
         }
-        edges.push(EdgeChoice {
-            body: body.id,
-            name: body.name.clone(),
-            target: Some(EdgeTarget {
+        if matches!(&base.payload, ObjectPayload::Extrude(e)
+            if !e.reversed && matches!(e.end_condition, EndCondition::Blind { .. }))
+        {
+            edges.push(EdgeChoice {
                 body: body.id,
-                base_feature: base.id,
-                profile: extrude.profile,
-                height_mm: distance.value(),
-                previous_feature: tip,
-                constrained: !sketch.constraints.is_empty(),
-                corners,
-            }),
-            refusal: None,
-        });
+                name: body.name.clone(),
+                target: Some(EdgeTarget {
+                    body: body.id,
+                    base_feature: base.id,
+                    profile,
+                    height_mm,
+                    previous_feature: tip,
+                    constrained: !sketch.constraints.is_empty(),
+                    corners,
+                }),
+                refusal: None,
+            });
+        }
         for o in chain.into_iter().rev() {
             let ObjectPayload::Extrude(cut) = &o.payload else {
                 continue;

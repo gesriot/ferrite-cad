@@ -37,7 +37,9 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <gp_Circ.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <IFSelect_PrintCount.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -517,12 +519,13 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 
 void fc_occt_session_destroy(FcOcctSession *session) noexcept { delete session; }
 
-FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
+FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
                              size_t loop_count, double base_offset,
-                             double top_offset, FcOcctCancelFn cancel,
+                             double top_offset, const double *axis_origin,
+                             const double *axis_direction, double angle, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
@@ -605,7 +608,7 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              "number");
       return FC_OCCT_INVALID_INPUT;
     }
-    if (std::abs(top_offset - base_offset) < 1.0e-12) {
+    if (!axis_origin && std::abs(top_offset - base_offset) < 1.0e-12) {
       write_error(out_error, "the extrusion has no length");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -625,7 +628,9 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     const gp_Dir normal(plane->normal[0], plane->normal[1], plane->normal[2]);
     const gp_Dir x_axis(plane->x_axis[0], plane->x_axis[1], plane->x_axis[2]);
     const gp_Ax3 frame(origin, normal, x_axis);
-    const gp_Pln sketch_plane(frame);
+    gp_Ax3 face_frame = frame;
+    face_frame.Translate(gp_Vec(normal) * base_offset);
+    const gp_Pln sketch_plane(face_frame);
 
     const auto to_model = [&](double x, double y, double lift) {
       const gp_Vec along_x = gp_Vec(frame.XDirection()) * x;
@@ -839,64 +844,74 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                   "as separate regions, so it bounds no face with a cavity");
       return FC_OCCT_INVALID_INPUT;
     }
+    // Revolving a self-intersecting wire can hide its crossing in the final B-Rep.
+    if (axis_origin && loop_count == 1 && !BRepCheck_Analyzer(face).IsValid()) {
+      write_error(out_error, "the revolution profile does not bound a valid planar face; "
+                             "check for self-intersections");
+      return FC_OCCT_INVALID_INPUT;
+    }
 
     if (cancelled(cancel, cancel_context)) {
       return FC_OCCT_CANCELLED;
-    }
-
-    const gp_Vec sweep = gp_Vec(frame.Direction()) * (top_offset - base_offset);
-    BRepPrimAPI_MakePrism prism(face, sweep);
-
-    Handle(CancelIndicator) indicator = new CancelIndicator(cancel,
-                                                            cancel_context);
-    prism.Build(indicator->Start());
-
-    if (cancelled(cancel, cancel_context)) {
-      return FC_OCCT_CANCELLED;
-    }
-    if (!prism.IsDone()) {
-      write_error(out_error, "the sweep did not produce a solid");
-      return FC_OCCT_KERNEL;
     }
 
     ShapeRecord record;
-    record.shape = prism.Shape();
-
-    TopTools_IndexedMapOfShape solid_edges;
-    TopExp::MapShapes(record.shape, TopAbs_EDGE, solid_edges);
-    for (size_t j = 0; j < corners.size(); ++j) {
-      const NCollection_List<TopoDS_Shape> &swept = prism.Generated(corners[j]);
-      for (NCollection_List<TopoDS_Shape>::Iterator it(swept); it.More();
-           it.Next()) {
-        const TopoDS_Shape &candidate = it.Value();
-        if (candidate.IsNull()) {
-          write_error(
-              out_error,
-              "the sweep returned a null result for profile joint " +
-                  std::to_string(j));
-          return FC_OCCT_KERNEL;
-        }
-        if (candidate.ShapeType() != TopAbs_EDGE) {
-          write_error(out_error,
-                      "the sweep returned a non-edge result for profile joint " +
-                          std::to_string(j));
-          return FC_OCCT_KERNEL;
-        }
-        // IndexedMapOfShape uses IsSame identity, so orientation does not turn
-        // the same topological edge into a foreign one here.
-        if (!solid_edges.Contains(candidate)) {
-          write_error(
-              out_error,
-              "the sweep returned an edge outside the finished solid for profile joint " +
-                  std::to_string(j));
-          return FC_OCCT_KERNEL;
-        }
-        record.remember(candidate);
+    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
+    if (axis_origin) {
+      if (!axis_direction || !finite3(axis_origin) || !finite3(axis_direction) ||
+          !std::isfinite(angle) || angle <= 0 || angle > 2 * std::acos(-1.0)) {
+        write_error(out_error, "a revolution needs a finite angle in (0, 2pi] and a finite axis");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      const gp_Pnt axis_point(axis_origin[0], axis_origin[1], axis_origin[2]);
+      const gp_Dir axis_dir(axis_direction[0], axis_direction[1], axis_direction[2]);
+      if (std::abs(normal.Dot(axis_dir)) > 1.e-9 ||
+          std::abs(gp_Vec(origin, axis_point).Dot(gp_Vec(normal))) > 1.e-7) {
+        write_error(out_error, "the revolution axis must lie in the profile plane");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), angle);
+      revol.Build(indicator->Start());
+      if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
+      if (!revol.IsDone()) {
+        write_error(out_error,
+            "the revolution did not produce a shape: the profile may cross the axis of revolution");
+        return FC_OCCT_KERNEL;
+      }
+      record.shape = revol.Shape();
+      if (!BRepCheck_Analyzer(record.shape).IsValid()) {
+        write_error(out_error,
+            "the revolution is invalid: the profile may cross the axis of revolution");
+        return FC_OCCT_KERNEL;
+      }
+      auto sweep = revol.Revol();
+      const bool partial = angle < 2 * std::acos(-1.0);
+      naming_sweep(record, sweep, edges, segments,
+                   partial ? sweep.FirstShape(face) : TopoDS_Shape{},
+                   partial ? sweep.LastShape(face) : TopoDS_Shape{});
+    } else {
+      const gp_Vec sweep = gp_Vec(frame.Direction()) * (top_offset - base_offset);
+      BRepPrimAPI_MakePrism prism(face, sweep);
+      prism.Build(indicator->Start());
+      if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
+      if (!prism.IsDone()) {
+        write_error(out_error, "the sweep did not produce a solid");
+        return FC_OCCT_KERNEL;
+      }
+      record.shape = prism.Shape();
+      auto sweep_builder = prism.Prism();
+      naming_sweep(record, sweep_builder, edges, segments, prism.FirstShape(), prism.LastShape());
+    }
+    if (axis_origin) {
+      TopTools_IndexedMapOfShape solids;
+      TopExp::MapShapes(record.shape, TopAbs_SOLID, solids);
+      GProp_GProps properties;
+      BRepGProp::VolumeProperties(record.shape, properties);
+      if (solids.Extent() != 1 || !(properties.Mass() > 0)) {
+        write_error(out_error, "the revolution is not one valid solid with positive volume");
+        return FC_OCCT_KERNEL;
       }
     }
-
-    auto naming_prism = prism.Prism();
-    naming_sweep(record, naming_prism, edges, segments, prism.FirstShape(), prism.LastShape());
 
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
@@ -905,352 +920,49 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
   });
 }
 
-namespace {
-
-/// The one revolution both entry points share. `partial` is false for
-/// exactly one full turn, or true for a sector of `angle_radians`, which the
-/// caller has already checked is finite and strictly inside (0, 2π).
-FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
+FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
-                             size_t segment_count, size_t axis_segment,
-                             const double *axis_origin,
-                             const double *axis_direction, bool partial,
-                             double angle_radians, FcOcctCancelFn cancel,
+                             size_t segment_count,
+                             const size_t *loop_segment_counts,
+                             size_t loop_count, double base_offset,
+                             double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
-                             FcOcctError *out_error) {
-    if (segment_count < 3) {
-      write_error(out_error, "a revolved polygon needs at least three Lines, got " +
-                                 std::to_string(segment_count));
-      return FC_OCCT_INVALID_INPUT;
-    }
-    const bool closed_on_axis = axis_segment != FC_OCCT_NO_AXIS_SEGMENT;
-    if (closed_on_axis && axis_segment >= segment_count) {
-      write_error(out_error, "the axis segment " + std::to_string(axis_segment) +
-                                 " is not a segment of the profile");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    for (size_t i = 0; i < segment_count; ++i) {
-      const FcOcctSegment &segment = segments[i];
-      if (segment.kind != FC_OCCT_SEGMENT_LINE) {
-        write_error(out_error, "segment " + std::to_string(i) +
-                                   " is not a Line; a revolution accepts only Lines");
-        return FC_OCCT_UNSUPPORTED;
-      }
-      if (!std::isfinite(segment.start_x) || !std::isfinite(segment.start_y) ||
-          !std::isfinite(segment.end_x) || !std::isfinite(segment.end_y)) {
-        write_error(out_error, "segment " + std::to_string(i) +
-                                   " has a non-finite end point");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      const FcOcctSegment &next = segments[(i + 1) % segment_count];
-      if (segment.end_x != next.start_x || segment.end_y != next.start_y) {
-        write_error(out_error, "segment " + std::to_string(i) +
-                                   " does not end where the next one starts");
-        return FC_OCCT_INVALID_INPUT;
-      }
-    }
-    if (!finite3(plane->origin) || !finite3(plane->x_axis) ||
-        !finite3(plane->normal) || !finite3(axis_origin) ||
-        !finite3(axis_direction)) {
-      write_error(out_error, "the revolution request contains a non-finite number");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    if (std::abs(dot3(plane->x_axis, plane->normal)) > 1.0e-9) {
-      write_error(out_error, "the plane's X axis is not perpendicular to its normal");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    const double axis_length = std::sqrt(dot3(axis_direction, axis_direction));
-    const double normal_length = std::sqrt(dot3(plane->normal, plane->normal));
-    if (!(axis_length > 0.0) || !(normal_length > 0.0)) {
-      write_error(out_error, "the axis direction or the plane normal has no length");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    if (std::abs(dot3(axis_direction, plane->normal)) >
-        1.0e-9 * axis_length * normal_length) {
-      write_error(out_error, "the axis does not lie in the profile's plane");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    const double offset[3] = {axis_origin[0] - plane->origin[0],
-                              axis_origin[1] - plane->origin[1],
-                              axis_origin[2] - plane->origin[2]};
-    const double scale = 1.0 + std::sqrt(dot3(offset, offset));
-    if (std::abs(dot3(offset, plane->normal)) / normal_length > 1.0e-9 * scale) {
-      write_error(out_error, "the axis origin is not on the profile's plane");
-      return FC_OCCT_INVALID_INPUT;
-    }
-
-    if (cancelled(cancel, cancel_context)) {
-      return FC_OCCT_CANCELLED;
-    }
-
-    const gp_Pnt origin(plane->origin[0], plane->origin[1], plane->origin[2]);
-    const gp_Dir normal(plane->normal[0], plane->normal[1], plane->normal[2]);
-    const gp_Dir x_axis(plane->x_axis[0], plane->x_axis[1], plane->x_axis[2]);
-    const gp_Ax3 frame(origin, normal, x_axis);
-    const gp_Pln sketch_plane(frame);
-    const gp_Pnt axis_point(axis_origin[0], axis_origin[1], axis_origin[2]);
-    const gp_Dir axis_dir(axis_direction[0], axis_direction[1], axis_direction[2]);
-    // In the plane and perpendicular to the axis: the signed distance of a
-    // profile point from the axis is its component along this direction.
-    const gp_Dir radial = normal.Crossed(axis_dir);
-
-    const auto to_model = [&](double x, double y) {
-      return origin.Translated(gp_Vec(frame.XDirection()) * x +
-                               gp_Vec(frame.YDirection()) * y);
-    };
-
-    // Corner vertices shared by adjacent edges, exactly as the extrusion
-    // builds them, so the wire welds nothing and every edge keeps the
-    // identity its history is asked about.
-    std::vector<TopoDS_Vertex> corners;
-    corners.reserve(segment_count);
-    int side = 0;
-    for (size_t i = 0; i < segment_count; ++i) {
-      const gp_Pnt point = to_model(segments[i].start_x, segments[i].start_y);
-      const double distance = gp_Vec(axis_point, point).Dot(gp_Vec(radial));
-      // Vertex i starts segment i and ends segment i - 1: it belongs on the
-      // axis exactly when one of the two is the stated axis segment.
-      const bool axis_vertex =
-          closed_on_axis &&
-          (i == axis_segment || (axis_segment + 1) % segment_count == i);
-      if (axis_vertex) {
-        if (std::abs(distance) > Precision::Confusion()) {
-          write_error(out_error, "vertex " + std::to_string(i) +
-                                     " ends the axis segment but is not on the axis");
-          return FC_OCCT_INVALID_INPUT;
-        }
-        corners.push_back(BRepBuilderAPI_MakeVertex(point));
-        continue;
-      }
-      if (std::abs(distance) <= Precision::Confusion()) {
-        write_error(out_error, "vertex " + std::to_string(i) +
-                                   " lies on the axis of revolution");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      const int here = distance > 0.0 ? 1 : -1;
-      if (side != 0 && here != side) {
-        write_error(out_error, "the profile crosses the axis of revolution");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      side = here;
-      corners.push_back(BRepBuilderAPI_MakeVertex(point));
-    }
-    std::vector<TopoDS_Edge> edges;
-    edges.reserve(segment_count);
-    BRepBuilderAPI_MakeWire wire;
-    for (size_t i = 0; i < segment_count; ++i) {
-      BRepBuilderAPI_MakeEdge edge(corners[i], corners[(i + 1) % segment_count]);
-      if (!edge.IsDone()) {
-        write_error(out_error, "segment " + std::to_string(i) + " describes no edge");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      edges.push_back(edge.Edge());
-      wire.Add(edges.back());
-    }
-    if (!wire.IsDone()) {
-      write_error(out_error, "the segments do not form a closed wire");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    BRepBuilderAPI_MakeFace face_builder(sketch_plane, wire.Wire());
-    if (!face_builder.IsDone() ||
-        BRepCheck_Analyzer(face_builder.Face()).IsValid() != Standard_True) {
-      write_error(out_error, "the profile does not bound a valid face on its plane");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    const TopoDS_Face face = face_builder.Face();
-
-    if (cancelled(cancel, cancel_context)) {
-      return FC_OCCT_CANCELLED;
-    }
-
-    // A full turn is exactly 2π: the angle is the contract's, not a caller's
-    // number that happens to be 2π. A sector already uses radians.
-    // std::acos(-1) rather than M_PI, which MSVC defines only on request.
-    const double pi = std::acos(-1.0);
-    const double angle = partial ? angle_radians : 2.0 * pi;
-    BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), angle);
-    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
-    revol.Build(indicator->Start());
-    if (cancelled(cancel, cancel_context)) {
-      return FC_OCCT_CANCELLED;
-    }
-    if (!revol.IsDone()) {
-      write_error(out_error, "the revolution did not produce a shape");
-      return FC_OCCT_KERNEL;
-    }
-
-    ShapeRecord record;
-    record.shape = revol.Shape();
-    size_t solids = 0;
-    for (TopExp_Explorer it(record.shape, TopAbs_SOLID); it.More(); it.Next()) {
-      ++solids;
-    }
-    if (solids != 1 || BRepCheck_Analyzer(record.shape).IsValid() != Standard_True) {
-      write_error(out_error, "the revolution is not one valid solid");
-      return FC_OCCT_KERNEL;
-    }
-    GProp_GProps properties;
-    BRepGProp::VolumeProperties(record.shape, properties);
-    if (!(properties.Mass() > 0.0)) {
-      write_error(out_error, "the revolution encloses no positive volume");
-      return FC_OCCT_KERNEL;
-    }
-
-    // The one face each Line raised, read from the sweep's own history.
-    //
-    // BRepSweep_Revol::Shape(edge) is what the revolution made of that edge.
-    // BRepPrimAPI_MakeRevol::Generated is deliberately not used: measured on
-    // OCCT 8.0.1 for a full turn, it reports the annular face a radial Line
-    // raises as "deleted" (and so reports nothing) although that very face is
-    // in the finished solid, while for a partial angle it reports it. Every
-    // answer is checked rather than trusted: a null or non-face result, a face
-    // outside the finished solid, a face claimed by two Lines, or a face of the
-    // solid no Line raised refuses the whole result.
-    TopTools_IndexedMapOfShape solid_faces;
-    TopExp::MapShapes(record.shape, TopAbs_FACE, solid_faces);
-    TopTools_IndexedMapOfShape claimed;
-    BRepSweep_Revol sweep = revol.Revol();
-    for (size_t i = 0; i < segment_count; ++i) {
-      const TopoDS_Shape candidate = sweep.Shape(edges[i]);
-      if (closed_on_axis && i == axis_segment) {
-        // Measured on OCCT 8.0.1: a Line on the axis sweeps into nothing
-        // (a null shape, and MakeRevol::Generated is empty). Anything that is
-        // a face of the solid here would be a face no name could honestly
-        // describe, so it refuses the result rather than being ignored.
-        if (!candidate.IsNull() && candidate.ShapeType() == TopAbs_FACE &&
-            solid_faces.Contains(candidate)) {
-          write_error(out_error, "the revolution made a face of the axis segment " +
-                                     std::to_string(i));
-          return FC_OCCT_KERNEL;
-        }
-        continue;
-      }
-      if (candidate.IsNull() || candidate.ShapeType() != TopAbs_FACE ||
-          !solid_faces.Contains(candidate)) {
-        write_error(out_error, "the revolution made nothing of segment " +
-                                   std::to_string(i) +
-                                   " that is a face of the finished solid");
-        return FC_OCCT_KERNEL;
-      }
-      if (claimed.Contains(candidate)) {
-        write_error(out_error, "the revolution made one face of two segments");
-        return FC_OCCT_KERNEL;
-      }
-      claimed.Add(candidate);
-      record.remember(candidate);
-    }
-    if (partial) {
-      // §27D: the two end faces, from the sweep's own history of the profile
-      // face: FirstShape where the turn begins, LastShape where it ends.
-      // Measured on OCCT 8.0.1, each is one face of the finished solid,
-      // distinct from the other and from every Line's face; FirstShape is a
-      // copy of the profile face, not the profile face itself, so it is taken
-      // from the history and never matched by position. The solid's own
-      // instance is registered, which carries the solid's orientation.
-      const TopoDS_Shape caps[2] = {sweep.FirstShape(face), sweep.LastShape(face)};
-      for (int side = 0; side < 2; ++side) {
-        const TopoDS_Shape &cap = caps[side];
-        const char *which = side == 0 ? "start" : "end";
-        const int at = cap.IsNull() || cap.ShapeType() != TopAbs_FACE
-                           ? 0
-                           : solid_faces.FindIndex(cap);
-        if (at == 0) {
-          write_error(out_error, std::string("the partial revolution made no ") + which +
-                                     " face of the finished solid");
-          return FC_OCCT_KERNEL;
-        }
-        if (claimed.Contains(cap)) {
-          write_error(out_error, std::string("the partial revolution's ") + which +
-                                     " face is also a segment's face or the other cap");
-          return FC_OCCT_KERNEL;
-        }
-        claimed.Add(cap);
-        record.remember(solid_faces(at));
-      }
-    }
-    if (claimed.Extent() != solid_faces.Extent()) {
-      write_error(out_error, "the solid has " + std::to_string(solid_faces.Extent()) +
-                                 " faces but its segments raised " +
-                                 std::to_string(claimed.Extent()));
-      return FC_OCCT_KERNEL;
-    }
-
-    naming_sweep(record, sweep, edges, segments,
-                 partial ? sweep.FirstShape(face) : TopoDS_Shape{},
-                 partial ? sweep.LastShape(face) : TopoDS_Shape{});
-
-    const uint64_t id = session->next_shape++;
-    session->shapes.emplace(id, std::move(record));
-    *out_shape = id;
-    return FC_OCCT_OK;
+                             FcOcctError *out_error) noexcept {
+  return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
+                       loop_count, base_offset, top_offset, nullptr, nullptr, 0,
+                       cancel, cancel_context, out_shape, out_error);
 }
-
-} // namespace
 
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
-                             const FcOcctSegment *segments,
-                             size_t segment_count, size_t axis_segment,
-                             const double *axis_origin,
-                             const double *axis_direction, int32_t full_turn,
-                             FcOcctCancelFn cancel, void *cancel_context,
-                             uint64_t *out_shape,
-                             FcOcctError *out_error) noexcept {
-  return guarded(out_error, [&]() -> FcOcctStatus {
-    if (session == nullptr || plane == nullptr || segments == nullptr ||
-        axis_origin == nullptr || axis_direction == nullptr ||
-        out_shape == nullptr) {
-      write_error(out_error, "fc_occt_revolve was given a null argument");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    if (full_turn != 1) {
-      write_error(out_error, "only a full turn is supported; full_turn must be 1, got " +
-                                 std::to_string(full_turn));
-      return FC_OCCT_UNSUPPORTED;
-    }
-    return revolve_profile(session, plane, segments, segment_count, axis_segment,
-                           axis_origin, axis_direction, false, 0.0, cancel,
-                           cancel_context, out_shape, out_error);
-  });
+    const FcOcctSegment *segments, size_t segment_count,
+    const size_t *loop_segment_counts, size_t loop_count,
+    const double *axis_origin, const double *axis_direction, double angle,
+    FcOcctCancelFn cancel, void *cancel_context, uint64_t *out_shape,
+    FcOcctError *out_error) noexcept {
+  if (!axis_origin || !axis_direction) return FC_OCCT_INVALID_INPUT;
+  return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
+                       loop_count, 0, 0, axis_origin, axis_direction, angle,
+                       cancel, cancel_context, out_shape, out_error);
 }
 
-FcOcctStatus fc_occt_revolve_partial(
-    FcOcctSession *session, const FcOcctPlane *plane,
-    const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
-    const double *axis_origin, const double *axis_direction,
-    double angle_radians, FcOcctCancelFn cancel, void *cancel_context,
-    uint64_t *out_shape, FcOcctError *out_error) noexcept {
-  return guarded(out_error, [&]() -> FcOcctStatus {
-    if (session == nullptr || plane == nullptr || segments == nullptr ||
-        axis_origin == nullptr || axis_direction == nullptr ||
-        out_shape == nullptr) {
-      write_error(out_error, "fc_occt_revolve_partial was given a null argument");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    // Only what building one sector needs; the caller's policy is narrower.
-    // Never widened to a full turn and never wrapped around.
-    if (!std::isfinite(angle_radians) || !(angle_radians > 0.0) ||
-        !(angle_radians < 2.0 * std::acos(-1.0))) {
-      write_error(out_error, "a partial revolution needs a finite angle strictly between 0 "
-                             "and two pi radians");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    return revolve_profile(session, plane, segments, segment_count, axis_segment,
-                           axis_origin, axis_direction, true, angle_radians, cancel,
-                           cancel_context, out_shape, out_error);
-  });
-}
-
-FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
+FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
+                         uint64_t target, uint64_t tool,
                          FcOcctCancelFn cancel, void *cancel_context,
                          uint64_t *out_shape, double *out_removed_volume,
                          FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || out_shape == nullptr ||
         out_removed_volume == nullptr) {
-      write_error(out_error, "fc_occt_cut was given a null argument");
+      write_error(out_error, "fc_occt_boolean was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
-    if (target == tool) {
+    if (kind < 0 || kind > 2) {
+      write_error(out_error, "fc_occt_boolean was given an unknown operation " +
+                                 std::to_string(kind));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const std::string operation = kind == 0 ? "cut" : kind == 1 ? "fuse" : "common";
+    if (target == tool && kind == 0) {
       write_error(out_error, "a cut needs two different shapes");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -1267,7 +979,7 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
       return FC_OCCT_UNKNOWN_HANDLE;
     }
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the cut was cancelled before it began");
+      write_error(out_error, "the " + operation + " was cancelled before it began");
       return FC_OCCT_CANCELLED;
     }
 
@@ -1276,7 +988,8 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
     GProp_GProps before;
     BRepGProp::VolumeProperties(target_found->second.shape, before);
 
-    BRepAlgoAPI_Cut algorithm;
+    BRepAlgoAPI_BooleanOperation algorithm;
+    algorithm.SetOperation(kind == 0 ? BOPAlgo_CUT : kind == 1 ? BOPAlgo_FUSE : BOPAlgo_COMMON);
     // Earlier feature results remain live and may be archived or resolved
     // after this operation. Copy any sub-shape the boolean needs to update.
     algorithm.SetNonDestructive(true);
@@ -1291,7 +1004,7 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
     algorithm.Build(range);
 
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the cut was cancelled");
+      write_error(out_error, "the " + operation + " was cancelled");
       return FC_OCCT_CANCELLED;
     }
     if (!algorithm.IsDone()) {
@@ -1316,21 +1029,22 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
     TopExp::MapShapes(produced, TopAbs_SOLID, solids);
     if (solids.Extent() != 1) {
       write_error(out_error,
-                  "a cut must leave exactly one solid, and this left " +
+                  "a " + operation + " must leave exactly one solid, and this left " +
                       std::to_string(solids.Extent()));
       return FC_OCCT_UNSUPPORTED;
     }
     const TopoDS_Shape result_shape = solids(1);
     BRepCheck_Analyzer analyzer(result_shape);
     if (!analyzer.IsValid()) {
-      write_error(out_error, "the cut produced a solid Open CASCADE calls invalid");
+      write_error(out_error,
+                  "the " + operation + " produced a solid Open CASCADE calls invalid");
       return FC_OCCT_KERNEL;
     }
 
     GProp_GProps after;
     BRepGProp::VolumeProperties(result_shape, after);
     const double removed = before.Mass() - after.Mass();
-    if (!std::isfinite(removed) || removed <= 0.0) {
+    if (!std::isfinite(removed) || (kind == 0 && removed <= 0.0)) {
       write_error(out_error,
                   "the tool removed no material, so this is not a cut");
       return FC_OCCT_UNSUPPORTED;
@@ -1349,7 +1063,30 @@ FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
-    *out_removed_volume = removed;
+    *out_removed_volume = std::max(0.0, removed);
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_projected_bounds(FcOcctSession *session, uint64_t shape,
+    const double *direction, double *out_bounds, FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (!session || !direction || !out_bounds || !finite3(direction))
+      return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    const gp_Ax3 frame(gp_Pnt(0, 0, 0), gp_Dir(direction[0], direction[1], direction[2]));
+    gp_Trsf to_frame;
+    to_frame.SetTransformation(frame);
+    Bnd_Box bounds;
+    // Analytic surfaces, without mesh deflection or per-entity tolerance inflation.
+    BRepBndLib::AddOptimal(found->second.shape.Moved(TopLoc_Location(to_frame)),
+                          bounds, false, false);
+    if (bounds.IsVoid() || bounds.IsWhole()) return FC_OCCT_KERNEL;
+    double x0, y0, z0, x1, y1, z1;
+    bounds.Get(x0, y0, z0, x1, y1, z1);
+    out_bounds[0] = z0;
+    out_bounds[1] = z1;
     return FC_OCCT_OK;
   });
 }

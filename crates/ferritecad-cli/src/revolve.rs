@@ -17,8 +17,7 @@ pub struct RevolveArgs {
     /// axis ("sketch_y"), angle ("full_turn"). v2: the same with extent
     /// ({"kind":"full_turn"} or {"kind":"angle","degrees":N}, 0.01 <= N <=
     /// 359.99) in place of angle. XY Line polygon, implicit last-to-first
-    /// closure; x is the radius: every x > 1e-6, or exactly one whole Line on
-    /// x = 0.
+    /// closure. The kernel decides whether the profile produces a valid solid.
     pub request: PathBuf,
     /// New .fcad destination; never replaced.
     #[arg(short, long)]

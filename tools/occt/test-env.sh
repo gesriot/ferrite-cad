@@ -25,6 +25,7 @@ while read -r producer consumer file; do
   export "$producer=$directory"
   if [ "$consumer" != - ]; then export "$consumer=$directory${file#-}"; fi
 done <<'ARTIFACTS'
+FCAD_SWEEP_ARTIFACTS - -
 FCAD_ANALYTIC_ARTIFACTS FCAD_ANALYTIC_SESSION_FBX_DIR -
 FCAD_ANGLE_SESSION_ARTIFACTS FCAD_ANGLE_SESSION_FBX_DIR -
 FCAD_CUT_SESSION_ARTIFACTS FCAD_CUT_SESSION_FBX_DIR -

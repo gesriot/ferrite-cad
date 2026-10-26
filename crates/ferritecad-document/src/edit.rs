@@ -30,7 +30,7 @@ impl ExtrudeEditSource {
                 content: document.content_version()?,
             },
             expression_slots: document.expression_slots()?,
-            revolves: crate::revolve_choices(document, &objects),
+            revolves: crate::revolve_choices(&objects),
             refusal: match document.copy_access()? {
                 Access::ReadOnly { reason } => Some(reason),
                 _ => None,

@@ -407,7 +407,8 @@ fn a_symmetric_end_is_written_and_left_to_the_rebuild() {
             object: cut,
             body,
             name: None,
-            feature: FeatureAddition::Cut {
+            feature: FeatureAddition::Extrude {
+                operation: ferritecad_document::SolidOperation::Cut,
                 profile,
                 end_condition: symmetric(),
                 reversed: false,
@@ -445,7 +446,8 @@ fn end_changes_and_body_tip_moves_preserve_unread_payload_fields() {
                 object: ObjectId::new(),
                 body: object.id,
                 name: None,
-                feature: FeatureAddition::Cut {
+                feature: FeatureAddition::Extrude {
+                    operation: ferritecad_document::SolidOperation::Cut,
                     profile,
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,

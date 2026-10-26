@@ -261,66 +261,14 @@ fn check_semantic_references(
                 "extrude",
                 report,
             );
-            match (extrude.operation, extrude.previous) {
-                (SolidOperation::NewBody, Some(previous)) => report.error(
-                    "feature.unused-predecessor",
-                    Some(object.id),
-                    format!(
-                        "feature {} starts a body and also names {previous} as the result it                          modifies",
-                        object.id
-                    ),
-                ),
-                (SolidOperation::NewBody, None) => {}
-                (_, None) => report.error(
-                    "feature.missing-predecessor",
-                    Some(object.id),
-                    format!(
-                        "feature {} modifies an existing solid but names no earlier feature",
-                        object.id
-                    ),
-                ),
-                (_, Some(previous)) if previous == object.id => report.error(
-                    "feature.self-predecessor",
-                    Some(object.id),
-                    format!("feature {} names itself as the result it modifies", object.id),
-                ),
-                (_, Some(previous)) => {
-                    match by_id.get(&previous) {
-                        None => report.error(
-                            "reference.missing-target",
-                            Some(object.id),
-                            format!(
-                                "feature {} modifies missing feature {previous}",
-                                object.id
-                            ),
-                        ),
-                        Some(found)
-                            if !found.payload.kind().is_some_and(ObjectKind::is_feature) =>
-                        {
-                            report.error(
-                                "reference.wrong-kind",
-                                Some(object.id),
-                                format!(
-                                    "feature {} expects {previous} to be a feature, found {}",
-                                    object.id,
-                                    found.payload.type_name()
-                                ),
-                            );
-                        }
-                        Some(_) => {}
-                    }
-                    if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
-                        report.error(
-                            "reference.missing-edge",
-                            Some(object.id),
-                            format!(
-                                "feature {} modifies {previous} but no predecessor dependency                                  records it",
-                                object.id
-                            ),
-                        );
-                    }
-                }
-            }
+            check_sweep_predecessor(
+                object,
+                extrude.operation,
+                extrude.previous,
+                by_id,
+                edges,
+                report,
+            );
         }
         // §29A: a Chamfer consumes an earlier feature's result exactly as a
         // Fillet does, and cuts an edge of that very feature.
@@ -470,6 +418,28 @@ fn check_semantic_references(
             }
         }
         ObjectPayload::Revolve(revolve) => {
+            check_sweep_predecessor(
+                object,
+                revolve.operation,
+                revolve.previous,
+                by_id,
+                edges,
+                report,
+            );
+            if let crate::RevolveAxis::Line(line) = revolve.axis {
+                let found = by_id.get(&revolve.profile).and_then(|o| match &o.payload {
+                    ObjectPayload::Sketch(s) => s.curves.iter().find(|c| c.id == line),
+                    _ => None,
+                });
+                if !found.is_some_and(|c| matches!(c.geometry, crate::SketchGeometry::Line { .. }))
+                {
+                    report.error(
+                        "revolve.axis",
+                        Some(object.id),
+                        format!("revolve axis {line} is not a Line of its profile sketch"),
+                    );
+                }
+            }
             require(
                 revolve.profile,
                 DependencyRole::Profile,
@@ -527,7 +497,10 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     let mut owners: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
     for object in objects {
         match &object.payload {
-            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) | ObjectPayload::Chamfer(_) => {
+            ObjectPayload::Extrude(_)
+            | ObjectPayload::Revolve(_)
+            | ObjectPayload::Fillet(_)
+            | ObjectPayload::Chamfer(_) => {
                 if let Some(previous) = object.payload.previous_feature() {
                     consumers.entry(previous).or_default().push(object.id);
                 }
@@ -547,7 +520,8 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
                 "feature.forked-history",
                 Some(feature),
                 format!(
-                    "features {} all modify {feature}, and a body has one history rather than                      several",
+                    "features {} all modify {feature}, and a body has one history rather than \
+                         several",
                     claimants
                         .iter()
                         .map(ObjectId::to_string)
@@ -564,7 +538,8 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
                 "body.shared-tip",
                 Some(feature),
                 format!(
-                    "bodies {} all expose {feature} as their tip, so one solid would appear as                      several",
+                    "bodies {} all expose {feature} as their tip, so one solid would appear as \
+                         several",
                     bodies
                         .iter()
                         .map(ObjectId::to_string)
@@ -581,9 +556,10 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     let predecessors: BTreeMap<_, _> = objects
         .iter()
         .filter_map(|object| match &object.payload {
-            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) | ObjectPayload::Chamfer(_) => {
-                Some((object.id, object.payload.previous_feature()))
-            }
+            ObjectPayload::Extrude(_)
+            | ObjectPayload::Revolve(_)
+            | ObjectPayload::Fillet(_)
+            | ObjectPayload::Chamfer(_) => Some((object.id, object.payload.previous_feature())),
             _ => None,
         })
         .collect();
@@ -635,6 +611,76 @@ fn check_parent_cycles(objects: &[crate::document::ObjectRecord], report: &mut V
                 break;
             }
             current = parents.get(&id).copied().flatten();
+        }
+    }
+}
+
+fn check_sweep_predecessor(
+    object: &crate::ObjectRecord,
+    operation: SolidOperation,
+    previous: Option<ObjectId>,
+    by_id: &BTreeMap<ObjectId, &crate::ObjectRecord>,
+    edges: &BTreeSet<(ObjectId, ObjectId, DependencyRole)>,
+    report: &mut ValidationReport,
+) {
+    match (operation, previous) {
+        (SolidOperation::NewBody, Some(previous)) => report.error(
+            "feature.unused-predecessor",
+            Some(object.id),
+            format!(
+                "feature {} starts a body and also names {previous} as the result it \
+                         modifies",
+                object.id
+            ),
+        ),
+        (SolidOperation::NewBody, None) => {}
+        (_, None) => report.error(
+            "feature.missing-predecessor",
+            Some(object.id),
+            format!(
+                "feature {} modifies an existing solid but names no earlier feature",
+                object.id
+            ),
+        ),
+        (_, Some(previous)) if previous == object.id => report.error(
+            "feature.self-predecessor",
+            Some(object.id),
+            format!(
+                "feature {} names itself as the result it modifies",
+                object.id
+            ),
+        ),
+        (_, Some(previous)) => {
+            match by_id.get(&previous) {
+                None => report.error(
+                    "reference.missing-target",
+                    Some(object.id),
+                    format!("feature {} modifies missing feature {previous}", object.id),
+                ),
+                Some(found) if !found.payload.kind().is_some_and(ObjectKind::is_feature) => {
+                    report.error(
+                        "reference.wrong-kind",
+                        Some(object.id),
+                        format!(
+                            "feature {} expects {previous} to be a feature, found {}",
+                            object.id,
+                            found.payload.type_name()
+                        ),
+                    );
+                }
+                Some(_) => {}
+            }
+            if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
+                report.error(
+                    "reference.missing-edge",
+                    Some(object.id),
+                    format!(
+                        "feature {} modifies {previous} but no predecessor dependency \
+                                 records it",
+                        object.id
+                    ),
+                );
+            }
         }
     }
 }

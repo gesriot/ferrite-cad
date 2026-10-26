@@ -216,41 +216,11 @@ fn native_full_turn_revolutions_are_what_pappus_and_their_lines_say() {
 }
 
 #[test]
-fn native_revolve_refuses_the_axis_other_kinds_and_cancellation() {
+fn native_revolve_honours_cancellation() {
     if !native() {
         return;
     }
     let mut kernel = OcctKernel::new().expect("kernel");
-    let context = OperationContext::default();
-    // Touching and crossing the axis are refused by the bridge itself, even
-    // though the caller's policy would have refused them first.
-    for points in [
-        [[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-        [[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
-    ] {
-        let (request, _) = request(&points).expect("request");
-        let error = kernel.revolve(&request, &context).expect_err("axis");
-        assert_eq!(error.kind(), ErrorKind::Input, "{error}");
-        assert!(error.to_string().contains("axis"), "{error}");
-    }
-    // Only Lines.
-    let arc = Profile::new(
-        SketchPlane::world_xy(),
-        ProfileLoop::closed_curve(ProfileSegment::new(
-            StableEntityId::new(),
-            SegmentGeometry::circle(PlanarPoint::new(10., 5.).expect("point"), 2.).expect("circle"),
-        ))
-        .expect("loop"),
-        Vec::new(),
-    )
-    .expect("profile");
-    let error = kernel
-        .revolve(
-            &RevolveRequest::new(arc, RevolveAxis::PlaneY, RevolveTurn::Full),
-            &context,
-        )
-        .expect_err("a circle");
-    assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
     // Cancelled before anything is built: nothing is left behind.
     let token = CancelToken::new();
     token.cancel();
@@ -306,23 +276,13 @@ fn native_a_revolution_survives_the_named_archive_face_by_face() {
     assert_eq!(kernel.live_shape_count(), 0);
 }
 
-/// §27C: the checked request for a profile closed on the axis along the Line
-/// that starts at `axis` in `points`.
-fn solid_request(points: &[[f64; 2]], axis: usize) -> (RevolveRequest, Vec<StableEntityId>) {
-    let (request, labels) = request(points).expect("request");
-    let request = request
-        .with_axis_segment(labels[axis])
-        .expect("a segment of this profile");
-    (request, labels)
-}
-
 /// A solid part: the stated axis Line raises nothing; every other Line
 /// raises its own face — plane, cylinder or cone on the Y axis — and the
 /// solid has exactly those faces and the analytic volume.
 fn check_solid(points: &[[f64; 2]], axis: usize, volume: f64) {
     let mut kernel = OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
-    let (request, labels) = solid_request(points, axis);
+    let (request, labels) = request(points).expect("request");
     let result = kernel.revolve(&request, &context).expect("revolve");
     let (faces, measured) = kernel.shape_stats(result.shape).expect("stats");
     assert!(
@@ -423,36 +383,14 @@ fn native_axis_closed_revolutions_are_solid_and_name_every_line_but_the_axis() {
 }
 
 #[test]
-fn native_axis_closed_requests_are_checked_not_trusted() {
+fn native_axis_line_has_deleted_ancestry_and_no_invented_face() {
     if !native() {
         return;
     }
     let mut kernel = OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
     let cylinder = [[0., 0.], [10., 0.], [10., 15.], [0., 15.]];
-    // The Line on the axis, not stated: refused as before.
-    let (undeclared, _) = request(&cylinder).expect("request");
-    let error = kernel
-        .revolve(&undeclared, &context)
-        .expect_err("undeclared");
-    assert!(error.to_string().contains("lies on the axis"), "{error}");
-    // A stated axis Line that is not on the axis.
-    let (off, _) = solid_request(&cylinder, 1);
-    // Vertices are checked in order, so the true axis vertex 0 may be
-    // refused as unstated before the stated one is found off the axis.
-    let error = kernel.revolve(&off, &context).expect_err("off the axis");
-    assert_eq!(error.kind(), ErrorKind::Input);
-    assert!(
-        ["not on the axis", "lies on the axis"]
-            .iter()
-            .any(|m| error.to_string().contains(m)),
-        "{error}"
-    );
-    // A part with a bore cannot state an axis Line.
-    let (bore, _) = solid_request(&[[4., 0.], [10., 0.], [10., 15.], [4., 15.]], 3);
-    let error = kernel.revolve(&bore, &context).expect_err("a bore");
-    assert!(error.to_string().contains("not on the axis"), "{error}");
-    let (solid, labels) = solid_request(&cylinder, 3);
+    let (solid, labels) = request(&cylinder).expect("request");
     let result = kernel.revolve(&solid, &context).expect("revolve");
     let producer = ferritecad_types::ObjectId::new();
     let map =
@@ -477,15 +415,6 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
     )));
     assert_eq!(map.features[&producer].named_face_count(), 3);
     kernel.release(result.shape);
-    // A label from another profile is refused before any kernel work.
-    let (plain, _) = request(&cylinder).expect("request");
-    assert_eq!(
-        plain
-            .with_axis_segment(StableEntityId::new())
-            .expect_err("foreign")
-            .kind(),
-        ErrorKind::Input
-    );
     assert_eq!(kernel.live_shape_count(), 0);
 }
 
@@ -495,14 +424,7 @@ fn partial_request(points: &[[f64; 2]], degrees: f64) -> (RevolveRequest, Vec<St
     let (full, labels) = request(points).expect("request");
     let turn = RevolveTurn::Partial(PartialTurn::new(degrees.to_radians()).expect("a sector"));
     let partial = RevolveRequest::new(full.profile().clone(), RevolveAxis::PlaneY, turn);
-    let n = points.len();
-    match (0..n).find(|&i| points[i][0] == 0. && points[(i + 1) % n][0] == 0.) {
-        Some(axis) => (
-            partial.with_axis_segment(labels[axis]).expect("axis Line"),
-            labels,
-        ),
-        None => (partial, labels),
-    }
+    (partial, labels)
 }
 
 /// The outward normal and area of one face, from the kernel's own mesh: the
@@ -571,7 +493,9 @@ fn native_partial_revolutions_name_two_caps_from_the_sweep_history() {
         for drawn in [points.clone(), points.iter().rev().copied().collect()] {
             for degrees in [90., 180., 270., 137.5] {
                 let (request, labels) = partial_request(&drawn, degrees);
-                let axis = request.axis_segment();
+                let axis = (0..drawn.len())
+                    .find(|&i| drawn[i][0] == 0. && drawn[(i + 1) % drawn.len()][0] == 0.)
+                    .map(|i| labels[i]);
                 let result = kernel.revolve(&request, &context).expect("a sector");
                 let (faces, volume) = kernel.shape_stats(result.shape).expect("stats");
                 let expected = full * degrees / 360.;

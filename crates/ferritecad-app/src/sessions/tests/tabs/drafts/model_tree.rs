@@ -590,7 +590,6 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
         &rp,
         &[[2., 0.], [8., 0.], [8., 10.], [2., 10.]],
         210.,
-        None,
     );
     let rs = crate::sketch_facts::read(&rp).expect("reading");
     for (path, id, edit) in [

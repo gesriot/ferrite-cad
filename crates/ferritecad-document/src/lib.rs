@@ -48,18 +48,13 @@ pub use chamfer::{
     ChamferCorner, MIN_DISTANCE_MM, MIN_FLAT_MM, check_distance_value, evaluable_chamfer,
     max_distance_of,
 };
-pub use cut_boundary::{
-    BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance, circle_clearances,
-};
-pub const WALL_CLEARANCE_MM: f64 = ferritecad_types::Tolerance::DEFAULT_LINEAR;
+pub use cut_boundary::{BoundaryOrientation, BoundarySegment, CutBoundary};
 pub use fillet::{
     FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, check_pair,
     check_radius_value, corner_for, evaluable_fillet, pair_bound, rectangle_corners, shared_side,
 };
-pub use polygon::{
-    AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
-};
-pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices, stated_revolution};
+pub use polygon::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
+pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices};
 pub use sketch_changes::{SketchVertex, move_sketch_vertices, validate_sketch_changes};
 
 mod envelope;

@@ -23,8 +23,8 @@
 
 use ferritecad_document::CacheStore;
 use ferritecad_kernel::{
-    ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, chamfer_cache_key,
-    cut_cache_key, extrude_cache_key, fillet_cache_key, revolve_cache_key,
+    ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, boolean_cache_key,
+    chamfer_cache_key, extrude_cache_key, fillet_cache_key, revolve_cache_key,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
 use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
@@ -52,15 +52,28 @@ pub fn revolve_archive_key(
     revolve_cache_key(kernel, request, context)
 }
 
+/// The unresolved ThroughAll tool; the boolean key supplies its target geometry.
+pub(crate) fn through_all_profile_key(
+    profile: &ferritecad_kernel::Profile,
+    reversed: bool,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("eval.through_all.profile");
+    hasher.algorithm_version(1);
+    profile.feed(&mut hasher);
+    hasher.field("reversed").bool(reversed);
+    hasher.finish()
+}
+
 /// Where a cut's archive lives in the sidecar.
 ///
 /// Both inputs are named by their own keys rather than by their handles, so the
 /// entry moves when either input does — a different plate, a different tool, a
 /// different tolerance or a different kernel are all different results. The
 /// algorithm version and the kernel identity are folded in by
-/// [`cut_cache_key`] itself.
-pub fn cut_archive_key(
+/// [`boolean_cache_key`] itself.
+pub fn boolean_archive_key(
     kernel: &KernelIdentity,
+    kind: ferritecad_kernel::BooleanKind,
     previous: ObjectId,
     target_key: &ContentHash,
     tool_key: &ContentHash,
@@ -69,18 +82,18 @@ pub fn cut_archive_key(
 ) -> ContentHash {
     // Geometry alone cannot key names: changing a predecessor UUID without
     // changing its drawing must not restore bindings to the old producer.
-    let mut hasher = CanonicalHasher::new("eval.cut.named");
+    let mut hasher = CanonicalHasher::new("eval.boolean.named");
     hasher.algorithm_version(1);
     hasher.field("previous").bytes(&previous.to_bytes());
-    // Fed only for ThroughAll, so every Blind key is the key it always was.
-    // The tool key already moves with the computed length; this keeps a
-    // ThroughAll archive from ever answering a Blind request of equal numbers.
+    // Extent semantics remain distinct even when the computed tool lengths agree.
+    // ThroughAll resolves its length only on a miss: the target key already
+    // determines the bounds. Its profile key does not query the kernel.
     if through_all {
         hasher.field("through_all").bool(true);
     }
     hasher
         .field("geometry")
-        .bytes(cut_cache_key(kernel, target_key, tool_key, context).as_bytes());
+        .bytes(boolean_cache_key(kernel, kind, target_key, tool_key, context).as_bytes());
     hasher.finish()
 }
 
@@ -234,26 +247,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn named_cut_cache_keys_include_predecessor_identity() {
+    fn named_boolean_cache_keys_include_predecessor_identity() {
         let kernel = KernelIdentity::new("test", "1", "test").expect("identity");
         let target = ContentHash::of_bytes(b"same plate geometry and curve UUIDs");
         let tool = ContentHash::of_bytes(b"same tool geometry");
         let a = ObjectId::new();
         let b = ObjectId::new();
         let context = OperationContext::default();
-        let one = cut_archive_key(&kernel, a, &target, &tool, false, &context);
-        let other = cut_archive_key(&kernel, b, &target, &tool, false, &context);
+        let one = boolean_archive_key(
+            &kernel,
+            ferritecad_kernel::BooleanKind::Cut,
+            a,
+            &target,
+            &tool,
+            false,
+            &context,
+        );
+        let other = boolean_archive_key(
+            &kernel,
+            ferritecad_kernel::BooleanKind::Cut,
+            b,
+            &target,
+            &tool,
+            false,
+            &context,
+        );
         assert_ne!(
             one, other,
             "same geometry must not restore another producer's names"
         );
         assert_ne!(
-            cut_archive_key(&kernel, a, &one, &tool, false, &context),
-            cut_archive_key(&kernel, a, &other, &tool, false, &context),
+            boolean_archive_key(
+                &kernel,
+                ferritecad_kernel::BooleanKind::Cut,
+                a,
+                &one,
+                &tool,
+                false,
+                &context
+            ),
+            boolean_archive_key(
+                &kernel,
+                ferritecad_kernel::BooleanKind::Cut,
+                a,
+                &other,
+                &tool,
+                false,
+                &context
+            ),
             "the origin change propagates through the dependent chain"
         );
         assert_ne!(
-            cut_archive_key(&kernel, a, &target, &tool, true, &context),
+            boolean_archive_key(
+                &kernel,
+                ferritecad_kernel::BooleanKind::Cut,
+                a,
+                &target,
+                &tool,
+                true,
+                &context
+            ),
             one,
             "a ThroughAll archive never answers a Blind cut of the same tool"
         );

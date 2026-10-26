@@ -551,20 +551,7 @@ fn populate_profile(
     })
 }
 
-/// Puts one full-turn revolution into an empty document.
-///
-/// The same four objects a drawn extrusion has — datum plane, Sketch, feature,
-/// Body — with a [`Revolve`] as the feature: the profile, the named axis and
-/// the named full turn. One `RevolveFace` reference per Line names the face
-/// that Line turns into, by the Line's own identity; the cold check before
-/// publication requires every one of them to resolve.
-///
-/// §27C: for a solid part closed on the axis, the Line on the axis is named
-/// in the Revolve itself (`axis_segment`) and gets no reference — it turns into
-/// nothing, and nothing is invented for it.
-///
-/// §27D: a partial turn also gets one `RevolveCap` reference for each of its
-/// two end faces, owned by the Revolve; a full turn has none and gets none.
+/// Populate the create-revolve template; rebuilding checks the resulting solid.
 fn populate_revolve(
     document: &mut Document,
     revolution: &FullTurnRevolution,
@@ -587,7 +574,6 @@ fn populate_revolve(
             },
         })
         .collect();
-    let axis_segment = revolution.axis_line().map(|index| curves[index].id);
 
     document.write(|writer| {
         writer.put_object(
@@ -625,7 +611,7 @@ fn populate_revolve(
                 axis: RevolveAxis::SketchY,
                 extent: extent.clone(),
                 operation: SolidOperation::NewBody,
-                axis_segment,
+                previous: None,
             }),
         )?;
         writer.put_object(

@@ -240,7 +240,7 @@ fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> C
     )
     .expect("converts")
     .profile;
-    let request = extrude_request(&feature, profile).expect("converts");
+    let request = extrude_request(&feature, profile, None).expect("converts");
     let mut names = ferritecad_topology::ModelNaming::new();
     names
         .prepare(&objects.into_iter().map(|o| (o.id, o)).collect())
@@ -504,7 +504,11 @@ fn a_later_failure_keeps_what_the_cache_restored() {
         built.status(plate.second),
         Some(ferritecad_eval::RebuildStatus::Failed { .. })
     ));
-    assert_eq!(kernel.extrude_count(), 0, "the first feature was restored");
+    assert_eq!(
+        kernel.extrude_count(),
+        1,
+        "only the Add tool was built; its predecessor was restored"
+    );
     assert_eq!(kernel.live_shape_count(), 1);
     let warm_report = built.report();
     built.release_all(&mut kernel);

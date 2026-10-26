@@ -68,7 +68,12 @@ impl RequestFacts for EditRequest {
             .find_map(|c| match c {
                 EditChange::SetEndCondition { end_condition, .. } => Some(end_condition),
                 EditChange::AddFeature {
-                    feature: FeatureAddition::Cut { end_condition, .. },
+                    feature:
+                        FeatureAddition::Extrude {
+                            operation: ferritecad_document::SolidOperation::Cut,
+                            end_condition,
+                            ..
+                        },
                     ..
                 } => Some(end_condition),
                 _ => None,
