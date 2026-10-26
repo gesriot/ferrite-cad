@@ -32,7 +32,7 @@
 mod cache;
 mod cold;
 mod convert;
-mod cut_contact;
+
 mod dirty;
 mod document_graph;
 mod plan;
@@ -40,14 +40,13 @@ mod presentation;
 mod solve;
 
 pub use cache::{
-    chamfer_archive_key, cut_archive_key, extrude_archive_key, fillet_archive_key,
+    boolean_archive_key, chamfer_archive_key, extrude_archive_key, fillet_archive_key,
     load_extrude_archive, load_feature_archive, revolve_archive_key, store_extrude_archive,
     store_feature_archive,
 };
 pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};
 pub use convert::{
-    Reach, SketchEvaluation, cut_tool_request, extrude_request, plane_from_datum,
-    profile_from_sketch, revolve_request,
+    SketchEvaluation, extrude_request, plane_from_datum, profile_from_sketch, revolve_request,
 };
 pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;

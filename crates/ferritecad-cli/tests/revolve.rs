@@ -351,7 +351,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             }),
         )?;
         w.put_object(

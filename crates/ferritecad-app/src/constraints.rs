@@ -22,36 +22,26 @@ const HISTORY_LIMIT: usize = 128;
 /// The line naming the Revolve that turns a constrained profile, or `None`
 /// for an extruded one.
 fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
-    let (feature, turn, axis_segment) = match profile_use {
-        SketchProfileUse::FullTurnRevolve {
-            feature,
-            axis_segment,
-            ..
-        } => (feature, "a full turn".to_owned(), axis_segment),
+    let (feature, turn, axis) = match profile_use {
+        SketchProfileUse::FullTurnRevolve { feature, axis, .. } => {
+            (feature, "a full turn".to_owned(), axis)
+        }
         SketchProfileUse::PartialRevolve {
             feature,
             radians: angle,
-            axis_segment,
+            axis,
             ..
         } => (
             feature,
             format!("{}°", ferritecad_types::display_degrees(angle.radians())),
-            axis_segment,
+            axis,
         ),
         SketchProfileUse::BlindExtrude { .. } => return None,
     };
-    Some(match axis_segment {
-        None => format!(
-            "Profile of Revolve {feature}: {turn} about the sketch Y axis. The turn and the \
-             axis are kept; the solved profile must keep its bore clear of the axis."
-        ),
-        // §27H: nothing is snapped to the axis, so say what keeps it there.
-        Some(axis) => format!(
-            "Profile of Revolve {feature}: {turn} about the sketch Y axis, closed on the axis \
-             along Line {axis}. The turn and that Line are kept; the solved Line must lie \
-             exactly on the axis — pin one of its ends at X 0 and keep it vertical."
-        ),
-    })
+    Some(format!(
+        "Profile of Revolve {feature}: {turn} about {axis:?}. \
+        Apply rebuilds the feature and its dependents."
+    ))
 }
 
 /// Only pending requests belong to history, never selection or solver results.

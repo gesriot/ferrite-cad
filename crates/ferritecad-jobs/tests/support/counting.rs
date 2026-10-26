@@ -216,7 +216,11 @@ impl GeometryKernel for CountingMock {
         self.revolve_count += 1;
         Ok(self.sweep(request.profile(), NamingOperation::Revolve))
     }
-    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult> {
+    fn boolean(
+        &mut self,
+        request: &BooleanRequest,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         Ok(self.carry(
             &[request.target(), request.tool()],

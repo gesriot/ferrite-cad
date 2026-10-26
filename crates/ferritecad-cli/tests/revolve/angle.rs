@@ -389,7 +389,7 @@ pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
                         .expect("angle"),
                 },
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             }),
         )?;
 

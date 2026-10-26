@@ -267,7 +267,7 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
         let before = std::fs::read(&path).expect("bytes");
         let dest = root.path().join("never.fcad");
         let feature = history::ordered(&path)[selected].feature;
-        for gap in [0., 0.5 * ferritecad_document::WALL_CLEARANCE_MM] {
+        for gap in [0., 0.5 * ferritecad_types::Tolerance::DEFAULT_LINEAR] {
             let v = vertices(
                 &base,
                 [[4. - tools[selected].radius_mm - gap, 0.], [80., 50.]],

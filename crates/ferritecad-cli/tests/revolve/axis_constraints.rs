@@ -449,9 +449,9 @@ fn axis_closed_constraint_discovery_writer_and_refusals_without_solver() {
     let d = tempfile::tempdir().expect("dir");
     let root = d.path();
     let solid = root.join("solid.fcad");
-    let labels = write_solid_document(&solid, &CYLINDER_T, Some(3));
+    let labels = write_solid_document(&solid, &CYLINDER_T);
     let solid_sector = root.join("solid-sector.fcad");
-    let sector_labels = write_solid_document(&solid_sector, &CYLINDER_T, Some(3));
+    let sector_labels = write_solid_document(&solid_sector, &CYLINDER_T);
     rewrite_revolve(&solid_sector, |r| {
         r.extent = RevolveExtent::Partial {
             angle: ferritecad_document::Expression::constant(f64::to_radians(SHAFT_DEG))

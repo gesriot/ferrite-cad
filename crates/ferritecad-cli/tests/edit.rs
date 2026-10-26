@@ -349,7 +349,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
                     angle: Expression::constant(std::f64::consts::PI)?,
                 },
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                previous: None,
             })
         } else {
             ObjectPayload::Extrude(Extrude {

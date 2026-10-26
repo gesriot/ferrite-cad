@@ -247,8 +247,8 @@ fn a_feature_this_slice_cannot_build_fails_without_leaking() {
                     profile: plate.sketch,
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
-                    operation: SolidOperation::NewBody,
-                    previous: None,
+                    operation: SolidOperation::Cut,
+                    previous: Some(plate.extrude),
                 }),
             )?;
             w.add_dependency(Dependency {

@@ -47,12 +47,7 @@ const SHAFT_WIDE: [[f64; 2]; 6] = [
 
 /// The standalone Revolve frame, written without a kernel. `axis` is the
 /// index of the stated axis Line of a solid part.
-pub(crate) fn write_sector(
-    path: &Path,
-    points: &[[f64; 2]],
-    degrees: f64,
-    axis: Option<usize>,
-) -> ObjectId {
+pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
     let n = points.len();
@@ -102,7 +97,7 @@ pub(crate) fn write_sector(
                     angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))?,
                 },
                 operation: SolidOperation::NewBody,
-                axis_segment: axis.map(|i| labels[i]),
+                previous: None,
             }),
         )?;
         w.put_object(
@@ -214,14 +209,14 @@ fn expected_sector(curves: &[SketchCurve]) -> Vec<AddSketchConstraint> {
 fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
     let root = tempfile::tempdir().expect("dir");
     let path = root.path().join("sector.fcad");
-    let revolve = write_sector(&path, &SECTOR_P, 137.5, None);
+    let revolve = write_sector(&path, &SECTOR_P, 137.5);
     let source = reading(&path);
     let choice = &source.constraint_sketches[0];
     assert_eq!(choice.refusal, None);
     assert_eq!(choice.height_mm, None, "a Revolve has no height");
     let Some(SketchProfileUse::PartialRevolve {
         feature,
-        axis_segment: None,
+        axis: ferritecad_document::RevolveAxis::SketchY,
         radians: angle,
         ..
     }) = choice.profile_use
@@ -548,7 +543,7 @@ fn expected_shaft(curves: &[SketchCurve]) -> Vec<AddSketchConstraint> {
 fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     let root = tempfile::tempdir().expect("dir");
     let path = root.path().join("shaft.fcad");
-    let revolve = write_sector(&path, &SHAFT_T, 137.5, Some(5));
+    let revolve = write_sector(&path, &SHAFT_T, 137.5);
     let source = reading(&path);
     let choice = &source.constraint_sketches[0];
     assert_eq!(choice.refusal, None);
@@ -557,7 +552,7 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     let axis = curves[5].id;
     let Some(SketchProfileUse::PartialRevolve {
         feature,
-        axis_segment: Some(stated),
+        axis: stated,
         radians: angle,
         ..
     }) = choice.profile_use
@@ -566,7 +561,7 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     };
     assert_eq!(
         (feature, stated, angle.radians().to_degrees()),
-        (revolve, axis, 137.5)
+        (revolve, ferritecad_document::RevolveAxis::SketchY, 137.5)
     );
     let mut e = Editor::default();
     assert!(e.begin(&path, &source, choice.sketch));
@@ -754,7 +749,7 @@ fn native_axis_closed_worker_and_cli_publish_the_same_solved_shaft() {
     assert!(matches!(
         choice.profile_use,
         Some(SketchProfileUse::PartialRevolve {
-            axis_segment: Some(_),
+            axis: ferritecad_document::RevolveAxis::SketchY,
             ..
         })
     ));

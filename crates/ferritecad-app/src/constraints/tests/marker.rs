@@ -1888,7 +1888,7 @@ fn the_target_row_keeps_five_targets_and_fit_beside_rule_in_one_row_and_dimensio
         ),
     ] {
         let path = dir.path().join(format!("{axis:?}.fcad"));
-        super::revolve::write_sector(&path, &points, 137.5, axis);
+        super::revolve::write_sector(&path, &points, 137.5);
         let source = super::revolve::reading(&path);
         let choice = &source.constraint_sketches[0];
         let stored = choice.stored.clone().expect("stored");

@@ -394,7 +394,6 @@ pub(super) fn form_families(quit: bool) {
         &sector,
         &crate::sketch::tests::angle_apply::RADIAL,
         137.5,
-        None,
     );
     // All saved-object branches of Editor::saved_object_open, including Add/Edit.
     for (kind, path) in [

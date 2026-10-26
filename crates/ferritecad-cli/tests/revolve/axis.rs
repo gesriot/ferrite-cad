@@ -82,14 +82,13 @@ fn measure_solid(
         ferritecad_eval::rebuild_cold(&d, &mut kernel, &context).expect("cold")
     };
     let objects = d.objects().expect("objects");
-    let (revolve, axis) = objects
+    let revolve = objects
         .iter()
         .find_map(|o| match &o.payload {
-            ObjectPayload::Revolve(r) => Some((o.id, r.axis_segment)),
+            ObjectPayload::Revolve(_) => Some(o.id),
             _ => None,
         })
         .expect("revolve");
-    let axis = axis.expect("a solid part states its axis Line");
     let body = objects
         .iter()
         .find_map(|o| matches!(o.payload, ObjectPayload::Body(_)).then_some(o.id))
@@ -122,6 +121,11 @@ fn measure_solid(
             _ => None,
         })
         .expect("profile");
+    let axis = *lines
+        .iter()
+        .find(|(_, (a, b))| a[0] == 0. && b[0] == 0.)
+        .expect("fixture has a Line on the axis")
+        .0;
     let (a, b) = lines[&axis];
     assert_eq!(
         (a[0], b[0]),
@@ -501,7 +505,7 @@ fn native_solid_revolution_refusals_are_atomic() {
     }
     let d = tempfile::tempdir().expect("dir");
     collapsed_float_faces_refuse_publication(d.path());
-    let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
+    let clear = 1e-6;
     // Creation: each exits 2 and writes nothing.
     let out = d.path().join("never.fcad");
     let input = d.path().join("refused.json");
@@ -656,7 +660,7 @@ fn native_solid_revolution_refusals_are_atomic() {
     assert_eq!(std::fs::read(&taken).expect("taken"), b"keep");
     // Coordinate transactions keep constraints and let the solver rebuild them.
     let constrained = d.path().join("constrained.fcad");
-    let labels = write_solid_document(&constrained, &CYLINDER, Some(3));
+    let labels = write_solid_document(&constrained, &CYLINDER);
     rewrite_sketch(&constrained, |sketch| {
         sketch
             .constraints
@@ -780,16 +784,11 @@ fn collapsed_float_faces_refuse_publication(directory: &Path) {
 /// A solid Revolve document written without any kernel, the way §27A's
 /// kernel-free test writes a bored one: the stated axis Line in the payload,
 /// and one RevolveFace per other Line.
-pub(super) fn write_solid_document(
-    path: &Path,
-    points: &[[f64; 2]],
-    stated_axis: Option<usize>,
-) -> Vec<StableEntityId> {
+pub(super) fn write_solid_document(path: &Path, points: &[[f64; 2]]) -> Vec<StableEntityId> {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
     let n = points.len();
     let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
-    let axis = stated_axis.map(|i| labels[i]);
     d.write(|w| {
         w.put_object(
             plane,
@@ -833,7 +832,7 @@ pub(super) fn write_solid_document(
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
-                axis_segment: axis,
+                previous: None,
             }),
         )?;
         w.put_object(

@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ChamferRequest, CutRequest, ExtrudeExtent, ExtrudeRequest, FaceSurface,
-    FilletRequest, GeometryKernel, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange,
-    MeshVertexRange, MeshVertices, OperationContext, OperationResult, ProfileLoop, ProfileSegment,
-    RevolveAxis, RevolveRequest, RevolveTurn, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
-    SubShapeHandle, SubShapeKind, TessellationParams,
+    ArchiveSlot, BooleanRequest, BrepBlob, ChamferRequest, ExtrudeExtent, ExtrudeRequest,
+    FaceSurface, FilletRequest, GeometryKernel, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
+    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, OperationResult, ProfileLoop,
+    ProfileSegment, RevolveAxis, RevolveRequest, RevolveTurn, SegmentGeometry, SessionId,
+    ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, Result, Transform};
 
@@ -430,15 +430,37 @@ impl GeometryKernel for OcctKernel {
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let profile = request.profile();
-        if !profile.inner().is_empty() || profile.outer().is_closed_curve() {
-            return Err(CadError::unsupported(
-                "a revolution is built from one closed loop of Lines",
-            ));
-        }
         let plane = profile.plane();
         // The axis is the request's, stated in the plane's own terms and
         // placed in model space here, where the plane is.
         let (axis_origin, axis_direction) = match request.axis() {
+            RevolveAxis::PlaneX => {
+                let o = plane.origin();
+                let d = plane.x_axis();
+                ([o.x, o.y, o.z], [d.x, d.y, d.z])
+            }
+            RevolveAxis::Line { start, end } => {
+                let o = plane.origin();
+                let x = plane.x_axis();
+                let y = plane.y_axis();
+                let dx = end.x - start.x;
+                let dy = end.y - start.y;
+                if dx.hypot(dy) == 0. {
+                    return Err(CadError::input("revolution axis Line has no length"));
+                }
+                (
+                    [
+                        o.x + x.x * start.x + y.x * start.y,
+                        o.y + x.y * start.x + y.y * start.y,
+                        o.z + x.z * start.x + y.z * start.y,
+                    ],
+                    [
+                        x.x * dx + y.x * dy,
+                        x.y * dx + y.y * dy,
+                        x.z * dx + y.z * dy,
+                    ],
+                )
+            }
             RevolveAxis::PlaneY => {
                 let origin = plane.origin();
                 let y = plane.y_axis();
@@ -461,56 +483,30 @@ impl GeometryKernel for OcctKernel {
                 )));
             }
         };
-        let drawn = profile.outer().segments();
-        let mut segments = Vec::with_capacity(drawn.len());
-        for segment in drawn {
-            if !matches!(segment.geometry, SegmentGeometry::Line { .. }) {
-                return Err(CadError::unsupported(
-                    "a revolution is built from Lines only",
-                ));
-            }
-            segments.push(segment_of(&segment.geometry));
-        }
-
-        // The segment the caller's policy put on the axis, by its label; the
-        // bridge checks that it is, and that it alone raises no face.
-        let axis_segment = match request.axis_segment() {
-            Some(label) => Some(
-                drawn
-                    .iter()
-                    .position(|segment| segment.label == label)
-                    .ok_or_else(|| {
-                        CadError::input(format!("axis segment {label} is not in the profile"))
-                    })?,
-            ),
-            None => None,
-        };
+        let segments: Vec<_> = profile
+            .segments()
+            .map(|s| segment_of(&s.geometry))
+            .collect();
+        let loops: Vec<_> = std::iter::once(profile.outer())
+            .chain(profile.inner())
+            .map(|l| l.segments().len())
+            .collect();
         context.progress().report(0.0);
-        let raw = match partial {
-            None => self.session.revolve_full_turn(
-                &plane_of(plane),
-                &segments,
-                axis_segment,
-                axis_origin,
-                axis_direction,
-                context.cancel(),
-            )?,
-            Some(radians) => self.session.revolve_partial(
-                &plane_of(plane),
-                &segments,
-                axis_segment,
-                axis_origin,
-                axis_direction,
-                radians,
-                context.cancel(),
-            )?,
-        };
+        let raw = self.session.revolve(
+            &plane_of(plane),
+            &segments,
+            &loops,
+            axis_origin,
+            axis_direction,
+            partial.unwrap_or(std::f64::consts::TAU),
+            context.cancel(),
+        )?;
         context.progress().report(1.0);
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Revolve);
         self.naming_curves
-            .insert(shape, drawn.iter().map(|s| s.label).collect());
+            .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
             Ok(OperationResult {
@@ -585,7 +581,7 @@ impl GeometryKernel for OcctKernel {
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
-            .insert(shape, drawn.iter().map(|s| s.label).collect());
+            .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
             Ok(OperationResult {
@@ -600,18 +596,33 @@ impl GeometryKernel for OcctKernel {
         assembled
     }
 
-    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult> {
+    fn projected_bounds(
+        &mut self,
+        shape: ShapeHandle,
+        direction: ferritecad_types::Vec3,
+    ) -> Result<[f64; 2]> {
+        self.session
+            .projected_bounds(self.raw(shape)?, [direction.x, direction.y, direction.z])
+    }
+
+    fn boolean(
+        &mut self,
+        request: &BooleanRequest,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
         let tool = self.raw(request.tool())?;
 
         context.progress().report(0.0);
-        let (raw, removed_volume) = self.session.cut(target, tool, context.cancel())?;
+        let (raw, removed_volume) =
+            self.session
+                .boolean(request.kind(), target, tool, context.cancel())?;
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
-            .insert(shape, ferritecad_kernel::NamingOperation::Cut);
+            .insert(shape, request.kind().naming_operation());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
             Ok(OperationResult {

@@ -263,77 +263,14 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
-/*
- * Turns one closed polygon of Lines about an axis in its plane (§27A).
- *
- * A new entry point with its own arguments; nothing of fc_occt_extrude is
- * reinterpreted. `segments` is one loop of `segment_count` (at least three)
- * FC_OCCT_SEGMENT_LINE segments meeting end to end in order; any other kind,
- * a second loop or a non-finite number refuses the call.
- *
- * The axis is stated in model space by `axis_origin` and `axis_direction`
- * (length 3 each). It must lie in the plane: the origin on it and the
- * direction perpendicular to its normal, both within 1e-9 relative. Every
- * vertex must lie strictly on one side of the axis, farther from it than Open
- * CASCADE's linear confusion, so the profile neither touches nor crosses it;
- * which profiles are acceptable is otherwise the caller's policy.
- *
- * `axis_segment` (§27C) is FC_OCCT_NO_AXIS_SEGMENT for such a profile, or the
- * index of the one segment that lies on the axis of a solid part closed on
- * it. The caller decided which; this checks it: exactly that segment's two
- * vertices lie on the axis (within the linear confusion), every other vertex
- * is off it on one side, the sweep makes no face of that segment, and every
- * other segment still raises exactly one face of the solid.
- *
- * `full_turn` states the angle and must be 1: exactly one full turn, 2π. Any
- * other value is refused as unsupported rather than read as an angle.
- *
- * The result is checked before it is registered: one valid solid of positive
- * volume, and the sweep's own history (BRepSweep_Revol::Shape of each input
- * edge) naming exactly one face of that solid for every segment, no face for
- * two segments, and no face of the solid left unnamed. MakeRevol::Generated is
- * not used: measured on OCCT 8.0.1, for a full turn it reports the annular
- * face of a radial Line as deleted although the face is in the solid. A full
- * turn has no start or end face; nothing is reported as a cap.
- *
- * The argument list and meaning are those of §27A/§27C and do not change: a
- * partial angle has its own entry point below and is never passed here.
- *
- * Cancellation is consulted before the profile is built and before and after
- * the revolution, and is installed as a progress indicator for the algorithm.
- */
+/* Turn the same planar region accepted by extrude about an in-plane model-space axis.
+ * angle is in (0, 2*pi], and 2*pi is the full turn with no caps. */
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
-                             const FcOcctSegment *segments,
-                             size_t segment_count, size_t axis_segment,
-                             const double *axis_origin,
-                             const double *axis_direction, int32_t full_turn,
-                             FcOcctCancelFn cancel, void *cancel_context,
-                             uint64_t *out_shape,
-                             FcOcctError *out_error) FC_OCCT_NOEXCEPT;
-
-/*
- * §27D: turn the same profile through a partial angle: a sector with a start
- * and an end face.
- *
- * Every argument but the angle means exactly what it means for
- * fc_occt_revolve, and is checked the same way. `angle_radians` is the turn in
- * radians, right-handed about `axis_direction`, starting at the profile. It
- * must be finite and strictly between 0 and 2*pi; anything else is refused and
- * never widened to a full turn or wrapped around. The angle is passed to the
- * kernel unchanged. Which angles a document may hold is the caller's policy.
- *
- * On top of the checks fc_occt_revolve makes, the sweep's history of the
- * profile face (BRepSweep_Revol::FirstShape and LastShape) must name exactly
- * one start face and one end face of the finished solid, distinct from each
- * other and from every segment's face, and the segments' faces and the two
- * caps together must be every face of the solid.
- */
-FcOcctStatus fc_occt_revolve_partial(
-    FcOcctSession *session, const FcOcctPlane *plane,
-    const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
-    const double *axis_origin, const double *axis_direction,
-    double angle_radians, FcOcctCancelFn cancel, void *cancel_context,
-    uint64_t *out_shape, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+    const FcOcctSegment *segments, size_t segment_count,
+    const size_t *loop_segment_counts, size_t loop_count,
+    const double *axis_origin, const double *axis_direction, double angle_radians,
+    FcOcctCancelFn cancel, void *cancel_context, uint64_t *out_shape,
+    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * Removes the material of `tool` from `target`.
@@ -363,10 +300,15 @@ FcOcctStatus fc_occt_revolve_partial(
  *
  * On success `*out_shape` receives a session-local shape identifier.
  */
-FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
+FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
+                         uint64_t target, uint64_t tool,
                          FcOcctCancelFn cancel, void *cancel_context,
                          uint64_t *out_shape, double *out_removed_volume,
                          FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/* Tight extrema along direction; both arrays have three and two doubles respectively. */
+FcOcctStatus fc_occt_projected_bounds(FcOcctSession *session, uint64_t shape,
+    const double *direction, double *out_bounds, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * Complete naming data; capacity/count are uint64_t words, not row counts.

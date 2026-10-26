@@ -10,7 +10,7 @@
 
 use ferritecad_document::{
     AnnularExtrusion, DatumPlane, EndCondition, Extrude, Point2, Revolve, RevolveAxis,
-    RevolveExtent, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    RevolveExtent, Sketch, SketchCurve, SketchGeometry,
 };
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
@@ -262,175 +262,61 @@ fn annulus_from_circles(
     Profile::new(plane, loop_of(outer)?, vec![loop_of(inner)?])
 }
 
-/// Builds the tool an in-place boolean sweeps, from the same stored feature.
-///
-/// The tool is an ordinary extrusion: the feature's own sketch, swept forward
-/// along its plane's normal for the stored blind depth. That is the whole of
-/// what this slice cuts with, and it is stated here rather than inferred, so a
-/// feature that asks for something else is refused with the reason rather than
-/// approximated into the nearest thing that would build.
-///
-/// A ThroughAll tool has no stored length. It runs for exactly the [`Reach`] of
-/// the body it cuts: the forward Blind height of the extrusion that started that
-/// body, read in this rebuild. A boolean cut only removes material, so every
-/// solid along the history lies inside that first prism, which spans `[0, h]`
-/// along the shared datum normal; a tool of that length on that datum reaches
-/// the far side of everything present. It is the same tool, down to the last
-/// bit, as a Blind cut whose depth equals the height, which is the "through"
-/// case every earlier slice already measured: no epsilon is added and no other
-/// plane is guessed at.
-///
-/// A separate function from [`extrude_request`] because the two answer
-/// different questions. That one asks what solid a feature *is*, and refuses a
-/// boolean because a boolean is not a solid on its own; this one asks what a
-/// boolean removes with, which is a solid and is built the same way every
-/// extrusion is.
-pub fn cut_tool_request(
-    feature: &Extrude,
+/// Resolve an axis from the same solved drawing that supplied the profile.
+pub fn revolve_request(
+    feature: &Revolve,
     profile: Profile,
-    tool_datum: ObjectId,
-    reach: Option<Reach>,
-) -> Result<ExtrudeRequest> {
-    if feature.operation != SolidOperation::Cut {
-        return Err(CadError::unsupported(format!(
-            "feature operation {:?} is not a cut, and this slice implements no other boolean",
-            feature.operation
-        )));
-    }
-    if feature.reversed {
-        return Err(CadError::unsupported(
-            "this slice cuts along the sketch plane's normal; a reversed cut is not implemented,              and silently cutting the other way would remove material nobody asked for",
-        ));
-    }
-    let extent = match &feature.end_condition {
-        EndCondition::Blind { distance } => ExtrudeExtent::blind(distance.value())?,
-        EndCondition::Symmetric { .. } => {
-            return Err(CadError::unsupported(
-                "a symmetric cut removes material on both sides of the sketch plane, which this                  slice does not implement",
-            ));
-        }
-        EndCondition::ThroughAll => {
-            let reach = reach.ok_or_else(|| {
-                CadError::unsupported(
-                    "a ThroughAll cut needs the body it cuts to start with a forward Blind \
-                     extrusion, whose height says how far everything in it reaches",
-                )
-            })?;
-            if reach.datum != tool_datum {
-                return Err(CadError::unsupported(format!(
-                    "a ThroughAll tool is evaluated on the datum its body started from ({}); this \
-                     one is drawn on {tool_datum}, and this slice measures no other direction",
-                    reach.datum
-                )));
-            }
-            ExtrudeExtent::blind(reach.distance)?
-        }
-        other => {
-            return Err(CadError::unsupported(format!(
-                "end condition {other:?} is not implemented"
-            )));
-        }
-    };
-    Ok(ExtrudeRequest::new(profile, extent, false))
-}
-
-/// How far a body reaches ahead of the datum its first extrusion was drawn on.
-///
-/// Recorded for a forward Blind NewBody and inherited unchanged by every Cut
-/// that modifies it, because a cut removes material and cannot reach further.
-/// Absent for anything whose extent this slice does not state (Symmetric,
-/// reversed or ThroughAll roots); a ThroughAll Cut of such a body is refused.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Reach {
-    pub datum: ObjectId,
-    pub distance: f64,
-}
-
-impl Reach {
-    /// The reach of a feature that starts a body, when it has one.
-    pub fn of_new_body(feature: &Extrude, datum: ObjectId) -> Option<Self> {
-        match (&feature.end_condition, feature.reversed, feature.previous) {
-            (EndCondition::Blind { distance }, false, None) => Some(Self {
-                datum,
-                distance: distance.value(),
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// Builds a revolution request from a stored Revolve.
-///
-/// The stored intent is checked against the classes this build evaluates —
-/// a NewBody full turn or partial turn (§27D) about the sketch Y axis — and
-/// the profile against the
-/// shared domain policy ([`ferritecad_document::FullTurnRevolution`]) before
-/// any kernel sees it. A saved profile the policy refuses is refused here even
-/// if a kernel could build it.
-pub fn revolve_request(feature: &Revolve, profile: Profile) -> Result<RevolveRequest> {
-    if feature.operation != SolidOperation::NewBody {
-        return Err(CadError::unsupported(format!(
-            "revolve operation {:?} needs a boolean, which this slice does not implement",
-            feature.operation
-        )));
-    }
+    drawing: &SketchPresentation,
+) -> Result<RevolveRequest> {
     let axis = match feature.axis {
+        RevolveAxis::SketchX => ferritecad_kernel::RevolveAxis::PlaneX,
         RevolveAxis::SketchY => ferritecad_kernel::RevolveAxis::PlaneY,
+        RevolveAxis::Line(id) => {
+            let geometry = drawing
+                .curves()
+                .iter()
+                .find(|c| c.id() == id)
+                .map(|c| c.geometry());
+            let Some(SketchGeometry::Line { start, end }) = geometry else {
+                return Err(CadError::input(format!(
+                    "axis {id} is not a Line in the profile sketch"
+                )));
+            };
+            ferritecad_kernel::RevolveAxis::Line {
+                start: planar(start.x, start.y)?,
+                end: planar(end.x, end.y)?,
+            }
+        }
         other => {
             return Err(CadError::unsupported(format!(
-                "revolve axis {other:?} is not implemented"
+                "unknown revolve axis {other:?}"
             )));
         }
     };
     let turn = match &feature.extent {
         RevolveExtent::FullTurn => ferritecad_kernel::RevolveTurn::Full,
-        // The saved value is already in the kernel's internal units.
-        RevolveExtent::Partial { angle } => {
-            ferritecad_kernel::RevolveTurn::Partial(ferritecad_kernel::PartialTurn::new(
-                ferritecad_document::RevolveAngle::new(angle.value())?.radians(),
-            )?)
-        }
+        RevolveExtent::Partial { angle } => ferritecad_kernel::RevolveTurn::Partial(
+            ferritecad_kernel::PartialTurn::new(angle.value())?,
+        ),
         other => {
             return Err(CadError::unsupported(format!(
-                "revolve extent {other:?} is not implemented"
+                "unknown revolve extent {other:?}"
             )));
         }
     };
-    if !profile.inner().is_empty() || profile.outer().is_closed_curve() {
-        return Err(CadError::unsupported(
-            "a revolution turns one closed polygon of Lines, without holes",
-        ));
-    }
-    let mut lines = Vec::with_capacity(profile.outer().segments().len());
-    for segment in profile.outer().segments() {
-        let SegmentGeometry::Line { start, .. } = segment.geometry else {
-            return Err(CadError::unsupported(
-                "a revolution turns a profile of Lines only",
-            ));
-        };
-        lines.push((segment.label, [start.x, start.y]));
-    }
-    // The class the coordinates fall in must be the one the feature states
-    // (§27C); the axis Line then comes from the checked policy, never from a
-    // guess in the kernel.
-    let policy = ferritecad_document::stated_revolution(feature.axis_segment, &lines)?;
-    let request = RevolveRequest::new(profile, axis, turn);
-    match policy.axis_line() {
-        Some(index) => request.with_axis_segment(lines[index].0),
-        None => Ok(request),
-    }
+    Ok(RevolveRequest::new(profile, axis, turn))
 }
 
-/// Builds an extrusion request from a stored feature.
-pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRequest> {
-    if feature.operation != SolidOperation::NewBody {
-        return Err(CadError::unsupported(format!(
-            "extrude operation {:?} needs a boolean, which this slice does not implement; \
-             only NewBody is supported",
-            feature.operation
-        )));
-    }
+// A millimetre beyond the target prevents a ThroughAll end cap from coinciding
+// with the farthest target face; this is a tool margin, not a contact policy.
+const THROUGH_ALL_MARGIN_MM: f64 = 1.0;
 
+/// Builds an extrusion tool from a stored feature and target bounds.
+pub fn extrude_request(
+    feature: &Extrude,
+    profile: Profile,
+    bounds: Option<[f64; 2]>,
+) -> Result<ExtrudeRequest> {
     let extent = match &feature.end_condition {
         // Both sides read `distance` as the distance *per side*, so the total
         // sweep is twice it. The two crates use different field names for the
@@ -439,10 +325,20 @@ pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeReq
         EndCondition::Blind { distance } => ExtrudeExtent::blind(distance.value())?,
         EndCondition::Symmetric { distance } => ExtrudeExtent::symmetric(distance.value())?,
         EndCondition::ThroughAll => {
-            return Err(CadError::unsupported(
-                "ThroughAll needs to know what else exists, which requires booleans; \
-                 this slice does not implement it",
-            ));
+            let bounds = bounds.ok_or_else(|| {
+                CadError::input("ThroughAll needs a target body; there is nothing to go through")
+            })?;
+            let normal = profile.plane().normal();
+            let origin = profile.plane().origin();
+            let sign = if feature.reversed { -1. } else { 1. };
+            let ahead = bounds[1]
+                - sign * (origin.x * normal.x + origin.y * normal.y + origin.z * normal.z);
+            if ahead <= 0. {
+                return Err(CadError::input(
+                    "ThroughAll has nothing ahead of the sketch plane to go through",
+                ));
+            }
+            ExtrudeExtent::blind(ahead + THROUGH_ALL_MARGIN_MM)?
         }
         other => {
             return Err(CadError::unsupported(format!(
@@ -566,7 +462,7 @@ fn joins(a: PlanarPoint, b: PlanarPoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferritecad_document::{Expression, Point2};
+    use ferritecad_document::{Expression, Point2, SolidOperation};
     use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
 
     fn line(start: (f64, f64), end: (f64, f64)) -> SketchCurve {
@@ -626,78 +522,21 @@ mod tests {
     }
 
     #[test]
-    fn a_through_all_tool_runs_exactly_the_reach_of_the_body_it_cuts() {
-        let datum = ObjectId::new();
-        let base = extrude(EndCondition::Blind {
-            distance: Expression::constant(14.25).expect("finite"),
-        });
-        let reach = Reach::of_new_body(&base, datum).expect("a forward Blind body has a reach");
-        assert_eq!(
-            reach,
-            Reach {
-                datum,
-                distance: 14.25
-            }
-        );
-        let tool = square();
-        let request = cut_tool_request(
-            &cut_of(EndCondition::ThroughAll),
-            tool.clone(),
-            datum,
-            Some(reach),
-        )
-        .expect("through all");
-        // No epsilon, no other number: exactly the Blind tool of that height.
-        assert_eq!(
-            request.extent(),
-            ExtrudeExtent::blind(14.25).expect("blind")
-        );
-        assert!(!request.reversed());
-        let blind = cut_tool_request(
-            &cut_of(EndCondition::Blind {
-                distance: Expression::constant(14.25).expect("finite"),
-            }),
-            tool,
-            datum,
-            Some(reach),
-        )
-        .expect("blind");
-        assert_eq!(blind, request, "Blind at the height is the same tool");
-    }
-
-    #[test]
-    fn through_all_without_a_stated_reach_or_on_another_datum_is_refused() {
-        let datum = ObjectId::new();
-        let reach = Reach {
-            datum,
-            distance: 12.0,
-        };
-        let err = cut_tool_request(
+    fn through_all_uses_projected_bounds_and_a_margin() {
+        let tool = extrude_request(
             &cut_of(EndCondition::ThroughAll),
             square(),
-            ObjectId::new(),
-            Some(reach),
+            Some([-7., 14.25]),
         )
-        .expect_err("another plane");
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
-        let err = cut_tool_request(&cut_of(EndCondition::ThroughAll), square(), datum, None)
-            .expect_err("no reach");
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
-        // Only a forward Blind NewBody states a reach.
-        for base in [
-            extrude(EndCondition::Symmetric {
-                distance: Expression::constant(5.0).expect("finite"),
-            }),
-            extrude(EndCondition::ThroughAll),
-            Extrude {
-                reversed: true,
-                ..extrude(EndCondition::Blind {
-                    distance: Expression::constant(5.0).expect("finite"),
-                })
-            },
-        ] {
-            assert_eq!(Reach::of_new_body(&base, datum), None, "{base:?}");
-        }
+        .expect("through target");
+        assert_eq!(tool.extent().total_length(), 14.25 + THROUGH_ALL_MARGIN_MM);
+        let error = extrude_request(
+            &cut_of(EndCondition::ThroughAll),
+            square(),
+            Some([-14., 0.]),
+        )
+        .expect_err("nothing ahead");
+        assert!(error.to_string().contains("nothing ahead"));
     }
 
     #[test]
@@ -1024,6 +863,7 @@ mod tests {
                 distance: Expression::constant(8.0).expect("finite"),
             }),
             profile,
+            None,
         )
         .expect("converts");
 
@@ -1045,50 +885,13 @@ mod tests {
                 distance: Expression::constant(4.0).expect("finite"),
             }),
             profile,
+            None,
         )
         .expect("converts");
 
         // Four either side is eight in total; this test is the record of that
         // reading, since both field names say only "distance".
         assert_eq!(request.extent().total_length(), 8.0);
-    }
-
-    #[test]
-    fn through_all_is_unsupported() {
-        let profile = profile_from_sketch(
-            &sketch(square_curves()),
-            ObjectId::new(),
-            SketchPlane::world_xy(),
-        )
-        .expect("converts")
-        .profile;
-        let err = extrude_request(&extrude(EndCondition::ThroughAll), profile)
-            .expect_err("ThroughAll needs booleans");
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
-    }
-
-    #[test]
-    fn a_boolean_operation_is_unsupported() {
-        for operation in [
-            SolidOperation::Add,
-            SolidOperation::Cut,
-            SolidOperation::Intersect,
-        ] {
-            let profile = profile_from_sketch(
-                &sketch(square_curves()),
-                ObjectId::new(),
-                SketchPlane::world_xy(),
-            )
-            .expect("converts")
-            .profile;
-            let mut feature = extrude(EndCondition::Blind {
-                distance: Expression::constant(8.0).expect("finite"),
-            });
-            feature.operation = operation;
-
-            let err = extrude_request(&feature, profile).expect_err("booleans are not implemented");
-            assert_eq!(err.kind(), ErrorKind::Unsupported);
-        }
     }
 
     #[test]

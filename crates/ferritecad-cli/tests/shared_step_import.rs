@@ -113,12 +113,12 @@ impl GeometryKernel for ObservedKernel {
     fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
         self.inner.extrude(r, c)
     }
-    fn cut(
+    fn boolean(
         &mut self,
-        r: &ferritecad_kernel::CutRequest,
+        r: &ferritecad_kernel::BooleanRequest,
         c: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
-        self.inner.cut(r, c)
+        self.inner.boolean(r, c)
     }
     fn transform(
         &mut self,

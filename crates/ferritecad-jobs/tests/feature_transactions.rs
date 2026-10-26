@@ -169,7 +169,8 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             object: ObjectId::new(),
             body: ObjectId::new(),
             name: None,
-            feature: FeatureAddition::Cut {
+            feature: FeatureAddition::Extrude {
+                operation: ferritecad_document::SolidOperation::Cut,
                 profile: tool.sketch,
                 end_condition: blind(3.),
                 reversed: false,
@@ -179,7 +180,8 @@ fn payload_errors_leave_all_rows_names_and_version_unchanged() {
             object: ObjectId::new(),
             body: b,
             name: None,
-            feature: FeatureAddition::Cut {
+            feature: FeatureAddition::Extrude {
+                operation: ferritecad_document::SolidOperation::Cut,
                 profile: ObjectId::new(),
                 end_condition: blind(3.),
                 reversed: false,

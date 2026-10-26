@@ -33,8 +33,13 @@ use radians; UI and CLI degree input and display convert at their boundaries.
 
 Sketch curve coordinates, circle radii and arc angles remain `f64`: they describe
 solver state and the initial approximation, rather than editable dimensions.
-Extrude names its consumed feature through `previous`; it has no `target_body`
-field or dependency role.
+Extrude and Revolve name their consumed feature through `previous`. `NewBody`
+requires no predecessor; `Add`, `Cut` and `Intersect` require one. Extrude keeps
+`Blind`, `Symmetric` and `ThroughAll` plus `reversed`; `ThroughAll` requires a target.
+Revolve stores `previous`, `axis` (`sketch_x`, `sketch_y` or `{"line": curve UUID}`),
+and `FullTurn` or a partial angle expression. A Line axis follows its stored
+start-to-end direction and may be construction geometry. There is no stored
+axis-segment classification.
 
 The `brep.generative.v1` cache stores derived names with the B-Rep; its codec is
 unchanged. Scene entities carry the feature, kind, name digest and complete

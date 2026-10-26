@@ -110,12 +110,12 @@ impl RecordingKernel {
 impl GeometryKernel for RecordingKernel {
     /// Delegated: this double is about something else, and a cut it
     /// answered differently would be a second kernel.
-    fn cut(
+    fn boolean(
         &mut self,
-        request: &ferritecad_kernel::CutRequest,
+        request: &ferritecad_kernel::BooleanRequest,
         context: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
-        self.inner.cut(request, context)
+        self.inner.boolean(request, context)
     }
 
     fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {

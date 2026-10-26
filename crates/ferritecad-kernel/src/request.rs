@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_types::{CadError, CanonicalHasher, Result, StableEntityId, normalize_f64};
+use ferritecad_types::{CadError, CanonicalHasher, Result, normalize_f64};
 
 use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::profile::Profile;
@@ -94,9 +94,14 @@ impl ExtrudeRequest {
 }
 
 /// The axis a revolution turns about, named in the profile plane's own terms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum RevolveAxis {
+    PlaneX,
+    Line {
+        start: crate::PlanarPoint,
+        end: crate::PlanarPoint,
+    },
     /// The plane's local Y axis through its origin. In the profile, X is then
     /// the distance from the axis and Y the position along it.
     PlaneY,
@@ -158,7 +163,6 @@ pub struct RevolveRequest {
     profile: Profile,
     axis: RevolveAxis,
     turn: RevolveTurn,
-    axis_segment: Option<StableEntityId>,
 }
 
 impl RevolveRequest {
@@ -168,35 +172,7 @@ impl RevolveRequest {
             profile,
             axis,
             turn,
-            axis_segment: None,
         }
-    }
-
-    /// §27C: the profile closes on the axis along this segment, which lies on
-    /// it and therefore raises no face; every other segment still must.
-    ///
-    /// The caller's policy decided which segment that is. An adapter checks it
-    /// — the segment's ends on the axis, every other vertex off it, no face
-    /// from it — and never infers it.
-    pub fn with_axis_segment(mut self, label: StableEntityId) -> Result<Self> {
-        if !self
-            .profile
-            .outer()
-            .segments()
-            .iter()
-            .any(|segment| segment.label == label)
-        {
-            return Err(CadError::input(format!(
-                "axis segment {label} is not a segment of the profile being turned"
-            )));
-        }
-        self.axis_segment = Some(label);
-        Ok(self)
-    }
-
-    /// The segment on the axis, for a profile closed on it.
-    pub fn axis_segment(&self) -> Option<StableEntityId> {
-        self.axis_segment
     }
 
     pub fn profile(&self) -> &Profile {
@@ -217,9 +193,21 @@ impl RevolveRequest {
     pub fn feed(&self, hasher: &mut CanonicalHasher) {
         hasher.field("revolve");
         self.profile.feed(hasher);
-        hasher.field("axis").str(match self.axis {
-            RevolveAxis::PlaneY => "plane_y",
-        });
+        hasher.field("axis");
+        match self.axis {
+            RevolveAxis::PlaneX => {
+                hasher.str("plane_x");
+            }
+            RevolveAxis::PlaneY => {
+                hasher.str("plane_y");
+            }
+            RevolveAxis::Line { start, end } => {
+                hasher.str("line");
+                for value in [start.x, start.y, end.x, end.y] {
+                    hasher.bytes(&value.to_bits().to_le_bytes());
+                }
+            }
+        }
         match self.turn {
             RevolveTurn::Full => {
                 hasher.field("turn").str("full");
@@ -231,10 +219,6 @@ impl RevolveRequest {
                     .str("partial")
                     .bytes(&turn.radians().to_bits().to_le_bytes());
             }
-        }
-        // Only when present, so a profile with a bore keeps the key it had.
-        if let Some(label) = self.axis_segment {
-            hasher.field("axis_segment").bytes(&label.to_bytes());
         }
     }
 }
@@ -478,44 +462,52 @@ mod tests {
     }
 }
 
-/// Remove the material of one shape from another.
-///
-/// Two shapes and nothing else. Which faces come back, and what they are
-/// called, is not part of the request: naming is what [`CutResult`] reports
-/// from the kernel's own history, and a request that could nominate names
-/// would be a caller deciding them in advance.
-///
-/// [`CutResult`]: crate::CutResult
+/// The set operation applied to a target and a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BooleanKind {
+    Cut,
+    Fuse,
+    Common,
+}
+
+impl BooleanKind {
+    pub fn naming_operation(self) -> crate::NamingOperation {
+        match self {
+            Self::Cut => crate::NamingOperation::Cut,
+            Self::Fuse => crate::NamingOperation::Fuse,
+            Self::Common => crate::NamingOperation::Common,
+        }
+    }
+}
+
+/// Two inputs of one session; neither is consumed by the operation.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CutRequest {
+pub struct BooleanRequest {
+    kind: BooleanKind,
     target: ShapeHandle,
     tool: ShapeHandle,
 }
 
-impl CutRequest {
-    /// Refuses the one pair no kernel can mean: a shape cut by itself, which
-    /// is empty by definition and would be reported as a boolean that removed
-    /// everything rather than as a request nobody could have intended.
-    pub fn new(target: ShapeHandle, tool: ShapeHandle) -> Result<Self> {
-        if target == tool {
+impl BooleanRequest {
+    pub fn new(kind: BooleanKind, target: ShapeHandle, tool: ShapeHandle) -> Result<Self> {
+        if target == tool && kind == BooleanKind::Cut {
             return Err(CadError::input(
                 "a cut needs two different shapes; this one names the same shape twice",
             ));
         }
         if target.session() != tool.session() {
             return Err(CadError::input(
-                "a cut needs two shapes of one kernel session",
+                "a boolean needs two shapes of one kernel session",
             ));
         }
-        Ok(Self { target, tool })
+        Ok(Self { kind, target, tool })
     }
-
-    /// The shape material is removed from.
+    pub fn kind(&self) -> BooleanKind {
+        self.kind
+    }
     pub fn target(&self) -> ShapeHandle {
         self.target
     }
-
-    /// The shape whose material is removed.
     pub fn tool(&self) -> ShapeHandle {
         self.tool
     }

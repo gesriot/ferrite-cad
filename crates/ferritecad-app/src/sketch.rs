@@ -2028,30 +2028,6 @@ impl Editor {
             for detail in &choice.details {
                 ui.label(detail);
             }
-            // §27C: the saved class of a Revolve is fixed. A solid part names
-            // the one Line that lies on the axis; it stays there.
-            if let Some(
-                SketchProfileUse::FullTurnRevolve { axis_segment, .. }
-                | SketchProfileUse::PartialRevolve { axis_segment, .. },
-            ) = choice.profile_use
-            {
-                ui.label(match axis_segment {
-                    Some(line) => {
-                        let at = choice
-                            .vertices
-                            .as_ref()
-                            .expect("saved vertices")
-                            .iter()
-                            .position(|v| v.curve_id == line)
-                            .map_or(0, |i| i + 1);
-                        format!(
-                            "Solid part: edge {at} (Line {line}) stays on the axis at X = 0; \
-                             every other point stays at X > 0."
-                        )
-                    }
-                    None => "Part with a bore: every point stays at X > 0.".to_owned(),
-                });
-            }
             ui.small(format!(
                 "Sketch {} · {}",
                 choice.sketch,
@@ -7816,7 +7792,6 @@ pub(crate) mod tests {
             &path,
             &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
             90.0,
-            None,
         );
         let reading = crate::constraints::tests::revolve::reading(&path);
         let choice = reading
@@ -7998,7 +7973,6 @@ pub(crate) mod tests {
             &path,
             &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
             90.0,
-            None,
         );
         let reading = crate::constraints::tests::revolve::reading(&path);
         let angle = reading

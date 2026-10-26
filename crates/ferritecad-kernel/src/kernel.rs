@@ -5,7 +5,8 @@ use crate::context::OperationContext;
 use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::identity::KernelIdentity;
 use crate::request::{
-    ChamferRequest, CutRequest, ExtrudeRequest, FilletRequest, RevolveRequest, TessellationParams,
+    BooleanRequest, ChamferRequest, ExtrudeRequest, FilletRequest, RevolveRequest,
+    TessellationParams,
 };
 use crate::result::{ArchiveSlot, BrepBlob, Mesh, OperationResult};
 
@@ -42,6 +43,18 @@ pub trait GeometryKernel {
         let _ = shape;
         Err(ferritecad_types::CadError::unsupported(
             "this kernel does not report full topology",
+        ))
+    }
+
+    /// Tight bounds of the shape projected on a model-space unit direction.
+    fn projected_bounds(
+        &mut self,
+        shape: ShapeHandle,
+        direction: ferritecad_types::Vec3,
+    ) -> Result<[f64; 2]> {
+        let _ = (shape, direction);
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not report bounds",
         ))
     }
 
@@ -92,7 +105,11 @@ pub trait GeometryKernel {
     /// nothing.
     ///
     /// Complete provenance is available through `naming_history`.
-    fn cut(&mut self, request: &CutRequest, context: &OperationContext) -> Result<OperationResult>;
+    fn boolean(
+        &mut self,
+        request: &BooleanRequest,
+        context: &OperationContext,
+    ) -> Result<OperationResult>;
 
     /// Rounds exactly one edge of a shape to one constant radius (§28A).
     ///
@@ -263,16 +280,20 @@ pub fn tessellation_cache_key(
 /// same boolean differently on every run. Both inputs are fed, in their roles,
 /// so cutting A with B and B with A are different keys — they are different
 /// solids.
-pub fn cut_cache_key(
+pub fn boolean_cache_key(
     kernel: &KernelIdentity,
+    kind: crate::BooleanKind,
     target_key: &ContentHash,
     tool_key: &ContentHash,
     context: &OperationContext,
 ) -> ContentHash {
-    let mut hasher = CanonicalHasher::new("kernel.cut");
+    let mut hasher = CanonicalHasher::new("kernel.boolean");
     hasher.algorithm_version(ALGORITHM_VERSION);
     kernel.feed(&mut hasher);
     context.tolerance().feed(&mut hasher);
+    hasher
+        .field("operation")
+        .bytes(&[kind.naming_operation().tag()]);
     hasher.field("target").hash(target_key);
     hasher.field("tool").hash(tool_key);
     hasher.finish()
@@ -541,34 +562,35 @@ mod tests {
     }
 
     #[test]
-    fn a_stated_axis_line_keys_apart_and_must_be_a_profile_line() {
-        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+    fn revolve_axes_and_directions_have_distinct_keys() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("identity");
         let context = OperationContext::default();
-        let hollow = revolution(&request());
-        let key = revolve_cache_key(&kernel, &hollow, &context);
-        let labels: Vec<_> = hollow
-            .profile()
-            .outer()
-            .segments()
-            .iter()
-            .map(|s| s.label)
-            .collect();
-        // §27C: the axis Line is fed only when stated, so a part with a bore
-        // keeps its key; a solid part keys by which Line lies on the axis.
-        assert_eq!(hollow.axis_segment(), None);
-        let first = hollow.clone().with_axis_segment(labels[0]).expect("a Line");
-        let second = hollow.clone().with_axis_segment(labels[1]).expect("a Line");
-        assert_eq!(first.axis_segment(), Some(labels[0]));
+        let base = revolution(&request());
         let keys = [
-            key,
-            revolve_cache_key(&kernel, &first, &context),
-            revolve_cache_key(&kernel, &second, &context),
-        ];
-        assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
-        let error = hollow
-            .with_axis_segment(ferritecad_types::StableEntityId::new())
-            .expect_err("not a Line of this profile");
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+            crate::RevolveAxis::PlaneX,
+            crate::RevolveAxis::PlaneY,
+            crate::RevolveAxis::Line {
+                start: crate::PlanarPoint::new(3., 0.).expect("point"),
+                end: crate::PlanarPoint::new(3., 10.).expect("point"),
+            },
+            crate::RevolveAxis::Line {
+                start: crate::PlanarPoint::new(3., 10.).expect("point"),
+                end: crate::PlanarPoint::new(3., 0.).expect("point"),
+            },
+        ]
+        .map(|axis| {
+            revolve_cache_key(
+                &kernel,
+                &crate::RevolveRequest::new(base.profile().clone(), axis, base.turn()),
+                &context,
+            )
+        });
+        assert_eq!(
+            keys.into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4
+        );
     }
 
     #[test]

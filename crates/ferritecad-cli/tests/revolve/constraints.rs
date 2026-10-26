@@ -314,14 +314,6 @@ pub(super) fn measure_solved(
             _ => None,
         })
         .expect("body");
-    // §27H: the Line the saved Revolve states is on the axis, if any.
-    let axis_segment = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Revolve(r) => Some(r.axis_segment),
-            _ => None,
-        })
-        .expect("revolve");
     let report = built.solve_report(sketch_id).expect("one solve report");
     let picture = built
         .sketch_presentation(sketch_id)
@@ -344,6 +336,10 @@ pub(super) fn measure_solved(
         assert!(near(*end, next, 1e-7), "joint {i}: {end:?} != {next:?}");
     }
     let points: Vec<[f64; 2]> = lines.iter().map(|(_, a, _)| *a).collect();
+    let axis_segment = lines
+        .iter()
+        .find(|(_, a, b)| a[0] == 0. && b[0] == 0.)
+        .map(|(id, _, _)| *id);
     if let Some(axis) = axis_segment {
         // The solved Line the Revolve states lies exactly on the axis; no
         // other vertex does.

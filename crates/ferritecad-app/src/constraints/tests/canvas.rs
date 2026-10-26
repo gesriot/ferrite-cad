@@ -1238,9 +1238,9 @@ fn the_form_keeps_its_canvas_its_modes_and_its_actions_reachable_at_768_points()
     ];
     let dir = tempfile::tempdir().expect("dir");
     let shaft = dir.path().join("shaft.fcad");
-    revolve::write_sector(&shaft, &revolve::SHAFT_T, 137.5, Some(5));
+    revolve::write_sector(&shaft, &revolve::SHAFT_T, 137.5);
     let sector = dir.path().join("sector.fcad");
-    revolve::write_sector(&sector, &revolve::SECTOR_P, 137.5, None);
+    revolve::write_sector(&sector, &revolve::SECTOR_P, 137.5);
     let (_a, _b, plate) = fixture();
     let (_c, polygon_path, polygon) = polygon_fixture(64, false);
     let (_f, held_path, held) = polygon_fixture(64, true);

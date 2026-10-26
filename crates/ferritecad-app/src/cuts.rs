@@ -447,8 +447,8 @@ impl Editor {
                     });
                     if draft.typed.through_all {
                         ui.small(
-                            "Through all has no depth: its length follows the part's current \
-                             height at every rebuild.",
+                            "Through all has no depth: its length follows the target along the \
+                             sketch normal at every rebuild.",
                         );
                     }
                     if let Some(editing) = &shown.editing {

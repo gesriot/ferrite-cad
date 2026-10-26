@@ -514,7 +514,7 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
     // A decoded input has no registered sub-shapes except its archive slots.
     // Complete history must not depend on a caller enumerating or tracking them.
     use ferritecad_kernel::{
-        CutRequest, ExtrudeExtent, ExtrudeRequest, NamingInput, NamingRelation, PlanarPoint,
+        BooleanRequest, ExtrudeExtent, ExtrudeRequest, NamingInput, NamingRelation, PlanarPoint,
         Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
     };
     let circle = ProfileSegment::new(
@@ -538,8 +538,9 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
         .decode_shape(&plain_blob)
         .expect("input without named slots");
     let cut = kernel
-        .cut(
-            &CutRequest::new(bare, tool.shape).expect("cut request"),
+        .boolean(
+            &BooleanRequest::new(ferritecad_kernel::BooleanKind::Cut, bare, tool.shape)
+                .expect("cut request"),
             &OperationContext::default(),
         )
         .expect("cut");

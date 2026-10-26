@@ -24,8 +24,8 @@ impl GeometryKernel for TraceKernel {
     fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<OperationResult> {
         self.base.extrude(r, c)
     }
-    fn cut(&mut self, r: &CutRequest, c: &OperationContext) -> Result<OperationResult> {
-        self.base.cut(r, c)
+    fn boolean(&mut self, r: &BooleanRequest, c: &OperationContext) -> Result<OperationResult> {
+        self.base.boolean(r, c)
     }
     fn transform(
         &mut self,

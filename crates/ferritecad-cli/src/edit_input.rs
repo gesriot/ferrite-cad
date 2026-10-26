@@ -9,6 +9,30 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Change {
+    AddBody {
+        object: ObjectId,
+        name: Option<String>,
+        feature_object: ObjectId,
+        feature_name: Option<String>,
+        feature: Feature,
+    },
+    SetOperation {
+        object: ObjectId,
+        operation: ferritecad_document::SolidOperation,
+    },
+    SetReversed {
+        object: ObjectId,
+        reversed: bool,
+    },
+    SetRevolveAxis {
+        object: ObjectId,
+        axis: ferritecad_document::RevolveAxis,
+    },
+    SetRevolveExtent {
+        object: ObjectId,
+        extent: Turn,
+    },
+
     AddSketch {
         object: ObjectId,
         name: Option<String>,
@@ -50,6 +74,29 @@ pub(super) enum Change {
 impl Change {
     pub(super) fn into_edit(self) -> Result<EditChange> {
         Ok(match self {
+            Self::AddBody {
+                object,
+                name,
+                feature_object,
+                feature_name,
+                feature,
+            } => EditChange::AddBody {
+                object,
+                name,
+                feature_object,
+                feature_name,
+                feature: feature.into_feature()?,
+            },
+            Self::SetOperation { object, operation } => {
+                EditChange::SetOperation { object, operation }
+            }
+            Self::SetReversed { object, reversed } => EditChange::SetReversed { object, reversed },
+            Self::SetRevolveAxis { object, axis } => EditChange::SetRevolveAxis { object, axis },
+            Self::SetRevolveExtent { object, extent } => EditChange::SetRevolveExtent {
+                object,
+                extent: extent.into_extent()?,
+            },
+
             Self::AddSketch {
                 object,
                 name,
@@ -371,12 +418,16 @@ impl Constraint {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum End {
     Blind { distance: Number },
+    Symmetric { distance: Number },
     ThroughAll,
 }
 impl End {
     fn into_end(self) -> Result<ferritecad_document::EndCondition> {
         Ok(match self {
             Self::Blind { distance } => ferritecad_document::EndCondition::Blind {
+                distance: distance.expression(Dimension::Length)?,
+            },
+            Self::Symmetric { distance } => ferritecad_document::EndCondition::Symmetric {
                 distance: distance.expression(Dimension::Length)?,
             },
             Self::ThroughAll => ferritecad_document::EndCondition::ThroughAll,
@@ -386,10 +437,17 @@ impl End {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Feature {
-    Cut {
+    Extrude {
         profile: ObjectId,
         end_condition: End,
         reversed: bool,
+        operation: ferritecad_document::SolidOperation,
+    },
+    Revolve {
+        profile: ObjectId,
+        axis: ferritecad_document::RevolveAxis,
+        extent: Turn,
+        operation: ferritecad_document::SolidOperation,
     },
     Fillet {
         edge: Edge,
@@ -404,14 +462,27 @@ impl Feature {
     fn into_feature(self) -> Result<ferritecad_document::FeatureAddition> {
         use ferritecad_document::FeatureAddition as F;
         Ok(match self {
-            Self::Cut {
+            Self::Extrude {
                 profile,
                 end_condition,
                 reversed,
-            } => F::Cut {
+                operation,
+            } => F::Extrude {
                 profile,
                 end_condition: end_condition.into_end()?,
                 reversed,
+                operation,
+            },
+            Self::Revolve {
+                profile,
+                axis,
+                extent,
+                operation,
+            } => F::Revolve {
+                profile,
+                axis,
+                extent: extent.into_extent()?,
+                operation,
             },
             Self::Fillet { edge, radius } => F::Fillet {
                 edge: edge.into_edge()?,
@@ -436,6 +507,23 @@ impl Edge {
         Ok(ferritecad_document::SweptEdge {
             feature: self.feature,
             joint: ferritecad_types::ProfileJoint::new(self.joint[0], self.joint[1])?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum Turn {
+    FullTurn,
+    Partial { angle: Number },
+}
+impl Turn {
+    fn into_extent(self) -> Result<ferritecad_document::RevolveExtent> {
+        Ok(match self {
+            Self::FullTurn => ferritecad_document::RevolveExtent::FullTurn,
+            Self::Partial { angle } => ferritecad_document::RevolveExtent::Partial {
+                angle: angle.expression(Dimension::Angle)?,
+            },
         })
     }
 }

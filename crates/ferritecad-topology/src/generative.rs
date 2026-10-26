@@ -77,6 +77,7 @@ pub struct ModelNaming {
     derivations: Derivations,
     pub(crate) operations: BTreeMap<ObjectId, NamingOperation>,
     pub(crate) planes: BTreeMap<ObjectId, ObjectId>,
+    sweeps: BTreeMap<ObjectId, NamingOperation>,
     roots: BTreeMap<ObjectId, BTreeSet<NamingInput>>,
     pub(crate) previous: BTreeMap<ObjectId, ObjectId>,
     pub features: BTreeMap<ObjectId, FeatureNaming>,
@@ -119,9 +120,23 @@ impl ModelNaming {
                 }
                 self.roots.insert(object.id, roots);
             }
+            match &object.payload {
+                ObjectPayload::Extrude(_) => {
+                    self.sweeps.insert(object.id, NamingOperation::Extrude);
+                }
+                ObjectPayload::Revolve(_) => {
+                    self.sweeps.insert(object.id, NamingOperation::Revolve);
+                }
+                _ => {}
+            }
             let operation = match &object.payload {
-                ObjectPayload::Extrude(e) if e.previous.is_some() => NamingOperation::Cut,
+                ObjectPayload::Extrude(e) if e.previous.is_some() => {
+                    boolean_operation(e.operation)?
+                }
                 ObjectPayload::Extrude(_) => NamingOperation::Extrude,
+                ObjectPayload::Revolve(r) if r.previous.is_some() => {
+                    boolean_operation(r.operation)?
+                }
                 ObjectPayload::Revolve(_) => NamingOperation::Revolve,
                 ObjectPayload::Fillet(_) => NamingOperation::Fillet,
                 ObjectPayload::Chamfer(_) => NamingOperation::Chamfer,
@@ -158,8 +173,8 @@ impl ModelNaming {
         let history = kernel.naming_history(shape)?;
         let expected = self.operations.get(&owner).copied();
         if history.operation != expected
-            && !(expected == Some(NamingOperation::Cut)
-                && history.operation == Some(NamingOperation::Extrude)
+            && !(expected.is_some_and(is_boolean)
+                && history.operation == self.sweeps.get(&owner).copied()
                 && inputs.is_empty())
         {
             return Err(CadError::topology(
@@ -259,8 +274,11 @@ impl ModelNaming {
                             || feature.is_some_and(|f| {
                                 self.operations.get(&f).is_some_and(|op| {
                                     op.tag() == *extra
-                                        || (*op == NamingOperation::Cut
-                                            && *extra == NamingOperation::Extrude.tag())
+                                        || (is_boolean(*op)
+                                            && self
+                                                .sweeps
+                                                .get(&f)
+                                                .is_some_and(|s| *extra == s.tag()))
                                 })
                             }))
                 }
@@ -646,3 +664,19 @@ fn validate_history(
 #[cfg(test)]
 #[path = "provenance_tests.rs"]
 mod tests;
+
+fn is_boolean(operation: NamingOperation) -> bool {
+    matches!(
+        operation,
+        NamingOperation::Cut | NamingOperation::Fuse | NamingOperation::Common
+    )
+}
+fn boolean_operation(operation: ferritecad_document::SolidOperation) -> Result<NamingOperation> {
+    use ferritecad_document::SolidOperation as S;
+    match operation {
+        S::Add => Ok(NamingOperation::Fuse),
+        S::Cut => Ok(NamingOperation::Cut),
+        S::Intersect => Ok(NamingOperation::Common),
+        _ => Err(CadError::input("boolean operation needs a target")),
+    }
+}

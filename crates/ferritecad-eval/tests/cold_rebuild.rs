@@ -291,8 +291,8 @@ fn a_local_failure_preserves_previously_built_geometry() {
                     profile: plate.sketch,
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
-                    operation: SolidOperation::NewBody,
-                    previous: None,
+                    operation: SolidOperation::Cut,
+                    previous: Some(plate.extrude),
                 }),
             )?;
             w.add_dependency(Dependency {

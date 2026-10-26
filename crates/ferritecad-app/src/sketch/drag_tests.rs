@@ -1282,29 +1282,17 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     };
     let choice = &reading.sketches[0];
     let saved = choice.vertices.clone().expect("editable");
-    let Some(SketchProfileUse::FullTurnRevolve {
-        axis_segment: Some(axis),
-        ..
-    }) = choice.profile_use
-    else {
+    let Some(SketchProfileUse::FullTurnRevolve { axis, .. }) = choice.profile_use else {
         panic!(
             "a solid Revolve names its axis Line: {:?}",
             choice.profile_use
         )
     };
-    assert_eq!(axis, saved[3].curve_id, "(0,15)→(0,0) lies on the axis");
+    assert_eq!(axis, ferritecad_document::RevolveAxis::SketchY);
     let mut e = Editor::default();
     assert!(e.begin_edit(&ui, &reading, choice.sketch));
     frame(&ctx, &mut e, vec![]);
     let out = frame(&ctx, &mut e, vec![]);
-    let wanted = format!(
-        "Solid part: edge 4 (Line {axis}) stays on the axis at X = 0; every other point stays at X > 0."
-    );
-    assert!(
-        out.shapes.iter().any(|c| matches!(&c.shape,
-            egui::Shape::Text(t) if t.galley.text() == wanted)),
-        "the axis Line is named"
-    );
     for absent in ["Revolve 360°", "Blind height mm", "Feature:"] {
         assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
             egui::Shape::Text(t) if t.galley.text() == absent)));
@@ -1495,7 +1483,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     assert_eq!(choice.refusal, None);
     let saved = choice.vertices.clone().expect("editable");
     let Some(SketchProfileUse::PartialRevolve {
-        axis_segment: Some(axis),
+        axis,
         radians: angle,
         ..
     }) = choice.profile_use
@@ -1503,7 +1491,7 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
         panic!("a solid sector: {:?}", choice.profile_use)
     };
     assert_eq!(angle.radians().to_degrees(), 220.);
-    assert_eq!(axis, saved[3].curve_id, "(0,15)→(0,0) lies on the axis");
+    assert_eq!(axis, ferritecad_document::RevolveAxis::SketchY);
 
     // Opened from its own row among the saved-object actions.
     let ctx = egui::Context::default();

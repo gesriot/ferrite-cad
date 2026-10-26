@@ -19,7 +19,7 @@ use crate::context::OperationContext;
 use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 use crate::identity::KernelIdentity;
 use crate::kernel::GeometryKernel;
-use crate::request::{CutRequest, ExtrudeExtent, ExtrudeRequest, TessellationParams};
+use crate::request::{BooleanRequest, ExtrudeExtent, ExtrudeRequest, TessellationParams};
 use crate::result::{ArchiveSlot, BrepBlob, Mesh, MeshFaceRange, OperationResult};
 
 /// Marks the mock's own blob format, so a stray blob is refused early.
@@ -251,6 +251,21 @@ impl GeometryKernel for MockKernel {
         &self.identity
     }
 
+    fn projected_bounds(
+        &mut self,
+        shape: ShapeHandle,
+        direction: ferritecad_types::Vec3,
+    ) -> Result<[f64; 2]> {
+        let prism = self.lookup(shape)?;
+        let mut bounds = [f64::INFINITY, f64::NEG_INFINITY];
+        for p in prism.base.iter().chain(&prism.top) {
+            let d = p.x * direction.x + p.y * direction.y + p.z * direction.z;
+            bounds[0] = bounds[0].min(d);
+            bounds[1] = bounds[1].max(d);
+        }
+        Ok(bounds)
+    }
+
     fn shape_topology(&mut self, shape: ShapeHandle) -> Result<crate::ShapeTopology> {
         let n = self.lookup(shape)?.base.len() as u64;
         let mut topology = crate::ShapeTopology::default();
@@ -434,9 +449,9 @@ impl GeometryKernel for MockKernel {
     /// a bounding box with a notch in it, would let every layer above be tested
     /// against a cut that never happened — which is exactly the kind of green
     /// test this double exists to avoid.
-    fn cut(
+    fn boolean(
         &mut self,
-        _request: &CutRequest,
+        _request: &BooleanRequest,
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
