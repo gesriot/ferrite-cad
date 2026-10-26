@@ -39,7 +39,7 @@ fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
         SketchProfileUse::BlindExtrude { .. } => return None,
     };
     Some(format!(
-        "Profile of Revolve {feature}: {turn} about {axis:?}. \
+        "Profile of Revolve {feature}: {turn} about {axis}. \
         Apply rebuilds the feature and its dependents."
     ))
 }

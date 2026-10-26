@@ -23,7 +23,7 @@ impl PlanarPoint {
         })
     }
 
-    fn feed(&self, hasher: &mut CanonicalHasher) {
+    pub(crate) fn feed(&self, hasher: &mut CanonicalHasher) {
         const VALIDATED: &str = "planar points are validated finite on construction";
         hasher.f64(self.x).expect(VALIDATED);
         hasher.f64(self.y).expect(VALIDATED);

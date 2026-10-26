@@ -235,7 +235,7 @@ fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
     assert_eq!(
         owner,
         format!(
-            "Profile of Revolve {revolve}: 137.5° about SketchY. \
+            "Profile of Revolve {revolve}: 137.5° about the sketch Y axis. \
              Apply rebuilds the feature and its dependents."
         )
     );
@@ -572,7 +572,7 @@ fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
     assert_eq!(
         owner,
         format!(
-            "Profile of Revolve {revolve}: 137.5° about SketchY. \
+            "Profile of Revolve {revolve}: 137.5° about the sketch Y axis. \
              Apply rebuilds the feature and its dependents."
         )
     );

@@ -682,6 +682,16 @@ pub enum RevolveAxis {
     Line(StableEntityId),
 }
 
+impl std::fmt::Display for RevolveAxis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SketchX => f.write_str("the sketch X axis"),
+            Self::SketchY => f.write_str("the sketch Y axis"),
+            Self::Line(line) => write!(f, "Line {line}"),
+        }
+    }
+}
+
 /// How far a [`Revolve`] turns.
 ///
 /// §27A: exactly one full turn, 2π, which closes on itself and has no end
@@ -697,16 +707,16 @@ pub enum RevolveExtent {
 }
 
 /// The angle of a partial [`Revolve`], in radians: the one domain policy for
-/// it, applied by the UI draft, the CLI request, the create job, the payload
-/// decoder and the evaluator alike (§27D).
+/// it, applied by the UI draft, the CLI request, the create job and the payload
+/// decoder alike (§27D); the evaluator reads only payloads that passed it.
 ///
-/// A right-handed turn about the sketch's +Y axis, starting at the profile.
-/// Kept exactly as given: nothing is rounded, reduced modulo a turn or turned
-/// into another operation. Accepted from [`Self::MIN_RADIANS`] to
+/// A right-handed turn about the directed [`RevolveAxis`], starting at the
+/// profile. Kept exactly as given: nothing is rounded, reduced modulo a turn or
+/// turned into another operation. Accepted from [`Self::MIN_RADIANS`] to
 /// [`Self::MAX_RADIANS`], both inclusive; 0, negative angles, angles closer
 /// than the minimum to 0 or to a full turn, exactly 2π, several turns, NaN
 /// and infinities are refused. The limits come from kernel and single-precision
-/// mesh checks, recorded in `docs/partial-angle-revolve.md`.
+/// mesh checks.
 ///
 /// The refusals name no unit: the UI and the CLI take degrees, and each shows
 /// the accepted range in its own unit beside the value it took.

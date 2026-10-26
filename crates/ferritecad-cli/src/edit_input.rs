@@ -32,7 +32,6 @@ pub(super) enum Change {
         object: ObjectId,
         extent: Turn,
     },
-
     AddSketch {
         object: ObjectId,
         name: Option<String>,
@@ -96,7 +95,6 @@ impl Change {
                 object,
                 extent: extent.into_extent()?,
             },
-
             Self::AddSketch {
                 object,
                 name,

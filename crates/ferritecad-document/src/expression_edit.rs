@@ -79,7 +79,6 @@ pub enum EditChange {
         object: ObjectId,
         extent: RevolveExtent,
     },
-
     AddSketch {
         object: ObjectId,
         name: Option<String>,
@@ -491,7 +490,6 @@ impl Document {
                             }),
                         )?;
                     }
-
                     EditChange::AddSketch { name, sketch, .. } => {
                         insert_candidate(
                             document,

@@ -203,9 +203,8 @@ impl RevolveRequest {
             }
             RevolveAxis::Line { start, end } => {
                 hasher.str("line");
-                for value in [start.x, start.y, end.x, end.y] {
-                    hasher.bytes(&value.to_bits().to_le_bytes());
-                }
+                start.feed(hasher);
+                end.feed(hasher);
             }
         }
         match self.turn {

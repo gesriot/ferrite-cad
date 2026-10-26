@@ -956,6 +956,12 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
       write_error(out_error, "fc_occt_boolean was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
+    if (kind < 0 || kind > 2) {
+      write_error(out_error, "fc_occt_boolean was given an unknown operation " +
+                                 std::to_string(kind));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const std::string operation = kind == 0 ? "cut" : kind == 1 ? "fuse" : "common";
     if (target == tool && kind == 0) {
       write_error(out_error, "a cut needs two different shapes");
       return FC_OCCT_INVALID_INPUT;
@@ -973,7 +979,7 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
       return FC_OCCT_UNKNOWN_HANDLE;
     }
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the cut was cancelled before it began");
+      write_error(out_error, "the " + operation + " was cancelled before it began");
       return FC_OCCT_CANCELLED;
     }
 
@@ -982,8 +988,6 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
     GProp_GProps before;
     BRepGProp::VolumeProperties(target_found->second.shape, before);
 
-    if (kind < 0 || kind > 2) return FC_OCCT_INVALID_INPUT;
-    const std::string operation = kind == 0 ? "cut" : kind == 1 ? "fuse" : "common";
     BRepAlgoAPI_BooleanOperation algorithm;
     algorithm.SetOperation(kind == 0 ? BOPAlgo_CUT : kind == 1 ? BOPAlgo_FUSE : BOPAlgo_COMMON);
     // Earlier feature results remain live and may be archived or resolved
@@ -1000,7 +1004,7 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
     algorithm.Build(range);
 
     if (cancelled(cancel, cancel_context)) {
-      write_error(out_error, "the cut was cancelled");
+      write_error(out_error, "the " + operation + " was cancelled");
       return FC_OCCT_CANCELLED;
     }
     if (!algorithm.IsDone()) {
@@ -1032,7 +1036,8 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
     const TopoDS_Shape result_shape = solids(1);
     BRepCheck_Analyzer analyzer(result_shape);
     if (!analyzer.IsValid()) {
-      write_error(out_error, "the cut produced a solid Open CASCADE calls invalid");
+      write_error(out_error,
+                  "the " + operation + " produced a solid Open CASCADE calls invalid");
       return FC_OCCT_KERNEL;
     }
 

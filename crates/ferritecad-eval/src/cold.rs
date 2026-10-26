@@ -518,7 +518,7 @@ fn run<K: GeometryKernel + ?Sized>(
                                 let previous_names =
                                     state.topology.feature(previous).ok_or_else(|| {
                                         CadError::topology(format!(
-                                            "feature {previous} has no names"
+                                            "feature {id} modifies {previous}, which named nothing"
                                         ))
                                     })?;
                                 let names = state.topology.name_operation(
