@@ -945,7 +945,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
 
     // Removing concentricity leaves these circles disjoint: the pinned centre
     // is far from the other circle's stored guess. NewBody still requires one
-    // solid, so the kernel refuses and nothing is published.
+    // solid, so the feature is refused and nothing is published.
     let catalog = inspect(&widened);
     let never = f.root.path().join("never.fcad");
     let present = entries(f.root.path());
@@ -957,12 +957,12 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         OP,
         2,
     );
-    assert_eq!(split["error"]["kind"], "kernel", "{split:?}");
+    assert_eq!(split["error"]["kind"], "unsupported", "{split:?}");
     assert!(
         split["error"]["message"]
             .as_str()
             .expect("diagnostic")
-            .contains("the sweep is not one valid solid"),
+            .contains("sweep into 2 separate solids, and a new body must be one solid"),
         "{split:?}"
     );
     assert_eq!(entries(f.root.path()), present, "a refusal left something");

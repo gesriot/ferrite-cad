@@ -533,11 +533,14 @@ fn run<K: GeometryKernel + ?Sized>(
                         let tool = request.build(kernel, &scoped)?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
-                        if previous.is_none()
-                            && multiple_regions
-                            && kernel.solid_count(tool.shape)? != 1
-                        {
-                            return Err(CadError::kernel("the sweep is not one valid solid"));
+                        if previous.is_none() && multiple_regions {
+                            let solids = kernel.solid_count(tool.shape)?;
+                            if solids != 1 {
+                                return Err(CadError::unsupported(format!(
+                                    "the selected regions sweep into {solids} separate solids, \
+                                     and a new body must be one solid"
+                                )));
+                            }
                         }
                         let tool_names =
                             state

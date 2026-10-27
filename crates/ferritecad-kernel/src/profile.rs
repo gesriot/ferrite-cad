@@ -449,10 +449,12 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Builds a one-region profile, refusing a label reused across loops.
     pub fn new(plane: SketchPlane, outer: ProfileLoop, inner: Vec<ProfileLoop>) -> Result<Self> {
         Self::from_regions(plane, vec![ProfileRegion { outer, inner }])
     }
 
+    /// Builds a profile, refusing a label reused across loops.
     pub fn from_regions(plane: SketchPlane, regions: Vec<ProfileRegion>) -> Result<Self> {
         if regions.is_empty() {
             return Err(CadError::input("a profile needs at least one region"));
@@ -476,18 +478,26 @@ impl Profile {
     pub fn plane(&self) -> &SketchPlane {
         &self.plane
     }
+
     pub fn regions(&self) -> &[ProfileRegion] {
         &self.regions
     }
+
+    /// The first region's boundary; read every region through [`Self::regions`].
     pub fn outer(&self) -> &ProfileLoop {
         &self.regions[0].outer
     }
+
+    /// The first region's holes; read every region through [`Self::regions`].
     pub fn inner(&self) -> &[ProfileLoop] {
         &self.regions[0].inner
     }
+
     pub fn loops(&self) -> impl Iterator<Item = &ProfileLoop> {
         self.regions.iter().flat_map(ProfileRegion::loops)
     }
+
+    /// Every segment of every loop, region by region, outer first.
     pub fn segments(&self) -> impl Iterator<Item = &ProfileSegment> {
         self.loops().flat_map(ProfileLoop::segments)
     }
@@ -504,7 +514,7 @@ impl Profile {
                 .position(|r| r.outer.segments().iter().any(|s| s.label == *curve))
                 .ok_or_else(|| {
                     CadError::input(format!(
-                        "region curve {curve} is missing, construction geometry, or lies on a hole"
+                        "region curve {curve} is not on the outer boundary of any region"
                     ))
                 })?;
             selected.insert(index);
@@ -518,6 +528,7 @@ impl Profile {
         )
     }
 
+    /// Feeds the profile into a cache key.
     pub fn feed(&self, hasher: &mut CanonicalHasher) {
         hasher.field("profile");
         self.plane.feed(hasher);

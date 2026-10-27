@@ -260,3 +260,51 @@ fn region_addition_selection_and_dependent_refusal_use_the_edit_boundary() {
         assert_eq!(std::fs::read(&dependent).expect("source bytes"), before);
     }
 }
+
+#[test]
+fn rebuild_counts_the_holes_of_every_region() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    ferritecad_fixtures::write_plate(&source).expect("plate");
+    let d = Document::open_read_only(&source).expect("source");
+    let mut f = region_edits::fixture(&d, false);
+    drop(d);
+    // The hole belongs to the second region, which a first-region count misses.
+    let EditChange::AddSketch { sketch, .. } = &mut f.changes[0] else {
+        panic!("the fixture starts with its sketch");
+    };
+    sketch.curves.push(SketchCurve {
+        id: ferritecad_types::StableEntityId::new(),
+        construction: false,
+        geometry: SketchGeometry::Circle {
+            center: Point2::new(18., 0.).expect("center"),
+            radius: 1.,
+        },
+    });
+    let added = root.path().join("added.fcad");
+    run(
+        &source,
+        &added,
+        ferritecad_fixtures::edit_request_json(&f.changes),
+        0,
+    );
+    let out = cli()
+        .arg("rebuild")
+        .arg(&added)
+        .arg("--cold")
+        .output()
+        .expect("rebuild");
+    assert!(out.status.success(), "{out:?}");
+    let report = String::from_utf8_lossy(&out.stdout);
+    let row = report
+        .lines()
+        .find(|line| line.contains(&f.sketch.to_string()))
+        .expect("the sketch row");
+    assert!(
+        row.ends_with("3 segments, 2 regions, 1 hole(s)"),
+        "{report}"
+    );
+}

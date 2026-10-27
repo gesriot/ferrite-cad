@@ -862,17 +862,15 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       const TopoDS_Face face = face_builder.Face();
       // Asked again of the whole face, because each hole was only checked
       // against the boundary: two holes that each sit inside it may still
-      // overlap each other.
-      if (region_loops > 1 && BRepCheck_Analyzer(face).IsValid() != Standard_True) {
-        write_error(out_error,
-                    "the profile's holes do not lie strictly inside its boundary "
-                    "as separate regions, so it bounds no face with a cavity");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      // Revolving a self-intersecting wire can hide its crossing in the final B-Rep.
+      // overlap each other. Without holes, the check still matters: revolving a
+      // self-intersecting wire can hide its crossing in the final B-Rep.
       if (!BRepCheck_Analyzer(face).IsValid()) {
-        write_error(out_error, "the profile does not bound a valid planar face; "
-                               "check for self-intersections");
+        write_error(out_error,
+                    region_loops > 1
+                        ? "the profile's holes do not lie strictly inside its boundary "
+                          "as separate regions, so it bounds no face with a cavity"
+                        : "the profile does not bound a valid planar face; "
+                          "check for self-intersections");
         return FC_OCCT_INVALID_INPUT;
       }
 
