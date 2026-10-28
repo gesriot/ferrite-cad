@@ -37,6 +37,13 @@ other hole's face, edge and vertex names.
 
 Represent a node by a domain-separated BLAKE3-256 digest of its tagged operands.
 The model reconstructs the graph; a reference never embeds its ancestry.
+Keep one complete graph in `ModelNaming`. Each `FeatureNaming` owns only nodes
+first created along its lineage by that feature; the model graph is their union,
+with no duplicate owners. A boolean's unpublished tool contributes its new nodes
+to the boolean feature. Derivation reads existing nodes from the model rather
+than copying predecessor graphs. Removing a feature removes its owned nodes.
+Ownership is independent of unrelated body order and of cold versus restored
+predecessors; unequal nodes at one digest still refuse publication.
 Curve roots are qualified by their producer occurrence; sharing a sketch does
 not collapse separate solids. The producer identity scopes operation nodes,
 so the 50-body corpus has no
@@ -88,6 +95,16 @@ canonical union of all parent terms, not one arbitrarily preferred parent.
 Keep ancestry sets so a deliberately requested descendant family reaches all
 its members. A removed input has an explicit deleted survival relation; it can
 still have generated descendants of a different meaning.
+
+Store non-empty ancestry for every meaning with descendants in the result.
+Do not retain inherited meanings that have lost their last descendant. Keep an
+empty row only for an owned `generated`, `boundary` or `split-boundary-history`
+output that disappears within its own feature: the caps of a Cut's temporary
+tool belong to that Cut and may already be gone in its result. These empty rows
+are not carried into later features. A name known by the lineage graph with no
+descendants, whether absent or locally empty, refuses resolution with the same
+diagnostic. Build an inverse entity-to-ancestor index once for each input instead
+of scanning all its ancestry rows for every history relation.
 
 Reject manufacturing suffixes for split pieces or treating a generated child
 as survival of its parent. In ThroughAll → Blind → ThroughAll, the pocket floor
@@ -183,8 +200,13 @@ name sets and cardinalities.
 
 ### 8. Cache the B-Rep and its naming graph atomically
 
-Choose one derived cache entry containing the B-Rep, complete name-to-slot
-sets, ancestry sets, incident-face relations and explicit removed meanings.
+Choose one derived cache entry containing the B-Rep, only the feature's owned
+derivation nodes, complete name-to-slot sets, ancestry sets and incident-face
+relations. Inherited ancestry rows must be non-empty. Each owned `generated`,
+`boundary` and `split-boundary-history` node requires an ancestry row; that row
+may be empty when the output disappears in its own feature, including tool caps.
+An inherited deleted meaning needs no row because its derivation remains in the
+lineage graph. No separate tombstone field or codec section is needed.
 Archive every physical entity once, map each name to a set of slots, and
 rebind all slots on restore. A name may have several slots and several names
 may share a slot; the old `BoundName -> one slot` restrictions cannot be reused.
@@ -193,11 +215,16 @@ Cache typed output-name ancestry only; the prototype's raw curve/end seed
 aliases support its temporary legacy translator and are not stored references.
 Input roots remain operands in the reconstructed derivation graph.
 
-In 08 replace `archive.rs`/`codec.rs`'s role-specific payload and set
-`ARCHIVE_CACHE_KIND` to `brep.generative.v1`. Discard old entries and cold rebuild;
+Set `ARCHIVE_CACHE_KIND` to `brep.generative.v2`. Discard old entries and cold rebuild;
 no legacy reader, migration or mixed old/new tables. Key the whole entry by
 model inputs, naming algorithm and kernel build. Missing names, mismatched
 hashes, invalid incidence, kinds or slots invalidate the entire entry.
+Restore requires the predecessor chain to have been restored or rebuilt first.
+Decode checks the local record; before publication, validate each owned node's
+operands and every result name against the owned nodes plus the prepared model
+graph. A missing operand, foreign lineage, duplicate owner, or invalid empty row
+rejects the whole entry. No repeated validation walk of an inherited graph is
+needed. Geometry and names are published together after the full incidence check.
 
 Reject restoring geometry while silently omitting naming. The archive test
 round-trips every plate entity and its complete name sets through actual OCCT

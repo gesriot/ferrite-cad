@@ -22,6 +22,15 @@ pub enum Derivation {
 pub type Derivations = BTreeMap<ContentHash, Arc<Derivation>>;
 
 impl Derivation {
+    pub(crate) fn requires_ancestry(&self) -> bool {
+        matches!(
+            self,
+            Self::Expression {
+                tag: "generated" | "boundary" | "split-boundary-history",
+                ..
+            }
+        )
+    }
     pub fn name(&self) -> Name {
         match self {
             Self::Curve(feature, curve, plane) => curve_root(*feature, *curve, *plane),
@@ -55,10 +64,11 @@ impl Derivation {
 
 pub(crate) fn insert(
     graph: &mut Derivations,
+    inherited: &Derivations,
     digest: ContentHash,
     node: Arc<Derivation>,
 ) -> Result<()> {
-    if let Some(existing) = graph.get(&digest) {
+    if let Some(existing) = inherited.get(&digest).or_else(|| graph.get(&digest)) {
         if **existing != *node {
             return Err(CadError::topology(format!(
                 "unequal derivations collide at {digest}; refusing to merge names"
@@ -69,13 +79,18 @@ pub(crate) fn insert(
     }
     Ok(())
 }
-pub(crate) fn intern(graph: &mut Derivations, node: Derivation) -> Result<Name> {
+pub(crate) fn intern(
+    graph: &mut Derivations,
+    inherited: &Derivations,
+    node: Derivation,
+) -> Result<Name> {
     let name = node.name();
-    insert(graph, name.digest, Arc::new(node))?;
+    insert(graph, inherited, name.digest, Arc::new(node))?;
     Ok(name)
 }
 pub(crate) fn expression(
     graph: &mut Derivations,
+    inherited: &Derivations,
     kind: SubShapeKind,
     tag: &'static str,
     feature: Option<ObjectId>,
@@ -84,6 +99,7 @@ pub(crate) fn expression(
 ) -> Result<Name> {
     intern(
         graph,
+        inherited,
         Derivation::Expression {
             kind,
             tag,
@@ -93,75 +109,89 @@ pub(crate) fn expression(
         },
     )
 }
-pub(crate) fn validate(graph: &Derivations) -> Result<()> {
+// Decode can check the local record before its predecessors are available. Restore
+// supplies the inherited graph and requires every operand, including its kind.
+pub(crate) fn validate(graph: &Derivations, inherited: Option<&Derivations>) -> Result<()> {
     for (digest, node) in graph {
-        let valid = match &**node {
-            Derivation::Curve(..) | Derivation::Cap(..) => true,
-            Derivation::Expression {
+        validate_node(*digest, node, graph, inherited)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_node(
+    digest: ContentHash,
+    node: &Derivation,
+    graph: &Derivations,
+    inherited: Option<&Derivations>,
+) -> Result<()> {
+    let lookup = |digest: ContentHash| {
+        graph
+            .get(&digest)
+            .or_else(|| inherited.and_then(|g| g.get(&digest)))
+    };
+    let valid = match node {
+        Derivation::Curve(..) | Derivation::Cap(..) => true,
+        Derivation::Expression {
+            kind,
+            tag,
+            feature,
+            inputs,
+            extra,
+        } => {
+            let elementary = matches!(
                 kind,
-                tag,
-                feature,
-                inputs,
-                extra,
-            } => {
-                let elementary = matches!(
-                    kind,
-                    SubShapeKind::Face | SubShapeKind::Edge | SubShapeKind::Vertex
-                );
-                elementary
-                    && match *tag {
-                        "curve-end" => {
-                            *kind == SubShapeKind::Vertex
-                                && feature.is_none()
-                                && *extra <= 1
-                                && inputs.len() == 1
-                                && inputs.iter().all(|i| {
-                                    matches!(
-                                        graph.get(&i.digest).map(|v| &**v),
-                                        Some(Derivation::Curve(..))
-                                    )
-                                })
-                        }
-                        "generated" | "modified" => {
-                            feature.is_some()
-                                && ferritecad_kernel::NamingOperation::from_tag(*extra).is_some()
-                                && inputs.len() == 1
-                        }
-                        "merge" | "split-boundary-history" => {
-                            *kind == SubShapeKind::Face
-                                && feature.is_some()
-                                && *extra == 0
-                                && !inputs.is_empty()
-                        }
-                        "incident-faces" => {
-                            *kind != SubShapeKind::Face
-                                && feature.is_none()
-                                && *extra == 0
-                                && !inputs.is_empty()
-                                && inputs.iter().all(|i| i.kind == SubShapeKind::Face)
-                        }
-                        "boundary" => {
-                            *kind != SubShapeKind::Face
-                                && feature.is_some()
-                                && *extra == 0
-                                && !inputs.is_empty()
-                        }
-                        _ => false,
+                SubShapeKind::Face | SubShapeKind::Edge | SubShapeKind::Vertex
+            );
+            elementary
+                && match *tag {
+                    "curve-end" => {
+                        *kind == SubShapeKind::Vertex
+                            && feature.is_none()
+                            && *extra <= 1
+                            && inputs.len() == 1
+                            && inputs.iter().all(|i| match lookup(i.digest) {
+                                Some(node) => matches!(&**node, Derivation::Curve(..)),
+                                None => inherited.is_none(),
+                            })
                     }
-            }
-        };
-        if !valid
-            || node.name().digest != *digest
-            || node.inputs().any(|n| {
-                graph
-                    .get(&n.digest)
-                    .is_none_or(|parent| parent.kind() != n.kind)
-            })
-        {
-            return Err(CadError::topology(
-                "invalid or incomplete naming derivation graph",
-            ));
+                    "generated" | "modified" => {
+                        feature.is_some()
+                            && ferritecad_kernel::NamingOperation::from_tag(*extra).is_some()
+                            && inputs.len() == 1
+                    }
+                    "merge" | "split-boundary-history" => {
+                        *kind == SubShapeKind::Face
+                            && feature.is_some()
+                            && *extra == 0
+                            && !inputs.is_empty()
+                    }
+                    "incident-faces" => {
+                        *kind != SubShapeKind::Face
+                            && feature.is_none()
+                            && *extra == 0
+                            && !inputs.is_empty()
+                            && inputs.iter().all(|i| i.kind == SubShapeKind::Face)
+                    }
+                    "boundary" => {
+                        *kind != SubShapeKind::Face
+                            && feature.is_some()
+                            && *extra == 0
+                            && !inputs.is_empty()
+                    }
+                    _ => false,
+                }
         }
+    };
+    if !valid
+        || node.name().digest != digest
+        || node.inputs().any(|n| match lookup(n.digest) {
+            Some(parent) => parent.kind() != n.kind,
+            None => inherited.is_some(),
+        })
+    {
+        return Err(CadError::topology(
+            "invalid or incomplete naming derivation graph",
+        ));
     }
     Ok(())
 }

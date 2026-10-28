@@ -248,7 +248,7 @@ fn invalid_kernel_slot_tables_never_publish_or_leak_a_restored_shape() {
         let before = kernel.base.live_shape_count();
         if fault <= 3 {
             let mut destination = model.clone();
-            destination.features.clear();
+            destination.remove_feature(owner);
             assert!(crate::restore_feature(&mut kernel, &archive, &mut destination).is_err());
             assert!(destination.features.is_empty());
         } else {
@@ -256,4 +256,67 @@ fn invalid_kernel_slot_tables_never_publish_or_leak_a_restored_shape() {
         }
         assert_eq!(kernel.base.live_shape_count(), before);
     }
+}
+
+#[test]
+fn restoration_requires_local_output_rows_and_nonempty_inherited_rows() {
+    let (mut kernel, mut model, parent, request) = crate::archive::tests::plate();
+    let child = ObjectId::new();
+    let prepared = crate::archive::tests::support::prepared(child, request.profile(), false)
+        .expect("child roots");
+    model.operations.extend(prepared.operations);
+    model.planes.extend(prepared.planes);
+    model.roots.extend(prepared.roots);
+    model.sweeps.extend(prepared.sweeps);
+    model.previous.insert(child, parent);
+    model.index_lineage().expect("lineage");
+    let mut valid = crate::archive_feature(&mut kernel, &model, parent).expect("parent archive");
+    valid.producer = child;
+    valid.derivations.clear();
+    let root = derivation::intern(
+        &mut valid.derivations,
+        model.derivations(),
+        Derivation::Cap(child, false, model.planes.get(&child).copied()),
+    )
+    .expect("own root");
+    let own = derivation::expression(
+        &mut valid.derivations,
+        model.derivations(),
+        SubShapeKind::Face,
+        "generated",
+        Some(child),
+        [root],
+        NamingOperation::Extrude.tag(),
+    )
+    .expect("own output");
+    valid.ancestry.insert(own, BTreeSet::new());
+    let mut destination = model.clone();
+    crate::restore_feature(&mut kernel, &valid, &mut destination).expect("inherited live names");
+    assert_eq!(destination.features[&child].derivations.len(), 2);
+    assert!(destination.features[&child].ancestry[&own].is_empty());
+    kernel.release(destination.features[&child].shape().expect("restored"));
+
+    let mut cases = Vec::new();
+    let mut bad = valid.clone();
+    bad.ancestry.remove(&own);
+    cases.push(bad);
+    let mut bad = valid.clone();
+    let inherited = *bad.ancestry.keys().find(|n| **n != own).expect("inherited");
+    bad.ancestry.get_mut(&inherited).expect("row").clear();
+    cases.push(bad);
+    let mut bad = valid.clone();
+    bad.derivations.remove(&root.digest);
+    cases.push(bad);
+    for bad in cases {
+        let mut destination = model.clone();
+        let before = kernel.live_shape_count();
+        assert!(crate::restore_feature(&mut kernel, &bad, &mut destination).is_err());
+        assert_eq!(destination.derivations(), model.derivations());
+        assert!(!destination.features.contains_key(&child));
+        assert_eq!(kernel.live_shape_count(), before);
+    }
+    let mut without_parent = model.clone();
+    without_parent.remove_feature(parent);
+    assert!(crate::restore_feature(&mut kernel, &valid, &mut without_parent).is_err());
+    assert!(without_parent.derivations().is_empty());
 }

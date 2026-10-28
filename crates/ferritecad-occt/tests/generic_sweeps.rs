@@ -809,7 +809,7 @@ fn an_unrelated_add_keeps_faces_edges_and_vertices_when_an_earlier_add_changes_e
         }
         let details = found
             .iter()
-            .map(|name| (*name, names.derivations[&name.digest].clone()))
+            .map(|name| (*name, built.topology().derivations()[&name.digest].clone()))
             .collect::<BTreeMap<_, _>>();
         built.release_all(&mut k);
         (found, details)

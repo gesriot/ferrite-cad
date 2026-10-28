@@ -6,7 +6,7 @@ use ferritecad_types::{CadError, ContentHash, ObjectId, Result};
 
 use crate::{ArchivedFeature, generative::Name};
 
-pub const ARCHIVE_CACHE_KIND: &str = "brep.generative.v1";
+pub const ARCHIVE_CACHE_KIND: &str = "brep.generative.v2";
 
 impl ArchivedFeature {
     pub fn encode(&self) -> Result<Vec<u8>> {

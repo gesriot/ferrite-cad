@@ -129,7 +129,7 @@ Timing scopes:
   preparation is excluded from these windows.
 - `cache_ms`: the actual evaluator's `rebuild_cached` with a primed cache, in a
   fresh kernel session. Every feature must report `Hit`. Cold, replay and cached
-  results must agree on all derivation keys, primary name multiplicities and
+  results must agree on each feature's owned derivation keys, primary name multiplicities and
   complete ancestry expressed through primary names. No fallback rebuild counts
   as a cache sample.
 
@@ -142,12 +142,18 @@ covers generation, measurements, fingerprint checks and cache creation, rather
 than claiming to isolate the naming maps' allocation alone.
 
 Counters sum public `FeatureNaming` fields over all N + 1 results. `derivations`
-counts map entries, `ancestry_members` sums set sizes, and `entities` counts
-physical bindings. `ancestry_rows` and `empty_ancestry_rows` also expose retained
-deleted meanings. `unique_derivations` is the union of digest keys;
-`distinct_derivation_allocations` counts distinct live `Arc` pointees, so shared
-node payloads are not confused with the copied maps. `tip_entities` counts only
-the final result. These counters describe the cold model.
+now counts only nodes first created by each feature, including its temporary
+boolean tool. `unique_derivations` counts the shared model graph; these two
+counts must agree because each node has one live owning feature. Earlier long
+measurements counted the repeated full graphs in `derivations`.
+`ancestry_members` sums set sizes, and `entities` counts physical bindings.
+`ancestry_rows` includes surviving meanings and only locally born output names
+that disappear in that feature. `empty_ancestry_rows` counts those local deleted
+outputs; inherited empty rows are no longer copied. `distinct_derivation_allocations`
+counts distinct live `Arc` pointees. `tip_entities` counts only the final result.
+These counters describe the cold model. Result signatures compare owned node
+keys, entity-name multiplicities and complete result ancestry without rebuilding
+or copying a full derivation graph for each feature.
 
 `cache_entry_bytes` sums serialized archive payload lengths after verifying
 their stored bytes; `last_entry_bytes` is the final feature's payload length.

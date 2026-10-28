@@ -7,8 +7,9 @@ use ferritecad_types::{CadError, ObjectId, Result};
 use crate::ModelNaming;
 use crate::generative::{FeatureNaming, Name};
 
-/// One validated atomic B-Rep and typed naming graph. Both constructors validate
-/// the complete record; restore still verifies every slot against the live B-Rep.
+/// One atomic B-Rep with feature-owned nodes and result-local bindings.
+/// Decode checks the record; restore also requires the prepared predecessor graph
+/// and verifies every slot and incidence relation against the live B-Rep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchivedFeature {
     pub(crate) derivations: crate::derivation::Derivations,
@@ -31,7 +32,7 @@ impl ArchivedFeature {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        crate::derivation::validate(&self.derivations)?;
+        crate::derivation::validate(&self.derivations, None)?;
         let bad = || CadError::topology("incomplete or contradictory generative archive");
         if self.entities.is_empty()
             || self.entities.keys().any(|s| s.is_root())
@@ -40,7 +41,7 @@ impl ArchivedFeature {
             return Err(bad());
         }
         for name in self.entities.values().chain(self.ancestry.keys()) {
-            let output = self.derivations.get(&name.digest).is_some_and(|node| {
+            let output = self.derivations.get(&name.digest).is_none_or(|node| {
                 node.kind() == name.kind
                     && matches!(
                         &**node,
@@ -52,16 +53,12 @@ impl ArchivedFeature {
             }
         }
         for (digest, node) in &self.derivations {
-            if matches!(
-                &**node,
-                crate::derivation::Derivation::Expression {
-                    tag: "generated" | "boundary" | "split-boundary-history",
-                    ..
-                }
-            ) && !self.ancestry.contains_key(&Name {
-                kind: node.kind(),
-                digest: *digest,
-            }) {
+            if node.requires_ancestry()
+                && !self.ancestry.contains_key(&Name {
+                    kind: node.kind(),
+                    digest: *digest,
+                })
+            {
                 return Err(bad());
             }
         }
@@ -88,11 +85,38 @@ impl ArchivedFeature {
             }
         }
         for (name, members) in &self.ancestry {
-            if members
-                .iter()
-                .any(|slot| self.entities.get(slot).is_none_or(|n| n.kind != name.kind))
+            if (members.is_empty()
+                && !self
+                    .derivations
+                    .get(&name.digest)
+                    .is_some_and(|n| n.requires_ancestry()))
+                || members
+                    .iter()
+                    .any(|slot| self.entities.get(slot).is_none_or(|n| n.kind != name.kind))
             {
                 return Err(bad());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_in(&self, model: &ModelNaming) -> Result<()> {
+        self.validate()?;
+        model.check_derivations(self.producer, &self.derivations)?;
+        for name in self.entities.values().chain(self.ancestry.keys()) {
+            model.check_name(self.producer, &self.derivations, *name)?;
+            let node = self
+                .derivations
+                .get(&name.digest)
+                .or_else(|| model.derivations().get(&name.digest))
+                .expect("checked name");
+            if !matches!(
+                &**node,
+                crate::derivation::Derivation::Expression { tag, .. } if *tag != "curve-end"
+            ) {
+                return Err(CadError::topology(
+                    "incomplete or contradictory generative archive",
+                ));
             }
         }
         Ok(())
@@ -145,7 +169,7 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             .map(|(s, set)| Ok((slots[s], members(set)?)))
             .collect::<Result<_>>()?,
     };
-    archived.validate()?;
+    archived.validate_in(map)?;
     Ok(archived)
 }
 
@@ -154,6 +178,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
     archived: &ArchivedFeature,
     into: &mut ModelNaming,
 ) -> Result<()> {
+    archived.validate_in(into)?;
     let slots: Vec<_> = archived.entities.keys().copied().collect();
     let (shape, restored) = kernel.decode_shape_with(&archived.blob, &slots)?;
     let result = (|| {
@@ -201,7 +226,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 .map(|(name, set)| (*name, rebind(set)))
                 .collect(),
         };
-        into.insert_feature(archived.producer, named)
+        into.publish_feature(archived.producer, named)
     })();
     if result.is_err() {
         kernel.release(shape);

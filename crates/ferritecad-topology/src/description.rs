@@ -28,8 +28,8 @@ impl ModelNaming {
             if !seen.insert(input) {
                 continue;
             }
-            let node = feature
-                .derivations
+            let node = self
+                .derivations()
                 .get(&input.digest)
                 .ok_or_else(|| CadError::topology("description has a missing derivation"))?;
             write!(text, "; {} = ", input.digest).expect("writing to a String cannot fail");

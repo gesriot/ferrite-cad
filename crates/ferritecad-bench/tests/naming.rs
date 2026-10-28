@@ -480,7 +480,7 @@ fn retain_tool_cap_derivations_when_the_same_cut_deletes_their_descendants() {
             );
             assert!(!predecessor.derivations.contains_key(&cap.digest));
             assert!(named.derivations.contains_key(&cap.digest));
-            let descendants = named.ancestry.get(&cap).map_or(0, BTreeSet::len);
+            let descendants = named.ancestry.get(&cap).expect("own output row").len();
             assert_eq!(descendants, usize::from(!through && end));
             for selection in [Selection::One, Selection::AllDescendants] {
                 assert_eq!(named.resolve_set(cap, selection).is_ok(), !through && end);
@@ -915,6 +915,22 @@ fn cold_operations_after_restored_predecessors_match_fully_cold_chains() {
         let cold = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("cold");
         assert!(cold.all_built());
         assert_same_names(cold.topology(), warm.topology());
+        for feature in cold.topology().producers() {
+            let archived = |kernel: &mut OcctKernel, model: &ModelNaming| {
+                ferritecad_topology::archive_feature(kernel, model, feature)
+                    .expect("archive")
+                    .encode()
+                    .expect("encode")
+            };
+            let cold_bytes = archived(&mut kernel, cold.topology());
+            let warm_bytes = archived(&mut kernel, warm.topology());
+            assert!(
+                cold_bytes == warm_bytes,
+                "archive bytes differ for feature {feature}: cold {} bytes, warm {} bytes",
+                cold_bytes.len(),
+                warm_bytes.len()
+            );
+        }
         warm.release_all(&mut kernel);
         cold.release_all(&mut kernel);
         assert_eq!(kernel.live_shape_count(), 0);
