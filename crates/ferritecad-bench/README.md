@@ -61,3 +61,102 @@ the corpus, including Chamfer; subsequent runs reuse the same document bytes.
 The JSON contains raw rebuild/naming/total samples, counts for every feature,
 all ambiguous primary names and comparisons with stored references and consumed
 swept edges. Run timing samples sequentially without other builds or tests.
+
+## Long single-body histories
+
+`--long` selects a separate corpus; it does not extend the ordinary corpus or
+its existing smoke test. There are two families at N = 100, 300 and 1000 Cuts:
+
+- `pockets_N`: independent radius-1 mm blind pockets on a 4 mm grid, 32 columns.
+- `rework_N`: concentric blind pockets with radii `1 + 0.01 * k` mm,
+  `k = 0..N-1`, and depths `4 + 0.001 * k` mm. Each larger, slightly deeper pocket
+  absorbs its predecessor's wall and floor. Equal depths would retain concentric
+  subdivisions of a coincident floor; the depth increment avoids that without
+  changing kernel rules. Every result after the first Cut must have the same
+  live entity count.
+
+Both start with the same 140 by 140 by 10 mm plate; independent pockets use a
+4 mm blind depth. The grid, plate dimensions and increment rules are fixed
+across N. Each document contains N + 1 feature results: position zero is the
+plate, positions 1 through N are Cuts. These unconstrained documents also work
+without PlaneGCS.
+
+Build once, finish all other builds/tests, then measure on a developer Mac:
+
+```sh
+cargo build -p ferritecad-bench --release --all-features
+target/release/ferritecad-bench --long --runs 3 \
+  --corpus-dir /tmp/long-histories-run --out /tmp/long-histories.json
+```
+
+Use the native library environment from `CONTRIBUTING.md`. The driver starts
+each case sequentially in a separate process under the existing
+`tools/watch-viewer-memory.py`, with a 6144 MiB physical-footprint limit and
+1800-second case deadline. `/usr/bin/time -l` supplies the process's maximum
+RSS in bytes. The watchdog separately records sampled process-tree RSS and
+physical footprint; these are different metrics and are not added together.
+The guarded driver requires macOS because that watchdog uses macOS APIs.
+Generation and the native short-history tests remain portable to all CI hosts.
+
+`--long-case pockets_300` selects one case, still in an isolated guarded
+process. Case directories must be new so earlier evidence cannot be overwritten.
+`--long --generate-only --corpus-dir DIR` writes the six documents without
+measuring them. The existing documents and their generator stay unchanged.
+
+The output JSON retains raw samples, counters, median summaries and growth
+exponents. Each case directory retains its document, cache, watchdog JSONL,
+stdout/stderr and incremental result. All are local outputs; do not commit them.
+The driver prints completion status for each case. A footprint or deadline limit
+is an incomplete measurement, not a zero or an extrapolated time. It records the
+phase and current feature from stderr. An N = 100 deadline or a modelling failure
+stops the run for investigation. Incomplete pairs have no growth exponent.
+
+Timing scopes:
+
+- `cold_ms`: the actual evaluator's `rebuild_cold`, excluding signature checks,
+  release and fixture generation. It includes profile conversion and naming.
+- `kernel_ms`: Extrude and Boolean calls within that same cold rebuild,
+  including native provenance capture. Naming's topology/history queries are
+  outside this interval.
+- `naming_ms`: a separate replay of the public `ModelNaming` calls on the same
+  stored document in a fresh kernel session. It includes model preparation,
+  profile-root selection, tool/result derivation and insertion/collision checks,
+  including topology/history queries. Geometry construction, archival and
+  fingerprint comparisons are excluded. This is a separately sampled component,
+  not a subtraction that must add exactly to the evaluator's cold time.
+- `naming_k10_ms`, `naming_k50_ms`, `naming_k100_ms`: the mean naming time of ten
+  trailing Cuts ending at N/10, N/2 and N, then the median across runs. Model
+  preparation is excluded from these windows.
+- `cache_ms`: the actual evaluator's `rebuild_cached` with a primed cache, in a
+  fresh kernel session. Every feature must report `Hit`. Cold, replay and cached
+  results must agree on all derivation keys, primary name multiplicities and
+  complete ancestry expressed through primary names. No fallback rebuild counts
+  as a cache sample.
+
+There is no untimed warm-up of an entire long history. Each sample runs cold,
+naming replay, then cached rebuild, releasing each model before the next one.
+The first replay writes the exact production archive format with production keys
+outside the naming timer. Later replays do not write it. Kernel sessions retain
+all intermediate results and tools as the evaluator does. The per-case RSS peak
+covers generation, measurements, fingerprint checks and cache creation, rather
+than claiming to isolate the naming maps' allocation alone.
+
+Counters sum public `FeatureNaming` fields over all N + 1 results. `derivations`
+counts map entries, `ancestry_members` sums set sizes, and `entities` counts
+physical bindings. `ancestry_rows` and `empty_ancestry_rows` also expose retained
+deleted meanings. `unique_derivations` is the union of digest keys;
+`distinct_derivation_allocations` counts distinct live `Arc` pointees, so shared
+node payloads are not confused with the copied maps. `tip_entities` counts only
+the final result. These counters describe the cold model.
+
+`cache_entry_bytes` sums serialized archive payload lengths after verifying
+their stored bytes; `last_entry_bytes` is the final feature's payload length.
+`cache_file_bytes` is the closed SQLite file size, including storage overhead.
+The driver calculates `ln(m2/m1) / ln(N2/N1)` for every positive measured metric
+between adjacent N in each family. One indicates linear growth, two quadratic;
+missing or zero values have no exponent. A killed run's sampled RSS is a lower
+bound and is never substituted for `/usr/bin/time`'s completed maximum RSS.
+
+The ordinary test suite additionally builds N = 10 of each family and checks
+all cold/replayed/cache names without timing thresholds. It skips only when OCCT
+is absent and not required; no solver or GPU is needed for these short cases.

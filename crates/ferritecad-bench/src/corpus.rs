@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use ferritecad_document::*;
 use ferritecad_types::{ObjectId, Result};
 
+mod long;
+pub use long::{LongCase, LongFamily, generate_long};
+
 #[derive(Debug)]
 pub struct Case {
     pub name: String,
