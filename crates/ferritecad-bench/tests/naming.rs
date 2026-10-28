@@ -917,24 +917,48 @@ fn cold_operations_after_restored_predecessors_match_fully_cold_chains() {
         assert_same_names(cold.topology(), warm.topology());
         for feature in cold.topology().producers() {
             let archived = |kernel: &mut OcctKernel, model: &ModelNaming| {
-                ferritecad_topology::archive_feature(kernel, model, feature)
-                    .expect("archive")
-                    .encode()
-                    .expect("encode")
+                ferritecad_topology::archive_feature(kernel, model, feature).expect("archive")
             };
-            let cold_bytes = archived(&mut kernel, cold.topology());
-            let warm_bytes = archived(&mut kernel, warm.topology());
-            assert!(
-                cold_bytes == warm_bytes,
-                "archive bytes differ for feature {feature}: cold {} bytes, warm {} bytes",
-                cold_bytes.len(),
-                warm_bytes.len()
+            let cold_archive = archived(&mut kernel, cold.topology());
+            let warm_archive = archived(&mut kernel, warm.topology());
+            assert_eq!(
+                naming_bytes(&cold_archive),
+                naming_bytes(&warm_archive),
+                "producer, derivations, entity names, ancestry and incidence for {feature}"
             );
+            let a = cold.shape(feature).expect("cold shape");
+            let b = warm.shape(feature).expect("warm shape");
+            assert!(kernel.is_valid(a).expect("cold BRepCheck"));
+            assert!(kernel.is_valid(b).expect("warm BRepCheck"));
+            let (faces_a, volume_a) = kernel.shape_stats(a).expect("cold geometry");
+            let (faces_b, volume_b) = kernel.shape_stats(b).expect("warm geometry");
+            assert_eq!(faces_a, faces_b);
+            assert!((volume_a - volume_b).abs() <= 1e-9 * volume_a.abs().max(1.));
+            for direction in [
+                ferritecad_types::Vec3::new(1., 0., 0.),
+                ferritecad_types::Vec3::new(0., 1., 0.),
+                ferritecad_types::Vec3::new(0., 0., 1.),
+            ] {
+                let direction = direction.expect("unit direction");
+                let x = kernel.projected_bounds(a, direction).expect("cold bounds");
+                let y = kernel.projected_bounds(b, direction).expect("warm bounds");
+                assert!(x.into_iter().zip(y).all(|(a, b)| (a - b).abs() < 1e-8));
+            }
         }
         warm.release_all(&mut kernel);
         cold.release_all(&mut kernel);
         assert_eq!(kernel.live_shape_count(), 0);
     }
+}
+
+fn naming_bytes(archive: &ferritecad_topology::ArchivedFeature) -> Vec<u8> {
+    let bytes = archive.encode().expect("encoded archive");
+    let identity = archive.blob().kernel();
+    let header =
+        16 + 3 * 4 + identity.id().len() + identity.version().len() + identity.build().len();
+    let after_brep = header + 4 + archive.blob().bytes().len();
+    // Exclude the length-prefixed B-Rep and the checksum that covers its numeric bits.
+    [&bytes[..header], &bytes[after_brep..bytes.len() - 32]].concat()
 }
 
 fn assert_scene_names(

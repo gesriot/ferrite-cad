@@ -225,6 +225,8 @@ operands and every result name against the owned nodes plus the prepared model
 graph. A missing operand, foreign lineage, duplicate owner, or invalid empty row
 rejects the whole entry. No repeated validation walk of an inherited graph is
 needed. Geometry and names are published together after the full incidence check.
+Record determinism covers naming and incidence sections; B-Rep bytes may differ in
+numeric representation, such as signed zero, while remaining geometrically equal.
 
 Reject restoring geometry while silently omitting naming. The archive test
 round-trips every plate entity and its complete name sets through actual OCCT
