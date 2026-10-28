@@ -68,13 +68,19 @@ pub fn generate_long(root: &Path, family: LongFamily, count: usize) -> Result<Lo
             ),
             LongFamily::Rework => ([70., 70.], 1. + index as f64 * 0.01),
         };
+        // A coincident floor retains concentric subdivisions in the boolean result.
+        // Engulf the previous floor as well as its wall to isolate dead history.
+        let depth = match family {
+            LongFamily::Pockets => 4.,
+            LongFamily::Rework => 4. + index as f64 * 0.001,
+        };
         let tool = circular_tool(
             &document,
             body,
             center,
             radius,
             EndCondition::Blind {
-                distance: Expression::constant(4.)?,
+                distance: Expression::constant(depth)?,
             },
         )?;
         document.write_changes(&tool.changes)?;

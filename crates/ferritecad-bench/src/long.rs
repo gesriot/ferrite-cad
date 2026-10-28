@@ -120,6 +120,18 @@ fn measure_case(
                 ..Sample::default()
             };
             require_built(&cold)?;
+            if matches!(family, LongFamily::Rework) {
+                let named = &cold.topology().features;
+                let first_count = named[&case.features[1]].entities.len();
+                if case.features[1..]
+                    .iter()
+                    .any(|id| named[id].entities.len() != first_count)
+                {
+                    return Err(
+                        "rework must retain constant live topology after its first Cut".into(),
+                    );
+                }
+            }
             let signatures = signatures(cold.topology());
             if let Some(expected) = &expected {
                 if &signatures != expected {

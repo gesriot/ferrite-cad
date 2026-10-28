@@ -69,10 +69,15 @@ its existing smoke test. There are two families at N = 100, 300 and 1000 Cuts:
 
 - `pockets_N`: independent radius-1 mm blind pockets on a 4 mm grid, 32 columns.
 - `rework_N`: concentric blind pockets with radii `1 + 0.01 * k` mm,
-  `k = 0..N-1`. Each larger pocket absorbs its predecessor's wall and floor.
+  `k = 0..N-1`, and depths `4 + 0.001 * k` mm. Each larger, slightly deeper pocket
+  absorbs its predecessor's wall and floor. Equal depths would retain concentric
+  subdivisions of a coincident floor; the depth increment avoids that without
+  changing kernel rules. Every result after the first Cut must have the same
+  live entity count.
 
-Both start with the same 140 by 140 by 10 mm plate and use a 4 mm blind depth.
-The grid, plate dimensions and depth are fixed across N. Each document contains
+Both start with the same 140 by 140 by 10 mm plate; independent pockets use a
+4 mm blind depth. The grid, plate dimensions and increment rules are fixed across N.
+Each document contains
 N + 1 feature results: position zero is the plate, positions 1 through N are
 Cuts. These unconstrained documents also work without PlaneGCS.
 
