@@ -436,6 +436,69 @@ fn keep_downstream_names_when_an_unrelated_upstream_cut_changes() {
 }
 
 #[test]
+fn retain_tool_cap_derivations_when_the_same_cut_deletes_their_descendants() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    use ferritecad_document::EndCondition;
+    use ferritecad_fixtures::feature_changes::{base_profile, body, circular_tool};
+    use ferritecad_topology::generative::{Selection, cap_root, generated};
+
+    let dir = tempfile::tempdir().expect("directory");
+    let path = dir.path().join("tool-caps.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("plate");
+    let mut document = Document::open(&path).expect("open");
+    let body = body(&document).expect("body");
+    let (plate, _, sketch) = base_profile(&document, body).expect("base profile");
+    let cut = circular_tool(&document, body, [20., 20.], 2., EndCondition::ThroughAll)
+        .expect("circular tool");
+    document.write_changes(&cut.changes).expect("add cut");
+    for through in [true, false] {
+        if !through {
+            document
+                .write_changes(&[EditChange::SetEndCondition {
+                    object: cut.feature,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(4.).expect("depth"),
+                    },
+                }])
+                .expect("blind cut");
+        }
+        let mut kernel = OcctKernel::new().expect("kernel");
+        let built =
+            rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("rebuild");
+        assert!(built.all_built(), "{:?}", built.report());
+        let model = built.topology();
+        let predecessor = &model.features[&plate];
+        let named = &model.features[&cut.feature];
+        for end in [false, true] {
+            let cap = generated(
+                cut.feature,
+                ferritecad_kernel::NamingOperation::Extrude,
+                cap_root(cut.feature, end, Some(sketch.plane)),
+                SubShapeKind::Face,
+            );
+            assert!(!predecessor.derivations.contains_key(&cap.digest));
+            assert!(named.derivations.contains_key(&cap.digest));
+            let descendants = named.ancestry.get(&cap).map_or(0, BTreeSet::len);
+            assert_eq!(descendants, usize::from(!through && end));
+            for selection in [Selection::One, Selection::AllDescendants] {
+                assert_eq!(named.resolve_set(cap, selection).is_ok(), !through && end);
+            }
+            eprintln!(
+                "through={through} end={end}: own generated cap {0}, descendants={descendants}",
+                cap.digest
+            );
+        }
+        let archive = ferritecad_topology::archive_feature(&mut kernel, model, cut.feature)
+            .expect("the current complete archive accepts the cut");
+        archive.encode().expect("valid current archive");
+        built.release_all(&mut kernel);
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+}
+
+#[test]
 fn keep_a_reference_compact_after_fifty_generations() {
     use ciborium::value::Value;
     use ferritecad_topology::generative::{curve_root, generated};
