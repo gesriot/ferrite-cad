@@ -789,6 +789,8 @@ impl Eq for RevolveAngle {}
 pub struct Revolve {
     /// The sketch supplying the profile.
     pub profile: ObjectId,
+    /// Curves on selected outer boundaries; empty selects every region.
+    pub regions: Vec<StableEntityId>,
     pub axis: RevolveAxis,
     pub extent: RevolveExtent,
     pub operation: SolidOperation,
@@ -804,6 +806,14 @@ impl Revolve {
         hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
         hasher.field("profile").bytes(&self.profile.to_bytes());
+        hasher.field("regions");
+        for curve in self
+            .regions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            hasher.bytes(&curve.to_bytes());
+        }
         hasher.field("axis");
         match self.axis {
             RevolveAxis::SketchX => {
@@ -935,6 +945,8 @@ impl Fillet {
 pub struct Extrude {
     /// The sketch supplying the profile.
     pub profile: ObjectId,
+    /// Curves on selected outer boundaries; empty selects every region.
+    pub regions: Vec<StableEntityId>,
     pub end_condition: EndCondition,
     /// Runs against the plane normal when true.
     pub reversed: bool,
@@ -961,6 +973,14 @@ impl Extrude {
         tolerance.feed(&mut hasher);
 
         hasher.field("profile").bytes(&self.profile.to_bytes());
+        hasher.field("regions");
+        for curve in self
+            .regions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            hasher.bytes(&curve.to_bytes());
+        }
         hasher.field("reversed").bool(self.reversed);
         hasher.field("operation").str(match self.operation {
             SolidOperation::NewBody => "new_body",
@@ -1438,6 +1458,7 @@ mod tests {
         assert!(RevolveAngle::new(RevolveAngle::MIN_RADIANS.next_down()).is_err());
         assert!(RevolveAngle::new(RevolveAngle::MAX_RADIANS.next_up()).is_err());
         let mut revolve = Revolve {
+            regions: Vec::new(),
             profile: ObjectId::new(),
             axis: RevolveAxis::SketchY,
             extent: RevolveExtent::FullTurn,
@@ -1565,6 +1586,7 @@ mod tests {
                     distance_mm: invalid.clone(),
                 }),
                 ObjectPayload::Revolve(Revolve {
+                    regions: Vec::new(),
                     profile: ObjectId::new(),
                     axis: RevolveAxis::SketchY,
                     extent: RevolveExtent::Partial { angle: invalid },
@@ -1579,6 +1601,7 @@ mod tests {
 
     fn sample_extrude() -> Extrude {
         Extrude {
+            regions: Vec::new(),
             profile: ObjectId::new(),
             end_condition: EndCondition::Blind {
                 distance: Expression::constant(10.0).expect("finite"),

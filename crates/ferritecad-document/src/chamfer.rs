@@ -327,6 +327,7 @@ mod tests {
                 2,
                 Some("Extrude1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(6.75)?,

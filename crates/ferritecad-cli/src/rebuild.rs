@@ -126,14 +126,19 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
         match &object.payload {
             ObjectPayload::Sketch(_) => {
                 if let Some(profile) = built.profile(*id) {
-                    // Every loop. A profile with a hole has segments its
-                    // boundary does not, and reporting only the boundary's
-                    // would understate the drawing that was actually swept.
+                    // Every loop of every region. A profile with a hole has
+                    // segments its boundary does not, and reporting only the
+                    // boundary's would understate the drawing that was swept.
                     write!(line, "{} segments", profile.segments().count())
                         .expect("writing to a String cannot fail");
-                    if !profile.inner().is_empty() {
-                        write!(line, ", {} hole(s)", profile.inner().len())
+                    let regions = profile.regions();
+                    if regions.len() > 1 {
+                        write!(line, ", {} regions", regions.len())
                             .expect("writing to a String cannot fail");
+                    }
+                    let holes: usize = regions.iter().map(|r| r.inner.len()).sum();
+                    if holes > 0 {
+                        write!(line, ", {holes} hole(s)").expect("writing to a String cannot fail");
                     }
                 }
             }

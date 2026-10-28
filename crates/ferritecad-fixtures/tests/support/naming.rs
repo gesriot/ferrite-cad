@@ -60,6 +60,7 @@ pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<M
         )?;
         let payload = if revolve {
             ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: ferritecad_document::RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
@@ -68,6 +69,7 @@ pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<M
             })
         } else {
             ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(1.)?,

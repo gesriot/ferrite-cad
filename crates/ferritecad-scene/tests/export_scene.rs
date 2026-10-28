@@ -362,6 +362,7 @@ fn several_bodies(path: &Path, count: usize) -> Vec<ObjectId> {
                     ordinal + 2,
                     Some("Raise"),
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(2.0)?,
@@ -1732,6 +1733,7 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
                     12,
                     None,
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(2.0)?,

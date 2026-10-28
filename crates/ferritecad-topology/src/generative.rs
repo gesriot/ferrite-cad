@@ -150,6 +150,30 @@ impl ModelNaming {
         Ok(())
     }
 
+    /// Restrict sweep provenance to the geometrically resolved selection.
+    pub fn select_profile(
+        &mut self,
+        owner: ObjectId,
+        profile: &ferritecad_kernel::Profile,
+    ) -> Result<()> {
+        let saved = self
+            .roots
+            .get_mut(&owner)
+            .ok_or_else(|| CadError::topology("sweep has no profile roots"))?;
+        let curves: BTreeSet<_> = profile.segments().map(|s| s.label).collect();
+        if curves
+            .iter()
+            .any(|c| !saved.contains(&NamingInput::Curve(*c)))
+        {
+            return Err(CadError::topology("selected profile has a foreign curve"));
+        }
+        saved.retain(|input| match input {
+            NamingInput::Curve(c) | NamingInput::CurveEnd { curve: c, .. } => curves.contains(c),
+            _ => false,
+        });
+        Ok(())
+    }
+
     pub fn feature(&self, id: ObjectId) -> Option<&FeatureNaming> {
         self.features.get(&id)
     }
@@ -441,14 +465,27 @@ fn derive(
                     continue;
                 }
                 for face in faces {
-                    let witnesses: BTreeSet<_> = topology
-                        .adjacent_faces
-                        .iter()
-                        .filter(|(_, adjacent)| adjacent.contains(&face))
-                        .flat_map(|(boundary, _)| {
-                            terms.get(boundary).into_iter().flatten().copied()
-                        })
-                        .collect();
+                    let witnesses: BTreeSet<_> =
+                        if let Some(boundary) = history.cap_boundaries.get(&face) {
+                            boundary
+                                .iter()
+                                .map(|curve| {
+                                    derivation::intern(
+                                        &mut derivations,
+                                        Derivation::Curve(owner, *curve, plane),
+                                    )
+                                })
+                                .collect::<Result<_>>()?
+                        } else {
+                            topology
+                                .adjacent_faces
+                                .iter()
+                                .filter(|(_, adjacent)| adjacent.contains(&face))
+                                .flat_map(|(boundary, _)| {
+                                    terms.get(boundary).into_iter().flatten().copied()
+                                })
+                                .collect()
+                        };
                     let refined = derivation::expression(
                         &mut derivations,
                         SubShapeKind::Face,
@@ -609,6 +646,45 @@ fn validate_history(
                 .any(|f| f.kind() != SubShapeKind::Face || !topology.adjacent_faces.contains_key(f))
         {
             return Err(bad());
+        }
+    }
+    let caps: BTreeSet<_> = history
+        .relations
+        .iter()
+        .filter_map(|(input, _, output)| {
+            matches!(input, NamingInput::Cap { .. })
+                .then_some(*output)
+                .flatten()
+        })
+        .collect();
+    if caps.len() > 2
+        && history
+            .cap_boundaries
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != caps
+    {
+        return Err(bad());
+    }
+    for (face, curves) in &history.cap_boundaries {
+        if !caps.contains(face) || curves.is_empty() || !inputs.is_empty() {
+            return Err(bad());
+        }
+        for curve in curves {
+            if !history.relations.iter().any(|(input, relation, output)| {
+                *input == NamingInput::Curve(*curve)
+                    && *relation == NamingRelation::Generated
+                    && output.is_some_and(|edge| {
+                        edge.kind() == SubShapeKind::Edge
+                            && topology
+                                .adjacent_faces
+                                .get(&edge)
+                                .is_some_and(|f| f.contains(face))
+                    })
+            }) {
+                return Err(bad());
+            }
         }
     }
     let source: BTreeSet<_> = inputs

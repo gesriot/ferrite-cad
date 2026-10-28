@@ -970,11 +970,69 @@ fn native_collinear_replace_remove_diagnose_and_leave_the_profile_rules_the_last
     assert!(straight_gap.lengths.iter().all(|length| *length > TOL));
     stored_same(&s.path, &straight);
     exports(&straight, &straight_state, "straight-corner");
-    let (aligned, _) = s.publish(&[s.collinear(2, 6)], "aligned-sides.fcad");
-    let aligned_state = solved(&aligned);
-    on_one_line(&aligned_state, 2, 6, "aligned sides");
-    stored_same(&s.path, &aligned);
-    exports(&aligned, &aligned_state, "aligned-sides");
+    // The solver can align the channel floor with the bottom edge, but that
+    // creates non-adjacent contact and a zero-thickness connection, not a region.
+    use ferritecad_sketch_solver::{Constraint, ConstraintId, PointId, Sketch};
+    let mut stated = Sketch::new();
+    for (i, start) in U.iter().enumerate() {
+        let end = U[(i + 1) % U.len()];
+        stated.add_point(PointId(2 * i as u64), start[0], start[1]);
+        stated.add_point(PointId(2 * i as u64 + 1), end[0], end[1]);
+        stated.add_constraint(
+            ConstraintId(i as u64),
+            Constraint::Coincident {
+                a: PointId(2 * i as u64 + 1),
+                b: PointId(2 * ((i + 1) % U.len()) as u64),
+            },
+        );
+    }
+    stated.add_constraint(
+        ConstraintId(8),
+        Constraint::Collinear {
+            a: (PointId(4), PointId(5)),
+            b: (PointId(12), PointId(13)),
+        },
+    );
+    let outcome = ferritecad_sketch_solver::solve(&stated).expect("native solve");
+    let solution = outcome.solution().expect("the collinearity is satisfiable");
+    let point = |id| {
+        let p = solution
+            .positions()
+            .iter()
+            .find(|p| p.point == PointId(id))
+            .expect("point");
+        [p.x, p.y]
+    };
+    let aligned_state = Solved {
+        lines: (0..8).map(|i| [point(2 * i), point(2 * i + 1)]).collect(),
+        dof: solution.degrees_of_freedom(),
+        redundant: solution.redundant().len(),
+        area: 0.,
+    };
+    on_one_line(
+        &aligned_state,
+        2,
+        6,
+        "aligned sides before profile validation",
+    );
+    let before = std::fs::read(&s.path).expect("source");
+    let error = s.refused(&s.path, &s.catalog, &[s.collinear(2, 6)]);
+    assert_eq!(std::fs::read(&s.path).expect("source"), before);
+    assert_eq!(error["kind"], "input", "{error}");
+    let message = error["message"].as_str().expect("diagnostic");
+    for i in [1, 6] {
+        assert!(
+            message.contains(s.curve(i).as_str().expect("curve UUID")),
+            "{message}"
+        );
+    }
+    assert!(message.contains("intersect or touch"), "{message}");
+
+    // Keep the relation and independent export coverage on the simple U's rims.
+    let rim_state = solved(&together);
+    on_one_line(&rim_state, 0, 4, "simple rims");
+    stored_same(&s.path, &together);
+    exports(&together, &rim_state, "simple-rims");
     // A snapshot older than the file is refused, and nothing is published.
     let stale = s
         .command(

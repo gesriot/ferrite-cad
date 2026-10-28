@@ -346,6 +346,7 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
                 4,
                 Some("Extrude2"),
                 &ObjectPayload::Extrude(ferritecad_document::Extrude {
+                    regions: Vec::new(),
                     profile,
                     end_condition: ferritecad_document::EndCondition::Blind {
                         distance: ferritecad_document::Expression::constant(3.0)?,

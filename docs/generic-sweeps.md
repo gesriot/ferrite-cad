@@ -16,8 +16,8 @@ key and saved intent without asking the kernel for bounds.
 
 Revolve supports full and partial turns around SketchX, SketchY or any main or
 construction Line in its profile sketch. A Line axis is infinite, directed from start
-to end; positive partial angles follow the right hand rule. Supported profiles are the
-existing closed Line/Arc contour, Circle or annulus. The kernel decides axis contact
+to end; positive partial angles follow the right hand rule. Profiles contain closed Line/Arc
+chains and Circles, grouped into regions by even/odd nesting. The kernel decides axis contact
 and rejects invalid geometry. There is no persisted axis segment or profile class.
 A profile edge collapsing on the axis produces no face and receives no invented face
 name. Complete sweep and boolean provenance follows ADR 0007; ambiguity refuses an
@@ -38,3 +38,28 @@ no additional generic sweep forms. Constraint recipes remain in
 
 The file format is unstable. Revolve stores `previous`, `operation`, `axis` and `extent`;
 fixtures must be regenerated. There are no migrations or compatibility fallbacks.
+
+## Sketch regions
+
+Every main curve belongs to one closed boundary. Construction geometry is excluded.
+Disjoint boundaries use even/odd nesting: an outer boundary and its immediate holes
+form a region; an island inside a hole forms another region. Intersecting, touching,
+self-intersecting and open boundaries fail with the offending curve identities.
+Line/Arc/Circle intersections and ray parity are analytic, without tessellation or
+sampled containment. The existing endpoint join tolerance is unchanged.
+
+Extrude and Revolve store `regions: Vec<StableEntityId>`. Empty selects every region.
+Each entry identifies a curve on a selected region's outer boundary; multiple entries
+on one outer boundary select it once. Missing or construction curves and curves on
+holes refuse by identity. Reordering, moving or resizing a contour does not retarget
+its selection. The sweep produces one face per selected region, with complete curve
+history. NewBody and the final boolean result must still contain exactly one solid.
+A Cut or Intersect tool may contain several solids.
+
+The edit JSON feature for `add_feature` or `add_body` accepts `"regions": ["curve-uuid"]`
+for either sweep. Omitting this CLI field selects all regions. To replace an existing
+selection use `{"kind":"set_regions","object":"feature-uuid","regions":["curve-uuid"]}`;
+`regions: []` selects all again. The stored field is required: regenerate fixtures,
+without a document migration or version branch. Cache keys include the selected
+profile; the `brep.generative.v1` archive layout is unchanged. Existing window forms
+select all regions and continue through the shared transaction.

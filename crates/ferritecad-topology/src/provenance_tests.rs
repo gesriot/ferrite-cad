@@ -194,6 +194,7 @@ fn each_input_subform_requires_one_complete_survival_account() {
             .collect(),
     };
     let trace = NamingHistory {
+        cap_boundaries: BTreeMap::new(),
         operation: Some(NamingOperation::Cut),
         relations: source
             .entities

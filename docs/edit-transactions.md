@@ -97,3 +97,10 @@ Extents are `{"kind":"full_turn"}` or
 Use `set_revolve_axis` (`object`, `axis`) and `set_revolve_extent` (`object`, `extent`)
 for existing features. Numbers still use expression slots; no new numeric edit route
 is introduced. See [sweep semantics](generic-sweeps.md).
+
+Extrude and Revolve additions also accept `regions: ["<outer curve UUID>"]`.
+Omitting this CLI field is equivalent to an empty list, selecting all regions.
+Change an existing feature with
+`{"kind":"set_regions","object":"<feature UUID>","regions":["<curve UUID>"]}`.
+The shared transaction rebuilds the candidate and refuses any newly failed
+consumer before publication. Undo and Redo restore the same curve references.

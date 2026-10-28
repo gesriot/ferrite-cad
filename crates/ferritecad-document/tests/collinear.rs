@@ -52,6 +52,7 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId, Vec<StableEntityId>) {
                 extrude,
                 2,
                 ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: id,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(10.)?,

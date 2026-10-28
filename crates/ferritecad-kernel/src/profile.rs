@@ -428,64 +428,117 @@ impl ProfileLoop {
     }
 }
 
-/// A planar region: one outer loop and any number of holes.
+/// An outer boundary and its immediate holes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileRegion {
+    pub outer: ProfileLoop,
+    pub inner: Vec<ProfileLoop>,
+}
+
+impl ProfileRegion {
+    pub fn loops(&self) -> impl Iterator<Item = &ProfileLoop> {
+        std::iter::once(&self.outer).chain(&self.inner)
+    }
+}
+
+/// Disjoint planar regions on one sketch plane.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     plane: SketchPlane,
-    outer: ProfileLoop,
-    inner: Vec<ProfileLoop>,
+    regions: Vec<ProfileRegion>,
 }
 
 impl Profile {
-    /// Builds a profile, refusing a label reused across loops.
+    /// Builds a one-region profile, refusing a label reused across loops.
     pub fn new(plane: SketchPlane, outer: ProfileLoop, inner: Vec<ProfileLoop>) -> Result<Self> {
+        Self::from_regions(plane, vec![ProfileRegion { outer, inner }])
+    }
+
+    /// Builds a profile, refusing a label reused across loops.
+    pub fn from_regions(plane: SketchPlane, regions: Vec<ProfileRegion>) -> Result<Self> {
+        if regions.is_empty() {
+            return Err(CadError::input("a profile needs at least one region"));
+        }
         let mut seen = std::collections::BTreeSet::new();
-        for entry in std::iter::once(&outer).chain(inner.iter()) {
-            for segment in entry.segments() {
-                if !seen.insert(segment.label) {
-                    return Err(CadError::input(format!(
-                        "profile segment label {} appears in more than one loop",
-                        segment.label
-                    )));
-                }
+        for segment in regions
+            .iter()
+            .flat_map(ProfileRegion::loops)
+            .flat_map(ProfileLoop::segments)
+        {
+            if !seen.insert(segment.label) {
+                return Err(CadError::input(format!(
+                    "profile segment label {} appears in more than one loop",
+                    segment.label
+                )));
             }
         }
-
-        Ok(Self {
-            plane,
-            outer,
-            inner,
-        })
+        Ok(Self { plane, regions })
     }
 
     pub fn plane(&self) -> &SketchPlane {
         &self.plane
     }
 
+    pub fn regions(&self) -> &[ProfileRegion] {
+        &self.regions
+    }
+
+    /// The first region's boundary; read every region through [`Self::regions`].
     pub fn outer(&self) -> &ProfileLoop {
-        &self.outer
+        &self.regions[0].outer
     }
 
+    /// The first region's holes; read every region through [`Self::regions`].
     pub fn inner(&self) -> &[ProfileLoop] {
-        &self.inner
+        &self.regions[0].inner
     }
 
-    /// Every segment of every loop, outer first.
+    pub fn loops(&self) -> impl Iterator<Item = &ProfileLoop> {
+        self.regions.iter().flat_map(ProfileRegion::loops)
+    }
+
+    /// Every segment of every loop, region by region, outer first.
     pub fn segments(&self) -> impl Iterator<Item = &ProfileSegment> {
-        self.outer
-            .segments()
-            .iter()
-            .chain(self.inner.iter().flat_map(|l| l.segments().iter()))
+        self.loops().flat_map(ProfileLoop::segments)
+    }
+
+    pub fn select(&self, curves: &[StableEntityId]) -> Result<Self> {
+        if curves.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut selected = std::collections::BTreeSet::new();
+        for curve in curves {
+            let index = self
+                .regions
+                .iter()
+                .position(|r| r.outer.segments().iter().any(|s| s.label == *curve))
+                .ok_or_else(|| {
+                    CadError::input(format!(
+                        "region curve {curve} is not on the outer boundary of any region"
+                    ))
+                })?;
+            selected.insert(index);
+        }
+        Self::from_regions(
+            self.plane,
+            selected
+                .into_iter()
+                .map(|i| self.regions[i].clone())
+                .collect(),
+        )
     }
 
     /// Feeds the profile into a cache key.
     pub fn feed(&self, hasher: &mut CanonicalHasher) {
         hasher.field("profile");
         self.plane.feed(hasher);
-        self.outer.feed(hasher);
-        hasher.field("holes").u64(self.inner.len() as u64);
-        for entry in &self.inner {
-            entry.feed(hasher);
+        hasher.field("regions").u64(self.regions.len() as u64);
+        for region in &self.regions {
+            region.outer.feed(hasher);
+            hasher.field("holes").u64(region.inner.len() as u64);
+            for entry in &region.inner {
+                entry.feed(hasher);
+            }
         }
     }
 }

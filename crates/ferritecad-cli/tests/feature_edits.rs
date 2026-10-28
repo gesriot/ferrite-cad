@@ -177,3 +177,134 @@ fn edit_and_inspect_cover_sketch_cut_end_fillet_and_chamfer() {
         );
     }
 }
+
+#[path = "../../ferritecad-fixtures/tests/support/region_edits.rs"]
+mod region_edits;
+
+#[test]
+fn region_addition_selection_and_dependent_refusal_use_the_edit_boundary() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    for revolve in [false, true] {
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("source.fcad");
+        ferritecad_fixtures::write_plate(&source).expect("plate");
+        let d = Document::open_read_only(&source).expect("source");
+        let f = region_edits::fixture(&d, revolve);
+        let added = root.path().join("added.fcad");
+        run(
+            &source,
+            &added,
+            ferritecad_fixtures::edit_request_json(&f.changes),
+            0,
+        );
+        let facts = inspect(&added);
+        assert!(
+            facts["bodies"]
+                .as_array()
+                .expect("bodies")
+                .iter()
+                .any(|b| b["body_id"] == json!(f.body))
+        );
+        let feature_rows = &facts[if revolve { "revolves" } else { "features" }];
+        let added_feature = feature_rows
+            .as_array()
+            .expect("features")
+            .iter()
+            .find(|row| row["feature_id"] == json!(f.feature))
+            .expect("added feature");
+        assert_eq!(added_feature["regions"], json!([f.curves[0]]));
+        let pi = std::f64::consts::PI;
+        let expected = if revolve { 64. * pi * pi } else { 20. * pi };
+        assert!((region_edits::volume(&added, f.feature) - expected).abs() < 1e-6);
+        let resized = root.path().join("resized.fcad");
+        run(
+            &added,
+            &resized,
+            ferritecad_fixtures::edit_request_json(&f.resize_and_move()),
+            0,
+        );
+        let expected = if revolve { 162. * pi * pi } else { 45. * pi };
+        assert!((region_edits::volume(&resized, f.feature) - expected).abs() < 1e-6);
+        let switched = root.path().join("switched.fcad");
+        run(
+            &added,
+            &switched,
+            ferritecad_fixtures::edit_request_json(&f.switch()),
+            0,
+        );
+        let expected = if revolve { 144. * pi * pi } else { 20. * pi };
+        assert!((region_edits::volume(&switched, f.feature) - expected).abs() < 1e-6);
+        let dependent = root.path().join("dependent.fcad");
+        run(
+            &added,
+            &dependent,
+            ferritecad_fixtures::edit_request_json(&f.dependency),
+            0,
+        );
+        let before = std::fs::read(&dependent).expect("source bytes");
+        let refused = root.path().join("refused.fcad");
+        let diagnostic = run(
+            &dependent,
+            &refused,
+            ferritecad_fixtures::edit_request_json(&f.switch()),
+            2,
+        )
+        .to_string();
+        assert!(
+            diagnostic.contains(&f.dependent.to_string()),
+            "{diagnostic}"
+        );
+        assert!(!refused.exists());
+        assert_eq!(std::fs::read(&dependent).expect("source bytes"), before);
+    }
+}
+
+#[test]
+fn rebuild_counts_the_holes_of_every_region() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    ferritecad_fixtures::write_plate(&source).expect("plate");
+    let d = Document::open_read_only(&source).expect("source");
+    let mut f = region_edits::fixture(&d, false);
+    drop(d);
+    // The hole belongs to the second region, which a first-region count misses.
+    let EditChange::AddSketch { sketch, .. } = &mut f.changes[0] else {
+        panic!("the fixture starts with its sketch");
+    };
+    sketch.curves.push(SketchCurve {
+        id: ferritecad_types::StableEntityId::new(),
+        construction: false,
+        geometry: SketchGeometry::Circle {
+            center: Point2::new(18., 0.).expect("center"),
+            radius: 1.,
+        },
+    });
+    let added = root.path().join("added.fcad");
+    run(
+        &source,
+        &added,
+        ferritecad_fixtures::edit_request_json(&f.changes),
+        0,
+    );
+    let out = cli()
+        .arg("rebuild")
+        .arg(&added)
+        .arg("--cold")
+        .output()
+        .expect("rebuild");
+    assert!(out.status.success(), "{out:?}");
+    let report = String::from_utf8_lossy(&out.stdout);
+    let row = report
+        .lines()
+        .find(|line| line.contains(&f.sketch.to_string()))
+        .expect("the sketch row");
+    assert!(
+        row.ends_with("3 segments, 2 regions, 1 hole(s)"),
+        "{report}"
+    );
+}

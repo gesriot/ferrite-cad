@@ -32,6 +32,7 @@
 mod cache;
 mod cold;
 mod convert;
+mod regions;
 
 mod dirty;
 mod document_graph;

@@ -408,7 +408,7 @@ fn circle_geometry_and_constraint_changes_share_rebuild_stale_and_cancel_gates()
 }
 
 #[test]
-fn solved_annulus_cannot_exchange_boundary_and_bore_in_the_evaluator() {
+fn solved_circle_regions_exchange_roles_but_coincident_boundaries_refuse_atomically() {
     if !ferritecad_fixtures::native_dependencies(&[
         (ferritecad_occt::is_available(), "OCCT"),
         (ferritecad_sketch_solver::is_available(), "PLANEGCS"),
@@ -433,67 +433,114 @@ fn solved_annulus_cannot_exchange_boundary_and_bore_in_the_evaluator() {
     let document = Document::open_read_only(&source).expect("document");
     let (id, sketch) = stored_sketch(&document);
     let expected = ExtrudeEditSource::read(&document).expect("reading").version;
-    let changes: Vec<_> = sketch
-        .curves
-        .iter()
-        .map(|curve| {
-            let SketchGeometry::Circle { radius, .. } = curve.geometry else {
-                panic!("circle")
-            };
-            EditChange::AddConstraint {
-                sketch: id,
-                constraint: SketchConstraint {
-                    id: StableEntityId::new(),
-                    rule: SketchConstraintRule::Radius {
-                        curve: curve.id,
-                        radius: Expression::constant(if radius == 10.0 { 2.0 } else { 8.0 })
-                            .expect("radius"),
-                    },
-                },
-            }
-        })
-        .collect();
+    let feature = document
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|object| matches!(object.payload, ObjectPayload::Extrude(_)))
+        .expect("extrude")
+        .id;
     document.close().expect("close");
     let before = std::fs::read(&source).expect("bytes");
-    let output = root.path().join("refused.fcad");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-    let error = edit_copy(
-        &EditRequest {
-            source: source.clone(),
-            expected,
-            changes: changes.clone(),
-            destination: output.clone(),
-        },
-        &mut kernel,
-        &context,
-    )
-    .expect_err("wall identities must not exchange");
-    let refusal = ferritecad_eval::RebuildRefusal::from_error(&error).expect("rebuild refusal");
-    assert!(
-        refusal
-            .report
-            .failed
+    for coincident in [false, true] {
+        let changes: Vec<_> = sketch
+            .curves
             .iter()
-            .any(|f| f.id == id && f.message.contains("exchanged boundary")),
-        "{error}"
-    );
-    assert!(!refusal.report.skipped.is_empty());
-    assert!(!output.exists());
-    assert_eq!(std::fs::read(&source).expect("bytes"), before);
-    // A cold read has the same guard even when there is no edit operation.
-    let raw = root.path().join("stored-conflict.fcad");
-    std::fs::copy(&source, &raw).expect("private copy");
-    let mut document = Document::open(&raw).expect("private document");
-    document.write_changes(&changes).expect("valid payload");
-    let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("report");
-    assert!(
-        built
-            .report()
-            .failed
-            .iter()
-            .any(|f| f.id == id && f.message.contains("exchanged boundary"))
-    );
-    built.release_all(&mut kernel);
+            .map(|curve| {
+                let SketchGeometry::Circle { radius, .. } = curve.geometry else {
+                    panic!("circle")
+                };
+                EditChange::AddConstraint {
+                    sketch: id,
+                    constraint: SketchConstraint {
+                        id: StableEntityId::new(),
+                        rule: SketchConstraintRule::Radius {
+                            curve: curve.id,
+                            radius: Expression::constant(if coincident || radius != 10.0 {
+                                8.0
+                            } else {
+                                2.0
+                            })
+                            .expect("radius"),
+                        },
+                    },
+                }
+            })
+            .collect();
+        let output = root.path().join(if coincident {
+            "refused.fcad"
+        } else {
+            "exchanged.fcad"
+        });
+        let result = edit_copy(
+            &EditRequest {
+                source: source.clone(),
+                expected,
+                changes: changes.clone(),
+                destination: output.clone(),
+            },
+            &mut kernel,
+            &context,
+        );
+        if coincident {
+            let error = result.expect_err("coincident boundaries are not a region");
+            let refusal =
+                ferritecad_eval::RebuildRefusal::from_error(&error).expect("rebuild refusal");
+            let failure = refusal
+                .report
+                .failed
+                .iter()
+                .find(|f| f.id == id)
+                .expect("sketch");
+            assert!(failure.message.contains("intersect or touch"), "{error}");
+            for curve in &sketch.curves {
+                assert!(failure.message.contains(&curve.id.to_string()), "{error}");
+            }
+            assert!(!refusal.report.skipped.is_empty());
+            assert!(!output.exists());
+        } else {
+            result.expect("nesting determines the boundary and hole after solving");
+            let accepted = Document::open_read_only(&output).expect("accepted");
+            assert_eq!(stored_sketch(&accepted).1.curves, sketch.curves);
+            let built = ferritecad_eval::rebuild_cold(&accepted, &mut kernel, &context)
+                .expect("cold rebuild");
+            assert!(built.all_built());
+            let shape = built.shape(feature).expect("extrusion");
+            assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
+            let (_, volume) = kernel.shape_stats(shape).expect("volume");
+            assert!((volume - std::f64::consts::PI * (64.0 - 4.0) * 10.0).abs() < 1e-6);
+            built.release_all(&mut kernel);
+        }
+        assert_eq!(std::fs::read(&source).expect("bytes"), before);
+        // A cold read makes the same decision without an edit transaction.
+        let raw = root.path().join(if coincident {
+            "stored-conflict.fcad"
+        } else {
+            "stored-exchange.fcad"
+        });
+        std::fs::copy(&source, &raw).expect("private copy");
+        let mut document = Document::open(&raw).expect("private document");
+        document.write_changes(&changes).expect("valid payload");
+        let built =
+            ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("report");
+        if coincident {
+            let failure = built
+                .report()
+                .failed
+                .into_iter()
+                .find(|f| f.id == id)
+                .expect("sketch");
+            assert!(failure.message.contains("intersect or touch"));
+            for curve in &sketch.curves {
+                assert!(failure.message.contains(&curve.id.to_string()));
+            }
+            assert!(!built.report().skipped.is_empty());
+        } else {
+            assert!(built.all_built());
+        }
+        built.release_all(&mut kernel);
+    }
 }
 
 #[test]

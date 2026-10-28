@@ -52,7 +52,7 @@ pub use kernel::{
     revolve_cache_key, tessellation_cache_key,
 };
 pub use profile::{
-    PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
+    PlanarPoint, Profile, ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 pub use refusal::TessellationRefusal;
 pub use request::{

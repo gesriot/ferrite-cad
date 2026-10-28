@@ -94,6 +94,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: plate.sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -288,6 +289,7 @@ fn a_local_failure_preserves_previously_built_geometry() {
                 4,
                 Some("Cut1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: plate.sketch,
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,
@@ -527,6 +529,7 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
                 2,
                 Some("Boss"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: sketch,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(5.0)?,
@@ -568,6 +571,7 @@ fn a_symmetric_extrusion_straddles_the_sketch_plane() {
                 2,
                 Some("Extrude1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: plate.sketch,
                     end_condition: EndCondition::Symmetric {
                         distance: Expression::constant(4.0)?,
@@ -663,6 +667,7 @@ fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
                 4,
                 Some("Cut"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: plate.sketch,
                     previous: Some(plate.extrude),
                     operation: SolidOperation::Cut,

@@ -781,6 +781,7 @@ pub(super) fn write_solid_document(path: &Path, points: &[[f64; 2]]) -> Vec<Stab
             2,
             Some("Revolve1"),
             &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,

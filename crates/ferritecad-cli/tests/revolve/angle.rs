@@ -382,6 +382,7 @@ pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
             2,
             Some("Revolve1"),
             &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::Partial {

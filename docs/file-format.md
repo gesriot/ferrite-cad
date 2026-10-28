@@ -42,6 +42,13 @@ and `FullTurn` or a partial angle expression. A Line axis follows its stored
 start-to-end direction and may be construction geometry. There is no stored
 axis-segment classification.
 
+Both sweeps require `regions: Vec<StableEntityId>`. Empty selects every sketch
+region; each nonempty entry identifies a curve on a region's outer boundary.
+Repeated references to the same region select it once. Missing, construction
+and hole-boundary curves refuse selection without retargeting. Containment
+uses even/odd depth, with immediate child loops as holes. Fixtures are
+regenerated when this payload changes; there is no format migration.
+
 The `brep.generative.v1` cache stores derived names with the B-Rep; its codec is
 unchanged. Scene entities carry the feature, kind, name digest and complete
 reachable derivation. A name with several entities has no scene selection binding.

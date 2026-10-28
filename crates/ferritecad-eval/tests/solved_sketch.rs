@@ -357,6 +357,7 @@ fn write_plate(
                 2,
                 Some("Extrude1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: sketch,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(10.0)?,
@@ -380,6 +381,7 @@ fn write_plate(
                     3,
                     Some("Extrude2"),
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(4.0)?,

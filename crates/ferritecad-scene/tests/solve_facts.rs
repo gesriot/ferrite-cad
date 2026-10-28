@@ -203,6 +203,7 @@ fn write(
                     order + 1,
                     Some("Extrude"),
                     &ObjectPayload::Extrude(Extrude {
+                        regions: Vec::new(),
                         profile: sketch,
                         end_condition: EndCondition::Blind {
                             distance: Expression::constant(10.0)?,

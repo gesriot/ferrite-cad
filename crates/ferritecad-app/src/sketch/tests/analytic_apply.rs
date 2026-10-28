@@ -117,6 +117,7 @@ pub(crate) fn write_round(
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,

@@ -373,6 +373,23 @@ impl GeometryKernel for OcctKernel {
             ..NamingHistory::default()
         };
         for row in words.chunks_exact(6) {
+            if row[2] == 7 {
+                let curve = self
+                    .naming_curves
+                    .get(&shape)
+                    .and_then(|curves| usize::try_from(row[1]).ok().and_then(|i| curves.get(i)))
+                    .copied()
+                    .ok_or_else(|| CadError::kernel("unknown cap boundary curve"))?;
+                if row[0] != 0 || row[3] != 2 || row[5] != 0 {
+                    return Err(CadError::kernel("invalid cap boundary history"));
+                }
+                history
+                    .cap_boundaries
+                    .entry(self.face(shape, row[4]))
+                    .or_default()
+                    .insert(curve);
+                continue;
+            }
             let input = match row[2] {
                 0..=2 => NamingInput::SubShape(SubShapeHandle::new(
                     ShapeHandle::new(self.session_id, row[0]),
@@ -487,15 +504,19 @@ impl GeometryKernel for OcctKernel {
             .segments()
             .map(|s| segment_of(&s.geometry))
             .collect();
-        let loops: Vec<_> = std::iter::once(profile.outer())
-            .chain(profile.inner())
-            .map(|l| l.segments().len())
-            .collect();
+        let loops: Vec<_> = profile.loops().map(|l| l.segments().len()).collect();
         context.progress().report(0.0);
         let raw = self.session.revolve(
             &plane_of(plane),
             &segments,
-            &loops,
+            ffi::ProfilePartition {
+                loops: &loops,
+                regions: &profile
+                    .regions()
+                    .iter()
+                    .map(|r| 1 + r.inner.len())
+                    .collect::<Vec<_>>(),
+            },
             (axis_origin, axis_direction),
             partial.unwrap_or(std::f64::consts::TAU),
             context.cancel(),
@@ -535,9 +556,7 @@ impl GeometryKernel for OcctKernel {
         // in exactly this order, and `Profile::segments` yields them the same
         // way. A profile with no holes produces one length and the single list
         // it always produced.
-        let loops: Vec<&ProfileLoop> = std::iter::once(profile.outer())
-            .chain(profile.inner())
-            .collect();
+        let loops: Vec<&ProfileLoop> = profile.loops().collect();
         let loop_segment_counts: Vec<usize> =
             loops.iter().map(|entry| entry.segments().len()).collect();
         let drawn: Vec<&ProfileSegment> = loops.iter().flat_map(|entry| entry.segments()).collect();
@@ -569,7 +588,14 @@ impl GeometryKernel for OcctKernel {
         let raw = self.session.extrude(
             &plane,
             &segments,
-            &loop_segment_counts,
+            ffi::ProfilePartition {
+                loops: &loop_segment_counts,
+                regions: &profile
+                    .regions()
+                    .iter()
+                    .map(|r| 1 + r.inner.len())
+                    .collect::<Vec<_>>(),
+            },
             base_offset,
             top_offset,
             context.cancel(),
@@ -593,6 +619,10 @@ impl GeometryKernel for OcctKernel {
             self.release(shape);
         }
         assembled
+    }
+
+    fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+        self.session.solid_count(self.raw(shape)?)
     }
 
     fn projected_bounds(

@@ -63,6 +63,10 @@ pub enum EditChange {
         feature_name: Option<String>,
         feature: FeatureAddition,
     },
+    SetRegions {
+        object: ObjectId,
+        regions: Vec<StableEntityId>,
+    },
     SetOperation {
         object: ObjectId,
         operation: crate::SolidOperation,
@@ -119,12 +123,14 @@ pub enum EditChange {
 pub enum FeatureAddition {
     Extrude {
         profile: ObjectId,
+        regions: Vec<StableEntityId>,
         end_condition: EndCondition,
         reversed: bool,
         operation: crate::SolidOperation,
     },
     Revolve {
         profile: ObjectId,
+        regions: Vec<StableEntityId>,
         axis: crate::RevolveAxis,
         extent: RevolveExtent,
         operation: crate::SolidOperation,
@@ -144,11 +150,13 @@ impl FeatureAddition {
         Ok(match self {
             Self::Extrude {
                 profile,
+                regions,
                 end_condition,
                 reversed,
                 operation,
             } => ObjectPayload::Extrude(crate::Extrude {
                 profile: *profile,
+                regions: regions.clone(),
                 end_condition: end_condition.clone(),
                 reversed: *reversed,
                 operation: *operation,
@@ -156,11 +164,13 @@ impl FeatureAddition {
             }),
             Self::Revolve {
                 profile,
+                regions,
                 axis,
                 extent,
                 operation,
             } => ObjectPayload::Revolve(crate::Revolve {
                 profile: *profile,
+                regions: regions.clone(),
                 axis: *axis,
                 extent: extent.clone(),
                 operation: *operation,
@@ -200,6 +210,7 @@ impl EditChange {
     pub fn object(&self) -> ObjectId {
         match self {
             Self::AddBody { object, .. }
+            | Self::SetRegions { object, .. }
             | Self::SetOperation { object, .. }
             | Self::SetReversed { object, .. }
             | Self::SetRevolveAxis { object, .. }
@@ -232,6 +243,14 @@ impl EditChange {
             return set_expression(payload, *slot, expression.clone());
         }
         match self {
+            Self::SetRegions { regions, .. } => {
+                match payload {
+                    ObjectPayload::Extrude(e) => e.regions = regions.clone(),
+                    ObjectPayload::Revolve(r) => r.regions = regions.clone(),
+                    _ => return Err(CadError::input("regions belong to an Extrude or Revolve")),
+                }
+                return Ok(());
+            }
             Self::SetOperation { operation, .. } => {
                 match payload {
                     ObjectPayload::Extrude(e) => e.operation = *operation,
@@ -313,7 +332,8 @@ impl EditChange {
                     "an object addition must be applied to the document",
                 ));
             }
-            Self::SetOperation { .. }
+            Self::SetRegions { .. }
+            | Self::SetOperation { .. }
             | Self::SetReversed { .. }
             | Self::SetRevolveAxis { .. }
             | Self::SetRevolveExtent { .. }

@@ -86,6 +86,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -244,6 +245,7 @@ fn a_feature_this_slice_cannot_build_fails_without_leaking() {
                 4,
                 Some("Cut1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: plate.sketch,
                     end_condition: EndCondition::ThroughAll,
                     reversed: false,

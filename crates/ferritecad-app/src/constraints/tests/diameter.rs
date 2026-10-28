@@ -61,6 +61,7 @@ pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntit
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(15.)?,
@@ -618,19 +619,21 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
     assert_eq!(dof, Some(0));
     assert!(!e.active(), "an accepted copy ends the form");
 
-    // The roles are the saved ones: the same boxes with the diameters given to the
-    // other circles cross the pair over, the worker refuses, nothing is published
-    // and the form keeps everything.
+    // Region containment follows the solved circles; their UUIDs do not swap.
     let crossed = root.path().join("crossed.fcad");
     let (mut e, request) = fill("13.5", "4.25");
-    let names = std::fs::read_dir(root.path()).expect("dir").count();
-    let (none, _) = work(&mut e, request, crossed.clone());
-    assert!(none.is_none() && !crossed.exists());
-    assert_eq!(std::fs::read_dir(root.path()).expect("dir").count(), names);
-    let draft = e.draft.as_ref().expect("the refused form is kept");
-    assert_eq!(draft.selected, Some(boundary));
-    assert_eq!(draft.diameter_mm, "4.25");
-    assert_eq!(draft.edits.add.len(), 4);
+    let (published, dof) = work(&mut e, request, crossed.clone());
+    assert_eq!(published, Some(crossed.clone()));
+    assert_eq!(dof, Some(0));
+    assert!(!e.active(), "accepted region change ends the form");
+    let d = Document::open_read_only(&crossed).expect("published circles");
+    let crossed_source = crate::sketch_facts::Source::read(&d).expect("source");
+    let stored = crossed_source.constraint_sketches[0]
+        .stored
+        .as_ref()
+        .expect("sketch");
+    assert!(stored.curves.iter().any(|c| c.id == boundary));
+    assert!(stored.curves.iter().any(|c| c.id == bore));
 
     // The peer: the same two diameters, spelled in the request.
     let request_file = root.path().join("request.json");

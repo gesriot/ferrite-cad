@@ -348,6 +348,7 @@ fn curve_end_derivations_separate_the_two_corners_of_a_lens() {
                 2,
                 Some("Extrude1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile: sketch,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(5.0)?,

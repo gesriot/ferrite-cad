@@ -11447,11 +11447,6 @@ mod tests {
         plate_and_more_bodies(1)
     }
 
-    /// The committed plate with `extra` unnamed bodies beside it.
-    ///
-    /// The plate brings durable face names, so a face can really be chosen;
-    /// the others are what make hiding and undoing something that changes the
-    /// picture. Written into a copy, never into the checkout.
     /// Writes `extra` further extruded bodies into a copy of the plate.
     ///
     /// Separate from the loaders below because both a mock load and a real
@@ -11520,6 +11515,7 @@ mod tests {
                         ordinal + 1,
                         None,
                         &ObjectPayload::Extrude(Extrude {
+                            regions: Vec::new(),
                             profile: sketch,
                             end_condition: EndCondition::Blind {
                                 distance: Expression::constant(4.0)?,
@@ -16869,6 +16865,7 @@ mod tests {
                         order + 1,
                         Some("Extrude"),
                         &ObjectPayload::Extrude(Extrude {
+                            regions: Vec::new(),
                             profile: sketch,
                             end_condition: EndCondition::Blind {
                                 distance: Expression::constant(10.0)?,

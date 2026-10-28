@@ -218,7 +218,9 @@ void naming_operation(ShapeRecord &record, Builder &builder, uint64_t input,
 template <typename Sweep>
 void naming_sweep(ShapeRecord &record, Sweep &sweep,
                   const std::vector<TopoDS_Edge> &edges, const FcOcctSegment *segments,
-                  const TopoDS_Shape &start, const TopoDS_Shape &end) {
+                  const std::vector<TopoDS_Face> &faces,
+                  const size_t *loop_segment_counts, const size_t *region_loop_counts,
+                  bool caps) {
   naming_inventory(record);
   for (size_t i = 0; i < edges.size(); ++i) {
     const auto produced = sweep.Shape(edges[i]);
@@ -237,8 +239,20 @@ void naming_sweep(ShapeRecord &record, Sweep &sweep,
       naming_link(record, 0, i, 4 + end, 2, sweep.LastShape(vertex));
     }
   }
-  naming_link(record, 0, 0, 6, 2, start);
-  naming_link(record, 0, 1, 6, 2, end);
+  if (!caps) return;
+  size_t loop = 0, segment = 0;
+  for (size_t r = 0; r < faces.size(); ++r) {
+    const TopoDS_Shape cap[] = {sweep.FirstShape(faces[r]), sweep.LastShape(faces[r])};
+    for (size_t end = 0; end < 2; ++end) {
+      naming_link(record, 0, end, 6, 2, cap[end]);
+      if (faces.size() > 1) {
+        for (size_t i = 0; i < loop_segment_counts[loop]; ++i)
+          naming_link(record, 0, segment + i, 7, 2, cap[end]);
+      }
+    }
+    for (size_t i = 0; i < region_loop_counts[r]; ++i)
+      segment += loop_segment_counts[loop++];
+  }
 }
 
 /// Consults the caller's cancellation callback.
@@ -523,7 +537,8 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
-                             size_t loop_count, double base_offset,
+                             size_t loop_count, const size_t *region_loop_counts,
+                             size_t region_count, double base_offset,
                              double top_offset, const double *axis_origin,
                              const double *axis_direction, double angle, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
@@ -538,6 +553,14 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       write_error(out_error, "a region is bounded by at least one loop");
       return FC_OCCT_INVALID_INPUT;
     }
+    if (!region_loop_counts || region_count == 0) return FC_OCCT_INVALID_INPUT;
+    size_t region_loops = 0;
+    for (size_t r = 0; r < region_count; ++r) {
+      if (region_loop_counts[r] == 0 || region_loop_counts[r] > loop_count - region_loops)
+        return FC_OCCT_INVALID_INPUT;
+      region_loops += region_loop_counts[r];
+    }
+    if (region_loops != loop_count) return FC_OCCT_INVALID_INPUT;
     // The lengths must partition `segments` exactly, and that is settled
     // before a single segment is read through them. Accumulated against the
     // remaining room rather than summed and compared, so a length whose total
@@ -769,86 +792,97 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       BRepGProp::SurfaceProperties(of, properties);
       return properties.Mass();
     };
-    double boundary_area = 0.0;
-    if (loop_count > 1) {
-      BRepBuilderAPI_MakeFace bounded(sketch_plane, wires[0]);
-      if (!bounded.IsDone()) {
+    std::vector<TopoDS_Face> faces;
+    for (size_t r = 0, outer = 0; r < region_count; outer += region_loop_counts[r++]) {
+      const size_t region_loops = region_loop_counts[r];
+      double boundary_area = 0.0;
+      if (region_loops > 1) {
+        BRepBuilderAPI_MakeFace bounded(sketch_plane, wires[outer]);
+        if (!bounded.IsDone()) {
+          write_error(out_error, "the boundary loop does not bound a face on its "
+                                 "plane");
+          return FC_OCCT_INVALID_INPUT;
+        }
+        boundary_area = planar_area(bounded.Face());
+      }
+      // A hole that takes nothing away is not a hole. The smallest area Open
+      // CASCADE can tell from none at this model scale is Precision::Confusion
+      // squared, so anything at or below that is a wire the caller drew rather
+      // than a region, and reporting it as a cavity would hand back the whole
+      // boundary with two extra faces named on it and no complaint.
+      const double least_area = Precision::Confusion() * Precision::Confusion();
+
+      std::vector<TopoDS_Wire> holes;
+      holes.reserve(region_loops - 1);
+      for (size_t l = 1; l < region_loops; ++l) {
+        bool chosen = false;
+        for (int attempt = 0; attempt < 2 && !chosen; ++attempt) {
+          const TopoDS_Wire candidate =
+              attempt == 0 ? TopoDS::Wire(wires[outer + l].Reversed()) : wires[outer + l];
+          BRepBuilderAPI_MakeFace trial(sketch_plane, wires[outer]);
+          if (!trial.IsDone()) {
+            write_error(out_error, "the boundary loop does not bound a face on "
+                                   "its plane");
+            return FC_OCCT_INVALID_INPUT;
+          }
+          trial.Add(candidate);
+          if (!trial.IsDone()) {
+            continue;
+          }
+          const TopoDS_Face candidate_face = trial.Face();
+          if (BRepCheck_Analyzer(candidate_face).IsValid() == Standard_True &&
+              boundary_area - planar_area(candidate_face) > least_area) {
+            holes.push_back(candidate);
+            chosen = true;
+          }
+        }
+        if (!chosen) {
+          write_error(out_error,
+                      "loop " + std::to_string(l) +
+                          " does not enclose a region strictly inside the "
+                          "profile's boundary, so it cuts no cavity out of it");
+          return FC_OCCT_INVALID_INPUT;
+        }
+      }
+
+      BRepBuilderAPI_MakeFace face_builder(sketch_plane, wires[outer]);
+      if (!face_builder.IsDone()) {
         write_error(out_error, "the boundary loop does not bound a face on its "
                                "plane");
         return FC_OCCT_INVALID_INPUT;
       }
-      boundary_area = planar_area(bounded.Face());
-    }
-    // A hole that takes nothing away is not a hole. The smallest area Open
-    // CASCADE can tell from none at this model scale is Precision::Confusion
-    // squared, so anything at or below that is a wire the caller drew rather
-    // than a region, and reporting it as a cavity would hand back the whole
-    // boundary with two extra faces named on it and no complaint.
-    const double least_area = Precision::Confusion() * Precision::Confusion();
-
-    std::vector<TopoDS_Wire> holes;
-    holes.reserve(loop_count - 1);
-    for (size_t l = 1; l < loop_count; ++l) {
-      bool chosen = false;
-      for (int attempt = 0; attempt < 2 && !chosen; ++attempt) {
-        const TopoDS_Wire candidate =
-            attempt == 0 ? TopoDS::Wire(wires[l].Reversed()) : wires[l];
-        BRepBuilderAPI_MakeFace trial(sketch_plane, wires[0]);
-        if (!trial.IsDone()) {
-          write_error(out_error, "the boundary loop does not bound a face on "
-                                 "its plane");
+      for (const TopoDS_Wire &hole : holes) {
+        face_builder.Add(hole);
+        if (!face_builder.IsDone()) {
+          write_error(out_error, "the profile's holes cannot be cut out of its "
+                                 "boundary together");
           return FC_OCCT_INVALID_INPUT;
         }
-        trial.Add(candidate);
-        if (!trial.IsDone()) {
-          continue;
-        }
-        const TopoDS_Face candidate_face = trial.Face();
-        if (BRepCheck_Analyzer(candidate_face).IsValid() == Standard_True &&
-            boundary_area - planar_area(candidate_face) > least_area) {
-          holes.push_back(candidate);
-          chosen = true;
-        }
       }
-      if (!chosen) {
+      const TopoDS_Face face = face_builder.Face();
+      // Asked again of the whole face, because each hole was only checked
+      // against the boundary: two holes that each sit inside it may still
+      // overlap each other. Without holes, the check still matters: revolving a
+      // self-intersecting wire can hide its crossing in the final B-Rep.
+      if (!BRepCheck_Analyzer(face).IsValid()) {
         write_error(out_error,
-                    "loop " + std::to_string(l) +
-                        " does not enclose a region strictly inside the "
-                        "profile's boundary, so it cuts no cavity out of it");
+                    region_loops > 1
+                        ? "the profile's holes do not lie strictly inside its boundary "
+                          "as separate regions, so it bounds no face with a cavity"
+                        : "the profile does not bound a valid planar face; "
+                          "check for self-intersections");
         return FC_OCCT_INVALID_INPUT;
       }
-    }
 
-    BRepBuilderAPI_MakeFace face_builder(sketch_plane, wires[0]);
-    if (!face_builder.IsDone()) {
-      write_error(out_error, "the boundary loop does not bound a face on its "
-                             "plane");
-      return FC_OCCT_INVALID_INPUT;
+      faces.push_back(face);
     }
-    for (const TopoDS_Wire &hole : holes) {
-      face_builder.Add(hole);
-      if (!face_builder.IsDone()) {
-        write_error(out_error, "the profile's holes cannot be cut out of its "
-                               "boundary together");
-        return FC_OCCT_INVALID_INPUT;
-      }
-    }
-    const TopoDS_Face face = face_builder.Face();
-    // Asked again of the whole face, because each hole was only checked
-    // against the boundary: two holes that each sit inside it may still
-    // overlap each other. The one-loop profile keeps exactly the checks it has
-    // always had, so nothing that used to build stops building.
-    if (loop_count > 1 && BRepCheck_Analyzer(face).IsValid() != Standard_True) {
-      write_error(out_error,
-                  "the profile's holes do not lie strictly inside its boundary "
-                  "as separate regions, so it bounds no face with a cavity");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    // Revolving a self-intersecting wire can hide its crossing in the final B-Rep.
-    if (axis_origin && loop_count == 1 && !BRepCheck_Analyzer(face).IsValid()) {
-      write_error(out_error, "the revolution profile does not bound a valid planar face; "
-                             "check for self-intersections");
-      return FC_OCCT_INVALID_INPUT;
+    TopoDS_Shape input = faces.front();
+    if (faces.size() > 1) {
+      TopoDS_Compound compound;
+      BRep_Builder builder;
+      builder.MakeCompound(compound);
+      for (const auto &face : faces) builder.Add(compound, face);
+      input = compound;
     }
 
     if (cancelled(cancel, cancel_context)) {
@@ -870,7 +904,7 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
         write_error(out_error, "the revolution axis must lie in the profile plane");
         return FC_OCCT_INVALID_INPUT;
       }
-      BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), angle);
+      BRepPrimAPI_MakeRevol revol(input, gp_Ax1(axis_point, axis_dir), angle);
       revol.Build(indicator->Start());
       if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
       if (!revol.IsDone()) {
@@ -886,12 +920,11 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       }
       auto sweep = revol.Revol();
       const bool partial = angle < 2 * std::acos(-1.0);
-      naming_sweep(record, sweep, edges, segments,
-                   partial ? sweep.FirstShape(face) : TopoDS_Shape{},
-                   partial ? sweep.LastShape(face) : TopoDS_Shape{});
+      naming_sweep(record, sweep, edges, segments, faces,
+                   loop_segment_counts, region_loop_counts, partial);
     } else {
       const gp_Vec sweep = gp_Vec(frame.Direction()) * (top_offset - base_offset);
-      BRepPrimAPI_MakePrism prism(face, sweep);
+      BRepPrimAPI_MakePrism prism(input, sweep);
       prism.Build(indicator->Start());
       if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
       if (!prism.IsDone()) {
@@ -900,14 +933,15 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       }
       record.shape = prism.Shape();
       auto sweep_builder = prism.Prism();
-      naming_sweep(record, sweep_builder, edges, segments, prism.FirstShape(), prism.LastShape());
+      naming_sweep(record, sweep_builder, edges, segments, faces,
+                   loop_segment_counts, region_loop_counts, true);
     }
     if (axis_origin) {
       TopTools_IndexedMapOfShape solids;
       TopExp::MapShapes(record.shape, TopAbs_SOLID, solids);
       GProp_GProps properties;
       BRepGProp::VolumeProperties(record.shape, properties);
-      if (solids.Extent() != 1 || !(properties.Mass() > 0)) {
+      if (solids.Extent() == 0 || !(properties.Mass() > 0)) {
         write_error(out_error, "the revolution is not one valid solid with positive volume");
         return FC_OCCT_KERNEL;
       }
@@ -920,28 +954,45 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
   });
 }
 
+FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
+    size_t *count, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !count) return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_INVALID_INPUT;
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(found->second.shape, TopAbs_SOLID, solids);
+    *count = static_cast<size_t>(solids.Extent());
+    return FC_OCCT_OK;
+  });
+}
+
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
-                             size_t loop_count, double base_offset,
+                             size_t loop_count, const size_t *region_loop_counts,
+                             size_t region_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
-                       loop_count, base_offset, top_offset, nullptr, nullptr, 0,
+                       loop_count, region_loop_counts, region_count, base_offset,
+                       top_offset, nullptr, nullptr, 0,
                        cancel, cancel_context, out_shape, out_error);
 }
 
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     const FcOcctSegment *segments, size_t segment_count,
     const size_t *loop_segment_counts, size_t loop_count,
+    const size_t *region_loop_counts, size_t region_count,
     const double *axis_origin, const double *axis_direction, double angle,
     FcOcctCancelFn cancel, void *cancel_context, uint64_t *out_shape,
     FcOcctError *out_error) noexcept {
   if (!axis_origin || !axis_direction) return FC_OCCT_INVALID_INPUT;
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
-                       loop_count, 0, 0, axis_origin, axis_direction, angle,
+                       loop_count, region_loop_counts, region_count, 0, 0,
+                       axis_origin, axis_direction, angle,
                        cancel, cancel_context, out_shape, out_error);
 }
 

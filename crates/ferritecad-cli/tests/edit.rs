@@ -345,6 +345,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
         })?;
         let payload = if revolve {
             ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::Partial {
@@ -355,6 +356,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
             })
         } else {
             ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(10.0)?,

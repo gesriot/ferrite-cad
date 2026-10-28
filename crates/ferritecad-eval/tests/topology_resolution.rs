@@ -88,6 +88,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
@@ -210,6 +211,7 @@ fn changing_the_extrusion_height_keeps_the_names_though_the_handles_change() {
                 2,
                 Some("Extrude1"),
                 &ObjectPayload::Extrude(Extrude {
+                    regions: Vec::new(),
                     profile,
                     end_condition: EndCondition::Blind {
                         distance: Expression::constant(25.0)?,

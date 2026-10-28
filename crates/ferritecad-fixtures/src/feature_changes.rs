@@ -94,6 +94,7 @@ pub fn circular_tool(
                 body,
                 name: Some("Cut".into()),
                 feature: FeatureAddition::Extrude {
+                    regions: Vec::new(),
                     operation: ferritecad_document::SolidOperation::Cut,
                     profile: sketch,
                     end_condition,

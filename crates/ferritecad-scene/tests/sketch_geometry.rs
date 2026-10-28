@@ -256,6 +256,7 @@ fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
                         order,
                         Some("Extrude"),
                         &ObjectPayload::Extrude(Extrude {
+                            regions: Vec::new(),
                             profile: spec.id,
                             end_condition: EndCondition::Blind {
                                 // Different depths so two extrudes of one

@@ -167,6 +167,7 @@ fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64
             2,
             Some("Extrude1"),
             &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
                 profile: sketch,
                 end_condition: EndCondition::Blind {
                     distance: Expression::constant(height)?,
