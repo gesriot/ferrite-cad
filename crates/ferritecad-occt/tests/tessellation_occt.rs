@@ -530,7 +530,7 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
 
     let mut reader = OcctKernel::new().expect("opens");
     let mut restored_map = built.map.clone();
-    restored_map.features.clear();
+    restored_map.remove_feature(built.feature);
     restore_feature(&mut reader, &archived, &mut restored_map).expect("restores");
     let shape = restored_map
         .feature(built.feature)
