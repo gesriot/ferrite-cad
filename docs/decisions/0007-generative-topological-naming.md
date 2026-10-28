@@ -275,6 +275,31 @@ of legacy maps. Median milliseconds:
 | Overlapping tools | 7.732 | 8.058 | 0.917 | 8.981 |
 | Pocket | 2.009 | 2.030 | 0.453 | 2.482 |
 
+### Shared derivation graph measurements
+
+Measure the shared graph against main `9f982b3e` in one session, with three samples
+per completed long case and a 6144 MiB watchdog. The complete before/after tables,
+archive sections and growth exponents are in [PR #135](https://github.com/gesriot/ferrite-cad/pull/135).
+Each cell below is main → shared graph; times are medians in milliseconds.
+
+| History | Stored nodes | Naming ms | Cached ms | Archive MiB |
+|---|---:|---:|---:|---:|
+| pockets_100 | 93,930 → 1,780 | 142.572 → 68.370 | 200.229 → 131.298 | 18.674 → 10.149 |
+| pockets_300 | 791,630 → 5,180 | 2323.485 → 653.507 | 1798.244 → 1142.470 | 158.447 → 86.210 |
+| pockets_1000 | incomplete | incomplete | incomplete | incomplete |
+| rework_100 | 93,930 → 1,780 | 27.920 → 9.396 | 96.564 → 16.941 | 10.865 → 0.943 |
+| rework_300 | 791,630 → 5,180 | 211.337 → 27.356 | 769.404 → 50.097 | 87.700 → 2.802 |
+| rework_1000 | 8,588,580 → 17,080 | 2355.368 → 96.949 | 9239.845 → 167.812 | 935.505 → 9.306 |
+
+The rework history keeps constant live topology. Owned nodes, surviving ancestry
+and archive bytes grow linearly; its 1000-Cut cache rebuild is faster than cold
+(167.812 ms versus 5425.652 ms). In pockets, successive results contain more holes:
+entity, binding, non-empty ancestry and incidence tables still accumulate with
+live topology. Retaining intermediate B-Reps remains the evaluator policy.
+At 1000 pockets, main stops during cold feature 955 and the shared graph stops
+during naming feature 1000 at the memory limit; neither has a complete three-sample
+result. Do not infer timing or growth exponents from those incomplete cases.
+
 ### 10. Integration and subsequent consumers
 
 In 08 replace `SemanticRole`, `CarriedName`, role maps in `FeatureNames` and
