@@ -220,8 +220,11 @@ no legacy reader, migration or mixed old/new tables. Key the whole entry by
 model inputs, naming algorithm and kernel build. Missing names, mismatched
 hashes, invalid incidence, kinds or slots invalidate the entire entry.
 Restore requires the predecessor chain to have been restored or rebuilt first.
-Decode checks the local record; before publication, validate each owned node's
-operands and every result name against the owned nodes plus the prepared model
+The constructors (`decode` and `archive_feature`) check local digests, node forms,
+tags and ancestry rules exactly once. The immutable public record is valid by
+construction; encoding and restoration do not repeat that local check. Live
+insertion trusts digests computed by `intern`. Before publication, validate each
+owned node's operands and every result name against the owned nodes plus the prepared model
 graph. A missing operand, foreign lineage, duplicate owner, or invalid empty row
 rejects the whole entry. No repeated validation walk of an inherited graph is
 needed. Geometry and names are published together after the full incidence check.

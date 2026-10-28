@@ -109,11 +109,10 @@ pub(crate) fn expression(
         },
     )
 }
-// Decode can check the local record before its predecessors are available. Restore
-// supplies the inherited graph and requires every operand, including its kind.
-pub(crate) fn validate(graph: &Derivations, inherited: Option<&Derivations>) -> Result<()> {
+// Constructors check local nodes once. External operands are checked against the model.
+pub(crate) fn validate(graph: &Derivations) -> Result<()> {
     for (digest, node) in graph {
-        validate_node(*digest, node, graph, inherited)?;
+        validate_node(*digest, node, graph)?;
     }
     Ok(())
 }
@@ -122,13 +121,7 @@ pub(crate) fn validate_node(
     digest: ContentHash,
     node: &Derivation,
     graph: &Derivations,
-    inherited: Option<&Derivations>,
 ) -> Result<()> {
-    let lookup = |digest: ContentHash| {
-        graph
-            .get(&digest)
-            .or_else(|| inherited.and_then(|g| g.get(&digest)))
-    };
     let valid = match node {
         Derivation::Curve(..) | Derivation::Cap(..) => true,
         Derivation::Expression {
@@ -149,10 +142,6 @@ pub(crate) fn validate_node(
                             && feature.is_none()
                             && *extra <= 1
                             && inputs.len() == 1
-                            && inputs.iter().all(|i| match lookup(i.digest) {
-                                Some(node) => matches!(&**node, Derivation::Curve(..)),
-                                None => inherited.is_none(),
-                            })
                     }
                     "generated" | "modified" => {
                         feature.is_some()
@@ -184,10 +173,29 @@ pub(crate) fn validate_node(
     };
     if !valid
         || node.name().digest != digest
-        || node.inputs().any(|n| match lookup(n.digest) {
-            Some(parent) => parent.kind() != n.kind,
-            None => inherited.is_some(),
+        || node.inputs().any(|input| {
+            graph
+                .get(&input.digest)
+                .is_some_and(|parent| validate_operand(node, input, parent).is_err())
         })
+    {
+        return Err(CadError::topology(
+            "invalid or incomplete naming derivation graph",
+        ));
+    }
+    Ok(())
+}
+
+// Closure and operand kinds depend on the prepared model, not on recomputing a digest.
+pub(crate) fn validate_operand(node: &Derivation, input: Name, parent: &Derivation) -> Result<()> {
+    if parent.kind() != input.kind
+        || (matches!(
+            node,
+            Derivation::Expression {
+                tag: "curve-end",
+                ..
+            }
+        ) && !matches!(parent, Derivation::Curve(..)))
     {
         return Err(CadError::topology(
             "invalid or incomplete naming derivation graph",

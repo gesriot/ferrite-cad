@@ -290,6 +290,9 @@ fn restoration_requires_local_output_rows_and_nonempty_inherited_rows() {
     )
     .expect("own output");
     valid.ancestry.insert(own, BTreeSet::new());
+    let bytes = valid.encode().expect("encode constructed record");
+    let valid = crate::ArchivedFeature::decode(&bytes, child, kernel.identity())
+        .expect("locally valid record");
     let mut destination = model.clone();
     crate::restore_feature(&mut kernel, &valid, &mut destination).expect("inherited live names");
     assert_eq!(destination.features[&child].derivations.len(), 2);
@@ -307,10 +310,30 @@ fn restoration_requires_local_output_rows_and_nonempty_inherited_rows() {
     let mut bad = valid.clone();
     bad.derivations.remove(&root.digest);
     cases.push(bad);
+    let mut bad = valid.clone();
+    let inherited_edge = *valid
+        .entities
+        .values()
+        .find(|name| name.kind == SubShapeKind::Edge)
+        .expect("inherited edge");
+    derivation::expression(
+        &mut bad.derivations,
+        model.derivations(),
+        SubShapeKind::Vertex,
+        "curve-end",
+        None,
+        [inherited_edge],
+        0,
+    )
+    .expect("valid digest, but the external parent is not a curve root");
+    cases.push(bad);
     for bad in cases {
         let mut destination = model.clone();
         let before = kernel.live_shape_count();
-        assert!(crate::restore_feature(&mut kernel, &bad, &mut destination).is_err());
+        let bytes = bad.encode().expect("encode damaged record");
+        let rejected = crate::ArchivedFeature::decode(&bytes, child, kernel.identity())
+            .and_then(|checked| crate::restore_feature(&mut kernel, &checked, &mut destination));
+        assert!(rejected.is_err());
         assert_eq!(destination.derivations(), model.derivations());
         assert!(!destination.features.contains_key(&child));
         assert_eq!(kernel.live_shape_count(), before);

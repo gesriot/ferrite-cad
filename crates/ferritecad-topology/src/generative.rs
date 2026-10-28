@@ -344,6 +344,15 @@ impl ModelNaming {
                     "unequal derivations collide at {digest}; refusing to merge names"
                 )));
             }
+            if self
+                .owners
+                .get(digest)
+                .is_some_and(|owner| *owner != producer)
+            {
+                return Err(CadError::topology(
+                    "a derivation already has a live owning feature",
+                ));
+            }
             let valid = match &**node {
                 Derivation::Curve(owner, curve, plane) => {
                     self.in_lineage(producer, *owner)
@@ -384,19 +393,19 @@ impl ModelNaming {
                 ));
             }
             for input in node.inputs() {
-                self.check_name(producer, graph, input)?;
+                let parent = self.check_name(producer, graph, input)?;
+                derivation::validate_operand(node, input, parent)?;
             }
-            derivation::validate_node(*digest, node, graph, Some(&self.derivations))?;
         }
         Ok(())
     }
 
-    pub(crate) fn check_name(
-        &self,
+    pub(crate) fn check_name<'a>(
+        &'a self,
         producer: ObjectId,
-        own: &Derivations,
+        own: &'a Derivations,
         name: Name,
-    ) -> Result<()> {
+    ) -> Result<&'a Derivation> {
         let node = if let Some(node) = own.get(&name.digest) {
             Some(node)
         } else if self
@@ -413,7 +422,7 @@ impl ModelNaming {
                 "invalid or incomplete naming derivation graph",
             ));
         }
-        Ok(())
+        Ok(node.expect("checked operand"))
     }
 
     pub fn cache_key(&self, owner: ObjectId, geometry: ContentHash) -> ContentHash {

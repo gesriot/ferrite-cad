@@ -10,7 +10,6 @@ pub const ARCHIVE_CACHE_KIND: &str = "brep.generative.v2";
 
 impl ArchivedFeature {
     pub fn encode(&self) -> Result<Vec<u8>> {
-        self.validate()?;
         let mut out = self.producer.to_bytes().to_vec();
         for part in [
             self.blob.kernel().id().as_bytes(),

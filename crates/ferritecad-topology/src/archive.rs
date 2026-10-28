@@ -8,8 +8,8 @@ use crate::ModelNaming;
 use crate::generative::{FeatureNaming, Name};
 
 /// One atomic B-Rep with feature-owned nodes and result-local bindings.
-/// Decode checks the record; restore also requires the prepared predecessor graph
-/// and verifies every slot and incidence relation against the live B-Rep.
+/// Both constructors check local invariants once; encoding preserves that valid record.
+/// Restore checks the prepared predecessor graph and every live B-Rep slot and incidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchivedFeature {
     pub(crate) derivations: crate::derivation::Derivations,
@@ -32,7 +32,7 @@ impl ArchivedFeature {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        crate::derivation::validate(&self.derivations, None)?;
+        crate::derivation::validate(&self.derivations)?;
         let bad = || CadError::topology("incomplete or contradictory generative archive");
         if self.entities.is_empty()
             || self.entities.keys().any(|s| s.is_root())
@@ -101,17 +101,11 @@ impl ArchivedFeature {
     }
 
     fn validate_in(&self, model: &ModelNaming) -> Result<()> {
-        self.validate()?;
         model.check_derivations(self.producer, &self.derivations)?;
         for name in self.entities.values().chain(self.ancestry.keys()) {
-            model.check_name(self.producer, &self.derivations, *name)?;
-            let node = self
-                .derivations
-                .get(&name.digest)
-                .or_else(|| model.derivations().get(&name.digest))
-                .expect("checked name");
+            let node = model.check_name(self.producer, &self.derivations, *name)?;
             if !matches!(
-                &**node,
+                node,
                 crate::derivation::Derivation::Expression { tag, .. } if *tag != "curve-end"
             ) {
                 return Err(CadError::topology(
@@ -169,6 +163,7 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             .map(|(s, set)| Ok((slots[s], members(set)?)))
             .collect::<Result<_>>()?,
     };
+    archived.validate()?;
     archived.validate_in(map)?;
     Ok(archived)
 }
