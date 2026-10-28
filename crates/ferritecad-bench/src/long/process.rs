@@ -168,9 +168,12 @@ fn exponents(results: &[Value]) -> Vec<Value> {
             let (a, b) = (pair[0], pair[1]);
             let mut metrics = serde_json::Map::new();
             if a["complete"] == true && b["complete"] == true {
-                let ratio = (b["report"]["cuts"].as_f64().expect("cut count")
-                    / a["report"]["cuts"].as_f64().expect("cut count"))
-                .ln();
+                let cuts = |r: &Value| {
+                    r["report"]["cuts"]
+                        .as_f64()
+                        .expect("every report records its cut count")
+                };
+                let ratio = (cuts(b) / cuts(a)).ln();
                 for pointer in [
                     "/medians/cold_ms",
                     "/medians/kernel_ms",

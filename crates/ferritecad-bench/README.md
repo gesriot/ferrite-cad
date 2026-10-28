@@ -76,10 +76,10 @@ its existing smoke test. There are two families at N = 100, 300 and 1000 Cuts:
   live entity count.
 
 Both start with the same 140 by 140 by 10 mm plate; independent pockets use a
-4 mm blind depth. The grid, plate dimensions and increment rules are fixed across N.
-Each document contains
-N + 1 feature results: position zero is the plate, positions 1 through N are
-Cuts. These unconstrained documents also work without PlaneGCS.
+4 mm blind depth. The grid, plate dimensions and increment rules are fixed
+across N. Each document contains N + 1 feature results: position zero is the
+plate, positions 1 through N are Cuts. These unconstrained documents also work
+without PlaneGCS.
 
 Build once, finish all other builds/tests, then measure on a developer Mac:
 
