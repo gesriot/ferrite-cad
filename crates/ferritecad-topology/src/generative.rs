@@ -19,11 +19,12 @@ pub struct Name {
 
 #[derive(Debug, Clone)]
 pub struct FeatureNaming {
+    /// Nodes first created by this feature, including its unpublished boolean tool.
     pub derivations: Derivations,
     pub topology: ShapeTopology,
     pub entities: BTreeMap<SubShapeHandle, Name>,
     pub bindings: BTreeMap<Name, BTreeSet<SubShapeHandle>>,
-    /// Derived ancestry sets, including the primary names of previous results.
+    /// Surviving ancestry, plus empty rows for this feature's vanished output witnesses.
     pub ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>>,
 }
 
@@ -75,6 +76,8 @@ impl FeatureNaming {
 #[derive(Debug, Clone, Default)]
 pub struct ModelNaming {
     derivations: Derivations,
+    owners: BTreeMap<ContentHash, ObjectId>,
+    lineage: BTreeMap<ObjectId, (usize, usize)>,
     pub(crate) operations: BTreeMap<ObjectId, NamingOperation>,
     pub(crate) planes: BTreeMap<ObjectId, ObjectId>,
     sweeps: BTreeMap<ObjectId, NamingOperation>,
@@ -147,7 +150,55 @@ impl ModelNaming {
                 self.previous.insert(object.id, previous);
             }
         }
+        self.index_lineage()
+    }
+
+    fn index_lineage(&mut self) -> Result<()> {
+        let mut children = BTreeMap::<ObjectId, Vec<ObjectId>>::new();
+        let mut pending = Vec::new();
+        for owner in self.operations.keys() {
+            if let Some(previous) = self.previous.get(owner) {
+                children.entry(*previous).or_default().push(*owner);
+            } else {
+                pending.push((*owner, false));
+            }
+        }
+        self.lineage.clear();
+        let mut clock = 0;
+        while let Some((owner, exit)) = pending.pop() {
+            if exit {
+                self.lineage.get_mut(&owner).expect("entered producer").1 = clock;
+                continue;
+            }
+            if self.lineage.insert(owner, (clock, clock)).is_some() {
+                return Err(CadError::topology("invalid naming producer lineage"));
+            }
+            clock += 1;
+            pending.push((owner, true));
+            pending.extend(
+                children
+                    .get(&owner)
+                    .into_iter()
+                    .flatten()
+                    .map(|id| (*id, false)),
+            );
+        }
+        if self.lineage.len() != self.operations.len() {
+            return Err(CadError::topology("invalid naming producer lineage"));
+        }
         Ok(())
+    }
+
+    fn in_lineage(&self, at: ObjectId, ancestor: ObjectId) -> bool {
+        self.lineage
+            .get(&at)
+            .zip(self.lineage.get(&ancestor))
+            .is_some_and(|((position, _), (start, end))| start <= position && position < end)
+    }
+
+    /// The union of nodes owned by all currently published features.
+    pub fn derivations(&self) -> &Derivations {
+        &self.derivations
     }
 
     /// Restrict sweep provenance to the geometrically resolved selection.
@@ -184,7 +235,12 @@ impl ModelNaming {
         self.features.is_empty()
     }
     pub fn remove_feature(&mut self, id: ObjectId) {
-        self.features.remove(&id);
+        if let Some(feature) = self.features.remove(&id) {
+            for digest in feature.derivations.keys() {
+                self.derivations.remove(digest);
+                self.owners.remove(digest);
+            }
+        }
     }
 
     pub fn name_operation(
@@ -236,6 +292,7 @@ impl ModelNaming {
             shape,
             owner,
             self.planes.get(&owner).copied(),
+            &self.derivations,
             inputs,
             kernel,
             history,
@@ -245,23 +302,37 @@ impl ModelNaming {
     /// Publishes a feature's names after checking its graph against the model.
     pub fn insert_feature(&mut self, owner: ObjectId, named: FeatureNaming) -> Result<()> {
         self.check_derivations(owner, &named.derivations)?;
+        self.publish_feature(owner, named)
+    }
+
+    // Both live insertion and archive restoration validate before publishing any nodes.
+    pub(crate) fn publish_feature(&mut self, owner: ObjectId, named: FeatureNaming) -> Result<()> {
+        if self.features.contains_key(&owner)
+            || named
+                .derivations
+                .keys()
+                .any(|digest| self.owners.contains_key(digest))
+        {
+            return Err(CadError::topology(
+                "a derivation already has a live owning feature",
+            ));
+        }
         for (digest, node) in &named.derivations {
-            self.derivations
-                .entry(*digest)
-                .or_insert_with(|| node.clone());
+            self.derivations.insert(*digest, node.clone());
+            self.owners.insert(*digest, owner);
         }
         self.features.insert(owner, named);
         Ok(())
     }
 
     pub(crate) fn check_derivations(&self, producer: ObjectId, graph: &Derivations) -> Result<()> {
-        let mut lineage = BTreeSet::new();
-        let mut cursor = Some(producer);
-        while let Some(owner) = cursor {
-            if !self.operations.contains_key(&owner) || !lineage.insert(owner) {
-                return Err(CadError::topology("invalid naming producer lineage"));
-            }
-            cursor = self.previous.get(&owner).copied();
+        if !self.lineage.contains_key(&producer)
+            || self
+                .previous
+                .get(&producer)
+                .is_some_and(|p| !self.features.contains_key(p))
+        {
+            return Err(CadError::topology("invalid naming producer lineage"));
         }
         for (digest, node) in graph {
             if self
@@ -273,9 +344,18 @@ impl ModelNaming {
                     "unequal derivations collide at {digest}; refusing to merge names"
                 )));
             }
+            if self
+                .owners
+                .get(digest)
+                .is_some_and(|owner| *owner != producer)
+            {
+                return Err(CadError::topology(
+                    "a derivation already has a live owning feature",
+                ));
+            }
             let valid = match &**node {
                 Derivation::Curve(owner, curve, plane) => {
-                    lineage.contains(owner)
+                    self.in_lineage(producer, *owner)
                         && self.planes.get(owner).copied() == *plane
                         && self
                             .roots
@@ -283,7 +363,7 @@ impl ModelNaming {
                             .is_some_and(|r| r.contains(&NamingInput::Curve(*curve)))
                 }
                 Derivation::Cap(owner, _, plane) => {
-                    lineage.contains(owner)
+                    self.in_lineage(producer, *owner)
                         && self.roots.contains_key(owner)
                         && self.planes.get(owner).copied() == *plane
                 }
@@ -293,7 +373,7 @@ impl ModelNaming {
                     extra,
                     ..
                 } => {
-                    feature.is_none_or(|f| lineage.contains(&f))
+                    feature.is_none_or(|f| self.in_lineage(producer, f))
                         && (!matches!(*tag, "generated" | "modified")
                             || feature.is_some_and(|f| {
                                 self.operations.get(&f).is_some_and(|op| {
@@ -312,8 +392,37 @@ impl ModelNaming {
                     "cached derivation has a foreign model root",
                 ));
             }
+            for input in node.inputs() {
+                let parent = self.check_name(producer, graph, input)?;
+                derivation::validate_operand(node, input, parent)?;
+            }
         }
         Ok(())
+    }
+
+    pub(crate) fn check_name<'a>(
+        &'a self,
+        producer: ObjectId,
+        own: &'a Derivations,
+        name: Name,
+    ) -> Result<&'a Derivation> {
+        let node = if let Some(node) = own.get(&name.digest) {
+            Some(node)
+        } else if self
+            .owners
+            .get(&name.digest)
+            .is_some_and(|o| self.in_lineage(producer, *o))
+        {
+            self.derivations.get(&name.digest)
+        } else {
+            None
+        };
+        match node {
+            Some(node) if node.kind() == name.kind => Ok(node),
+            _ => Err(CadError::topology(
+                "invalid or incomplete naming derivation graph",
+            )),
+        }
     }
 
     pub fn cache_key(&self, owner: ObjectId, geometry: ContentHash) -> ContentHash {
@@ -341,6 +450,7 @@ fn derive(
     shape: ShapeHandle,
     owner: ObjectId,
     plane: Option<ObjectId>,
+    inherited: &Derivations,
     inputs: &[&FeatureNaming],
     kernel: &mut (impl GeometryKernel + ?Sized),
     history: ferritecad_kernel::NamingHistory,
@@ -353,7 +463,7 @@ fn derive(
     let mut derivations = Derivations::new();
     for source in inputs {
         for (digest, node) in &source.derivations {
-            derivation::insert(&mut derivations, *digest, node.clone())?;
+            derivation::insert(&mut derivations, inherited, *digest, node.clone())?;
         }
     }
     let derived: BTreeMap<_, _> = inputs.iter().map(|f| (f.shape(), *f)).collect();
@@ -365,11 +475,15 @@ fn derive(
             *modified.entry(*input).or_default() += 1;
         }
     }
-    let mut ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>> = inputs
-        .iter()
-        .flat_map(|source| source.ancestry.keys().copied())
-        .map(|name| (name, BTreeSet::new()))
-        .collect();
+    let mut ancestors = BTreeMap::<SubShapeHandle, BTreeSet<Name>>::new();
+    for source in inputs {
+        for (name, members) in &source.ancestry {
+            for member in members {
+                ancestors.entry(*member).or_default().insert(*name);
+            }
+        }
+    }
+    let mut ancestry: BTreeMap<Name, BTreeSet<SubShapeHandle>> = BTreeMap::new();
     let mut terms: BTreeMap<SubShapeHandle, BTreeSet<Name>> = BTreeMap::new();
     let mut kept = BTreeMap::new();
     for (input, relation, output) in &history.relations {
@@ -388,18 +502,26 @@ fn derive(
                     .entities
                     .get(sub)
                     .ok_or_else(|| CadError::topology("history names an unknown input entity"))?;
-                (root, Some((source, sub)))
+                (root, Some(sub))
             }
             NamingInput::Curve(curve) => (
-                derivation::intern(&mut derivations, Derivation::Curve(owner, *curve, plane))?,
+                derivation::intern(
+                    &mut derivations,
+                    inherited,
+                    Derivation::Curve(owner, *curve, plane),
+                )?,
                 None,
             ),
             NamingInput::CurveEnd { curve, end } => {
-                let root =
-                    derivation::intern(&mut derivations, Derivation::Curve(owner, *curve, plane))?;
+                let root = derivation::intern(
+                    &mut derivations,
+                    inherited,
+                    Derivation::Curve(owner, *curve, plane),
+                )?;
                 (
                     derivation::expression(
                         &mut derivations,
+                        inherited,
                         SubShapeKind::Vertex,
                         "curve-end",
                         None,
@@ -410,13 +532,18 @@ fn derive(
                 )
             }
             NamingInput::Cap { end } => (
-                derivation::intern(&mut derivations, Derivation::Cap(owner, *end, plane))?,
+                derivation::intern(
+                    &mut derivations,
+                    inherited,
+                    Derivation::Cap(owner, *end, plane),
+                )?,
                 None,
             ),
         };
         let term = match relation {
             NamingRelation::Modified if modified[input] > 1 => derivation::expression(
                 &mut derivations,
+                inherited,
                 output.kind(),
                 "modified",
                 Some(owner),
@@ -431,6 +558,7 @@ fn derive(
             }
             NamingRelation::Generated => derivation::expression(
                 &mut derivations,
+                inherited,
                 output.kind(),
                 "generated",
                 Some(owner),
@@ -444,11 +572,9 @@ fn derive(
         terms.entry(*output).or_default().insert(term);
         if *relation == NamingRelation::Generated {
             ancestry.entry(term).or_default().insert(*output);
-        } else if let Some((source, sub)) = source {
-            for (ancestor, members) in &source.ancestry {
-                if members.contains(sub) {
-                    ancestry.entry(*ancestor).or_default().insert(*output);
-                }
+        } else if let Some(sub) = source {
+            for ancestor in ancestors.get(sub).into_iter().flatten() {
+                ancestry.entry(*ancestor).or_default().insert(*output);
             }
             ancestry.entry(root).or_default().insert(*output);
         }
@@ -472,6 +598,7 @@ fn derive(
                                 .map(|curve| {
                                     derivation::intern(
                                         &mut derivations,
+                                        inherited,
                                         Derivation::Curve(owner, *curve, plane),
                                     )
                                 })
@@ -488,6 +615,7 @@ fn derive(
                         };
                     let refined = derivation::expression(
                         &mut derivations,
+                        inherited,
                         SubShapeKind::Face,
                         "split-boundary-history",
                         Some(owner),
@@ -513,6 +641,7 @@ fn derive(
                 } else {
                     derivation::expression(
                         &mut derivations,
+                        inherited,
                         kind,
                         "merge",
                         Some(owner),
@@ -535,6 +664,7 @@ fn derive(
                 }
                 let incidence = derivation::expression(
                     &mut derivations,
+                    inherited,
                     kind,
                     "incident-faces",
                     None,
@@ -544,6 +674,7 @@ fn derive(
                 // Provenance is a witness, never a traversal ordinal or a coordinate.
                 derivation::expression(
                     &mut derivations,
+                    inherited,
                     kind,
                     "boundary",
                     Some(owner),
@@ -558,6 +689,16 @@ fn derive(
     for (entity, name) in &entities {
         bindings.entry(*name).or_default().insert(*entity);
         ancestry.entry(*name).or_default().insert(*entity);
+    }
+    for (digest, node) in &derivations {
+        if node.requires_ancestry() {
+            ancestry
+                .entry(Name {
+                    kind: node.kind(),
+                    digest: *digest,
+                })
+                .or_default();
+        }
     }
     Ok(FeatureNaming {
         derivations,

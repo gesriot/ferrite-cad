@@ -213,7 +213,6 @@ fn signatures_of(built: &ferritecad_eval::RebuildResult) -> BTreeMap<ObjectId, C
 
 fn counts(model: &ModelNaming, tip: ObjectId) -> Counts {
     let mut out = Counts::default();
-    let mut unique = BTreeSet::new();
     let mut allocations = BTreeSet::new();
     for named in model.features.values() {
         out.derivations += named.derivations.len();
@@ -221,10 +220,9 @@ fn counts(model: &ModelNaming, tip: ObjectId) -> Counts {
         out.ancestry_members += named.ancestry.values().map(BTreeSet::len).sum::<usize>();
         out.empty_ancestry_rows += named.ancestry.values().filter(|s| s.is_empty()).count();
         out.entities += named.entities.len();
-        unique.extend(named.derivations.keys().copied());
         allocations.extend(named.derivations.values().map(std::sync::Arc::as_ptr));
     }
-    out.unique_derivations = unique.len();
+    out.unique_derivations = model.derivations().len();
     out.distinct_derivation_allocations = allocations.len();
     out.tip_entities = model.features[&tip].entities.len();
     out
@@ -243,7 +241,8 @@ fn signature(named: &FeatureNaming) -> ContentHash {
     let feed = |h: &mut CanonicalHasher, name: Name| {
         h.bytes(name.kind.as_str().as_bytes()).hash(&name.digest);
     };
-    h.field("derivations").u64(named.derivations.len() as u64);
+    h.field("owned_derivations")
+        .u64(named.derivations.len() as u64);
     for digest in named.derivations.keys() {
         h.hash(digest);
     }
@@ -402,7 +401,7 @@ mod tests {
                 .expect("cold, naming replay and exact cache hits agree");
             assert_eq!(report.features, 11);
             assert!(report.complete);
-            assert!(report.counts.derivations > report.counts.unique_derivations);
+            assert_eq!(report.counts.derivations, report.counts.unique_derivations);
             assert!(report.cache_entry_bytes > report.last_entry_bytes);
             tip_counts.push(report.counts.tip_entities);
         }

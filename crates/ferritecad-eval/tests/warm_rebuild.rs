@@ -869,7 +869,7 @@ fn every_damaged_naming_record_rebuilds_atomically_without_retargeting() {
 }
 
 #[test]
-fn the_retired_role_archive_kind_is_ignored_without_migration() {
+fn the_retired_full_graph_archive_kind_is_ignored_without_migration() {
     let (dir, document, plate) = sample(10.);
     let mut kernel = MockKernel::new();
     let mut cache = store(dir.path(), &kernel, document.meta().document_id);
@@ -889,7 +889,7 @@ fn the_retired_role_archive_kind_is_ignored_without_migration() {
         .bytes;
     cache.clear().expect("clear");
     cache
-        .put(plate.extrude, key, "brep.named.v1", &bytes)
+        .put(plate.extrude, key, "brep.generative.v1", &bytes)
         .expect("old kind");
     let mut reader = MockKernel::new();
     let (built, events) = rebuild_cached(
@@ -904,7 +904,7 @@ fn the_retired_role_archive_kind_is_ignored_without_migration() {
     assert!(events.iter().all(|e| e.outcome == CacheOutcome::Miss));
     assert!(
         cache
-            .get(plate.extrude, key, "brep.named.v1")
+            .get(plate.extrude, key, "brep.generative.v1")
             .expect("read")
             .is_some()
     );

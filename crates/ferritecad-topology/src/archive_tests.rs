@@ -3,7 +3,7 @@ use super::*;
 use ferritecad_kernel::*;
 use ferritecad_types::{ContentHash, StableEntityId};
 #[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
-mod support;
+pub(crate) mod support;
 
 pub(crate) fn plate() -> (mock::MockKernel, ModelNaming, ObjectId, ExtrudeRequest) {
     let corners = [(0., 0.), (20., 0.), (20., 10.), (0., 10.)]
@@ -165,8 +165,15 @@ fn reject_each_incomplete_or_contradictory_graph_before_restoring_any_shape() {
         .insert(ContentHash::of_bytes(b"wrong digest"), node);
     cases.push(bad);
     for bad in cases {
-        assert!(bad.validate().is_err());
-        assert!(bad.encode().is_err());
+        let mut reader = mock::MockKernel::new();
+        let mut destination = model.clone();
+        destination.remove_feature(feature);
+        let bytes = bad.encode().expect("encode the internally damaged record");
+        let rejected = ArchivedFeature::decode(&bytes, feature, kernel.identity())
+            .and_then(|checked| restore_feature(&mut reader, &checked, &mut destination));
+        assert!(rejected.is_err());
+        assert!(destination.features.is_empty());
+        assert_eq!(reader.live_shape_count(), 0);
     }
 }
 
@@ -236,7 +243,10 @@ fn reject_slot_shifts_wrong_kinds_and_incidence_against_the_brep_without_partial
     for bad in cases {
         let mut reader = mock::MockKernel::new();
         let mut destination = support::prepared(feature, request.profile(), false).expect("roots");
-        assert!(restore_feature(&mut reader, &bad, &mut destination).is_err());
+        let bytes = bad.encode().expect("encode the locally valid record");
+        let checked = ArchivedFeature::decode(&bytes, feature, kernel.identity())
+            .expect("geometry must reject a locally valid record");
+        assert!(restore_feature(&mut reader, &checked, &mut destination).is_err());
         assert!(destination.features.is_empty());
         assert_eq!(reader.live_shape_count(), 0);
     }
@@ -269,6 +279,7 @@ fn allow_sets_shared_slots_and_explicit_deleted_meanings_without_choosing_a_memb
     );
     let deleted = crate::derivation::expression(
         &mut archive.derivations,
+        &BTreeMap::new(),
         SubShapeKind::Edge,
         "generated",
         Some(feature),
@@ -279,7 +290,9 @@ fn allow_sets_shared_slots_and_explicit_deleted_meanings_without_choosing_a_memb
     archive.ancestry.insert(deleted, BTreeSet::new());
     let mut reader = mock::MockKernel::new();
     let mut restored = support::prepared(feature, request.profile(), false).expect("roots");
-    restore_feature(&mut reader, &archive, &mut restored).expect("sets are legal");
+    let bytes = archive.encode().expect("encode sets");
+    let checked = ArchivedFeature::decode(&bytes, feature, kernel.identity()).expect("valid sets");
+    restore_feature(&mut reader, &checked, &mut restored).expect("sets are legal");
     let named = &restored.features[&feature];
     assert!(named.resolve(alias).is_err());
     assert_eq!(
@@ -333,7 +346,7 @@ fn unequal_derivations_under_one_digest_are_refused_atomically() {
     let mut collision = graph.clone();
     let foreign = Arc::new(Derivation::Cap(ObjectId::new(), false, None));
     assert!(
-        insert(&mut collision, *digest, foreign.clone())
+        insert(&mut collision, &BTreeMap::new(), *digest, foreign.clone())
             .expect_err("structural collision")
             .to_string()
             .contains("unequal derivations collide")
@@ -348,10 +361,11 @@ fn unequal_derivations_under_one_digest_are_refused_atomically() {
             .contains("unequal derivations collide")
     );
     assert!(crate::derivation::validate(&collision).is_err());
-    insert(&mut collision, *digest, node.clone()).expect_err("the unequal node is still refused");
+    insert(&mut collision, &BTreeMap::new(), *digest, node.clone())
+        .expect_err("the unequal node is still refused");
     let mut equal = graph.clone();
     assert_eq!(
-        intern(&mut equal, (**node).clone())
+        intern(&mut equal, &BTreeMap::new(), (**node).clone())
             .expect("same expression")
             .digest,
         *digest
@@ -377,16 +391,21 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
         Derivation::Cap(ObjectId::new(), false, None),
     ] {
         let mut graph = crate::derivation::Derivations::new();
-        intern(&mut graph, node).expect("hash");
+        intern(&mut graph, &BTreeMap::new(), node).expect("hash");
         assert!(crate::derivation::validate(&graph).is_ok());
         assert!(model.check_derivations(feature, &graph).is_err());
     }
     let good = archive_feature(&mut kernel, &model, feature).expect("archive");
+    let mut destination = model.clone();
+    destination.remove_feature(feature);
+    good.validate_in(&destination)
+        .expect("prepared context accepts the unmodified archive");
     let name = *good.entities.values().next().expect("name");
     for operation in [NamingOperation::Fuse, NamingOperation::Common] {
         let mut graph = good.derivations.clone();
         expression(
             &mut graph,
+            &BTreeMap::new(),
             SubShapeKind::Face,
             "generated",
             Some(feature),
@@ -405,10 +424,15 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
         .next()
         .expect("parent");
     bad.derivations.remove(&parent.digest);
-    assert!(bad.validate().is_err());
+    assert!(
+        bad.validate()
+            .and_then(|()| bad.validate_in(&destination))
+            .is_err()
+    );
     let mut bad = good.clone();
     let wrong = expression(
         &mut bad.derivations,
+        &BTreeMap::new(),
         SubShapeKind::Edge,
         "generated",
         Some(feature),
@@ -417,7 +441,11 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
     )
     .expect("hash");
     bad.ancestry.insert(wrong, BTreeSet::new());
-    assert!(bad.validate().is_err());
+    assert!(
+        bad.validate()
+            .and_then(|()| bad.validate_in(&destination))
+            .is_err()
+    );
     let mut bad = good.clone();
     let root = bad
         .derivations
@@ -426,7 +454,11 @@ fn a_valid_hash_does_not_make_foreign_roots_or_incomplete_derivations_valid() {
         .expect("root")
         .name();
     bad.ancestry.insert(root, BTreeSet::new());
-    assert!(bad.validate().is_err());
+    assert!(
+        bad.validate()
+            .and_then(|()| bad.validate_in(&destination))
+            .is_err()
+    );
     let mut reader = mock::MockKernel::new();
     let mut wrong_model =
         support::prepared(ObjectId::new(), request.profile(), false).expect("other producer");
@@ -444,7 +476,7 @@ fn roots_of_another_known_body_cannot_enter_a_feature_lineage() {
     model.planes.extend(another.planes);
     let root = crate::derivation::Derivation::Cap(other, false, model.planes.get(&other).copied());
     let mut graph = crate::derivation::Derivations::new();
-    crate::derivation::intern(&mut graph, root).expect("hash");
+    crate::derivation::intern(&mut graph, &BTreeMap::new(), root).expect("hash");
     assert!(model.check_derivations(feature, &graph).is_err());
     let archive = archive_feature(&mut kernel, &model, feature).expect("original graph unchanged");
     assert!(archive.validate().is_ok());
