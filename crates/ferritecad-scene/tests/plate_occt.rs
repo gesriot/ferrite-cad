@@ -303,7 +303,7 @@ fn curve_end_derivations_separate_the_two_corners_of_a_lens() {
                 None,
                 0,
                 Some("XY"),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: ferritecad_types::Transform::IDENTITY,
                 }),
             )?;

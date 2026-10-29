@@ -137,7 +137,7 @@ fn boolean_sweep_provenance_and_cache() {
         let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
         let plane = put(
             &mut d,
-            ObjectPayload::DatumPlane(DatumPlane {
+            ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         );
@@ -190,7 +190,7 @@ fn extrusion_end_conditions_and_directions() {
                 let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
                 let plane = put(
                     &mut d,
-                    ObjectPayload::DatumPlane(DatumPlane {
+                    ObjectPayload::DatumPlane(DatumPlane::Fixed {
                         placement: Transform::IDENTITY,
                     }),
                 );
@@ -260,7 +260,7 @@ fn revolutions_combine_full_and_partial_tools() {
             let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
             let plane = put(
                 &mut d,
-                ObjectPayload::DatumPlane(DatumPlane {
+                ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             );
@@ -322,7 +322,7 @@ fn revolve_axes_and_curved_profiles() {
         let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
         let plane = put(
             &mut d,
-            ObjectPayload::DatumPlane(DatumPlane {
+            ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         );
@@ -448,7 +448,7 @@ fn partial_turn_follows_the_directed_line_axis() {
         let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
         let plane = put(
             &mut d,
-            ObjectPayload::DatumPlane(DatumPlane {
+            ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         );
@@ -521,7 +521,7 @@ fn invalid_results_fail_the_feature_with_a_reason() {
         let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
         let plane = put(
             &mut d,
-            ObjectPayload::DatumPlane(DatumPlane {
+            ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         );
@@ -608,7 +608,7 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
                 let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
                 let plane = put(
                     &mut d,
-                    ObjectPayload::DatumPlane(DatumPlane {
+                    ObjectPayload::DatumPlane(DatumPlane::Fixed {
                         placement: Transform::IDENTITY,
                     }),
                 );
@@ -652,7 +652,7 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
                     .expect("placement");
                 let plane = put(
                     &mut d,
-                    ObjectPayload::DatumPlane(DatumPlane {
+                    ObjectPayload::DatumPlane(DatumPlane::Fixed {
                         placement: transform,
                     }),
                 );
@@ -842,7 +842,7 @@ fn projected_bounds_ignore_triangulation_and_preserve_symmetric_face_planes() {
     let mut d = Document::create(root.path().join("cylinder.fcad")).expect("document");
     let plane = put(
         &mut d,
-        ObjectPayload::DatumPlane(DatumPlane {
+        ObjectPayload::DatumPlane(DatumPlane::Fixed {
             placement: Transform::IDENTITY,
         }),
     );

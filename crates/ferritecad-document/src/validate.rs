@@ -244,6 +244,56 @@ fn check_semantic_references(
     };
 
     match &object.payload {
+        ObjectPayload::DatumPlane(plane) => {
+            if let crate::DatumPlane::Offset { from, .. } = plane {
+                require(
+                    *from,
+                    DependencyRole::Plane,
+                    ObjectKind::DatumPlane,
+                    "offset plane",
+                    report,
+                );
+            }
+            if let crate::DatumPlane::Face { result, .. } = plane {
+                match by_id.get(result) {
+                    Some(found) if found.payload.kind().is_some_and(ObjectKind::is_feature) => {}
+                    _ => report.error(
+                        "reference.wrong-kind",
+                        Some(object.id),
+                        format!("datum plane {} requires feature result {result}", object.id),
+                    ),
+                }
+                if !edges.contains(&(object.id, *result, DependencyRole::Support)) {
+                    report.error(
+                        "reference.missing-edge",
+                        Some(object.id),
+                        format!(
+                            "datum plane {} has no support dependency on {result}",
+                            object.id
+                        ),
+                    );
+                }
+            }
+            let expected = object.payload.dependencies(object.id);
+            for &(dependent, dependency, role) in edges {
+                if dependent == object.id
+                    && matches!(role, DependencyRole::Plane | DependencyRole::Support)
+                    && !expected
+                        .iter()
+                        .any(|d| d.dependency == dependency && d.role == role)
+                {
+                    report.error(
+                        "reference.unexpected-edge",
+                        Some(object.id),
+                        format!(
+                            "datum plane {} has an unexpected {} dependency on {dependency}",
+                            object.id,
+                            role.as_str()
+                        ),
+                    );
+                }
+            }
+        }
         ObjectPayload::Sketch(sketch) => {
             require(
                 sketch.plane,

@@ -1521,7 +1521,7 @@ pub(crate) mod tests {
             .map(|object| {
                 let payload = match &object.payload {
                     ObjectPayload::DatumPlane(plane) => {
-                        format!("datum plane at {:?}", plane.placement)
+                        format!("{} datum plane", plane.kind_name())
                     }
                     ObjectPayload::Sketch(sketch) => {
                         let geometry: Vec<String> = sketch

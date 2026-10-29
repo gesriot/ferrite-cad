@@ -62,7 +62,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

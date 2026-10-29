@@ -5,6 +5,20 @@ use serde_json::{Value, json};
 /// Encode a test's domain changes at the CLI boundary, with explicit units.
 pub fn edit_request_json(changes: &[EditChange]) -> Value {
     let changes: Vec<_> = changes.iter().map(|change| match change {
+        EditChange::AddDatumPlane { object, name, plane } => {
+            use ferritecad_document::DatumPlane as D;
+            let plane = match plane {
+                D::Fixed { placement } => json!({"kind":"fixed", "placement":placement}),
+                D::Offset { from, distance_mm } => json!({"kind":"offset", "from":from,
+                    "distance":{"value":distance_mm.value(),"unit":"mm"}}),
+                D::Face { result, face, offset_mm } => json!({"kind":"face", "result":result,
+                    "face":edges_json(&[*face])[0],
+                    "offset":{"value":offset_mm.value(),"unit":"mm"}}),
+            };
+            json!({"kind":"add_datum_plane", "object":object, "name":name, "plane":plane})
+        },
+        EditChange::SetDatumFace { object, face } => json!({"kind":"set_datum_face",
+            "object":object, "face":edges_json(&[*face])[0]}),
         EditChange::AddSketch { object, name, sketch } => {
             let curves: Vec<_> = sketch.curves.iter().map(|c| {
                 let mut geometry = serde_json::to_value(&c.geometry).expect("geometry");

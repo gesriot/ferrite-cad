@@ -348,8 +348,13 @@ fn references_report_all_failures_and_explicit_sets_never_choose_a_neighbour() {
     });
     let consumer = ObjectId::new();
     assert_eq!(
-        map.resolve_edges(consumer, plate.feature, &[reference])
-            .expect("one"),
+        map.resolve(
+            ferritecad_document::EntityKind::Edge,
+            consumer,
+            plate.feature,
+            &[reference]
+        )
+        .expect("one"),
         vec![first]
     );
     map.features
@@ -360,15 +365,25 @@ fn references_report_all_failures_and_explicit_sets_never_choose_a_neighbour() {
         .expect("row")
         .insert(second);
     let split = map
-        .resolve_edges(consumer, plate.feature, &[reference])
+        .resolve(
+            ferritecad_document::EntityKind::Edge,
+            consumer,
+            plate.feature,
+            &[reference],
+        )
         .expect_err("split");
     assert!(split.to_string().contains("split into 2 edges"));
     let mut all = reference;
     all.meaning.selection = Selection::AllDescendants;
     assert_eq!(
-        map.resolve_edges(consumer, plate.feature, &[all])
-            .expect("set")
-            .len(),
+        map.resolve(
+            ferritecad_document::EntityKind::Edge,
+            consumer,
+            plate.feature,
+            &[all]
+        )
+        .expect("set")
+        .len(),
         2
     );
     map.features
@@ -390,7 +405,12 @@ fn references_report_all_failures_and_explicit_sets_never_choose_a_neighbour() {
     });
     let references = [reference, unknown, foreign, wrong_kind];
     let error = map
-        .resolve_edges(consumer, plate.feature, &references)
+        .resolve(
+            ferritecad_document::EntityKind::Edge,
+            consumer,
+            plate.feature,
+            &references,
+        )
         .expect_err("all failures");
     assert_eq!(error.kind(), ErrorKind::Topology);
     let text = error.to_string();

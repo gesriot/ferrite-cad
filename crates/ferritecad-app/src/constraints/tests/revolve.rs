@@ -56,7 +56,7 @@ pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> Ob
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

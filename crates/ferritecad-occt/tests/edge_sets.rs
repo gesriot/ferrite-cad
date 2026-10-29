@@ -483,7 +483,12 @@ fn an_intervening_cut_preserves_or_splits_the_consumed_edge_without_retargeting(
             assert!(built.shape(cut.feature).is_some());
             let error = built
                 .topology()
-                .resolve_edges(fillet, cut.feature, &[edge])
+                .resolve(
+                    ferritecad_document::EntityKind::Edge,
+                    fillet,
+                    cut.feature,
+                    &[edge],
+                )
                 .expect_err("One refuses both descendants")
                 .to_string();
             assert!(error.contains("split into 2"), "{error}");
@@ -498,7 +503,12 @@ fn an_intervening_cut_preserves_or_splits_the_consumed_edge_without_retargeting(
             let built = rebuild_cold(&d, &mut k, &OperationContext::default()).expect("both");
             let resolved = built
                 .topology()
-                .resolve_edges(fillet, cut.feature, &[edge])
+                .resolve(
+                    ferritecad_document::EntityKind::Edge,
+                    fillet,
+                    cut.feature,
+                    &[edge],
+                )
                 .expect("resolve both");
             assert_eq!(resolved.len(), 2);
             let history = k
@@ -520,7 +530,12 @@ fn an_intervening_cut_preserves_or_splits_the_consumed_edge_without_retargeting(
             observed.meaning.producer = cut.feature;
             let error = built
                 .topology()
-                .resolve_edges(fillet, cut.feature, &[observed])
+                .resolve(
+                    ferritecad_document::EntityKind::Edge,
+                    fillet,
+                    cut.feature,
+                    &[observed],
+                )
                 .expect_err("only the minting feature is the producer")
                 .to_string();
             assert!(error.contains("unknown name"), "{error}");

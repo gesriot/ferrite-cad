@@ -124,6 +124,13 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
             None => {}
         }
         match &object.payload {
+            ObjectPayload::DatumPlane(datum) => {
+                write!(line, "{} plane", datum.kind_name()).expect("String write");
+                if let Some(plane) = built.plane(*id) {
+                    let n = plane.normal();
+                    write!(line, "; normal X {} Y {} Z {}", n.x, n.y, n.z).expect("String write");
+                }
+            }
             ObjectPayload::Sketch(_) => {
                 if let Some(profile) = built.profile(*id) {
                     // Every loop of every region. A profile with a hole has
@@ -154,7 +161,12 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                 if let Some(names) = built.topology().feature(*id) {
                     let edge_count = built
                         .topology()
-                        .resolve_edges(*id, fillet.previous, &fillet.edges)?
+                        .resolve(
+                            ferritecad_document::EntityKind::Edge,
+                            *id,
+                            fillet.previous,
+                            &fillet.edges,
+                        )?
                         .len();
                     write!(
                         line,
@@ -172,7 +184,12 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                 if let Some(names) = built.topology().feature(*id) {
                     let edge_count = built
                         .topology()
-                        .resolve_edges(*id, chamfer.previous, &chamfer.edges)?
+                        .resolve(
+                            ferritecad_document::EntityKind::Edge,
+                            *id,
+                            chamfer.previous,
+                            &chamfer.edges,
+                        )?
                         .len();
                     write!(
                         line,

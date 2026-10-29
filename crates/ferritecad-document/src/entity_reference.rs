@@ -103,6 +103,28 @@ impl EntityReference {
     }
 }
 
+impl EntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Face => "face",
+            Self::Edge => "edge",
+            Self::Vertex => "vertex",
+        }
+    }
+}
+
+pub(crate) fn validate_kind(reference: &EntityReference, kind: EntityKind) -> Result<()> {
+    if reference.meaning.kind != kind {
+        let article = if kind == EntityKind::Edge { "an" } else { "a" };
+        return Err(CadError::input(format!(
+            "reference {} must name {article} {}",
+            reference.id,
+            kind.as_str()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_edges(edges: &[EntityReference]) -> Result<()> {
     if edges.is_empty() {
         return Err(CadError::input(
@@ -111,12 +133,7 @@ pub(crate) fn validate_edges(edges: &[EntityReference]) -> Result<()> {
     }
     let mut meanings = std::collections::BTreeSet::new();
     for edge in edges {
-        if edge.meaning.kind != EntityKind::Edge {
-            return Err(CadError::input(format!(
-                "reference {} must name an edge",
-                edge.id
-            )));
-        }
+        validate_kind(edge, EntityKind::Edge)?;
         if !meanings.insert(edge.meaning) {
             return Err(CadError::input(format!(
                 "reference {} repeats an edge meaning",

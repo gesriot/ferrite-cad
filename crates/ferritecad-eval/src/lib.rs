@@ -32,6 +32,7 @@
 mod cache;
 mod cold;
 mod convert;
+mod datum;
 mod regions;
 
 mod dirty;

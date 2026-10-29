@@ -29,7 +29,7 @@ pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntit
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

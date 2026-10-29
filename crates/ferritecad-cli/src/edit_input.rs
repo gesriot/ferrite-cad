@@ -9,6 +9,15 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Change {
+    AddDatumPlane {
+        object: ObjectId,
+        name: Option<String>,
+        plane: Plane,
+    },
+    SetDatumFace {
+        object: ObjectId,
+        face: Reference,
+    },
     AddBody {
         object: ObjectId,
         name: Option<String>,
@@ -18,7 +27,7 @@ pub(super) enum Change {
     },
     SetEdges {
         object: ObjectId,
-        edges: Vec<Edge>,
+        edges: Vec<Reference>,
     },
     SetRegions {
         object: ObjectId,
@@ -81,6 +90,19 @@ pub(super) enum Change {
 impl Change {
     pub(super) fn into_edit(self) -> Result<EditChange> {
         Ok(match self {
+            Self::AddDatumPlane {
+                object,
+                name,
+                plane,
+            } => EditChange::AddDatumPlane {
+                object,
+                name,
+                plane: plane.into_plane()?,
+            },
+            Self::SetDatumFace { object, face } => EditChange::SetDatumFace {
+                object,
+                face: face.into_reference()?,
+            },
             Self::AddBody {
                 object,
                 name,
@@ -98,7 +120,7 @@ impl Change {
                 object,
                 edges: edges
                     .into_iter()
-                    .map(Edge::into_edge)
+                    .map(Reference::into_reference)
                     .collect::<Result<_>>()?,
             },
             Self::SetRegions { object, regions } => EditChange::SetRegions { object, regions },
@@ -468,11 +490,11 @@ pub(super) enum Feature {
         operation: ferritecad_document::SolidOperation,
     },
     Fillet {
-        edges: Vec<Edge>,
+        edges: Vec<Reference>,
         radius: Number,
     },
     Chamfer {
-        edges: Vec<Edge>,
+        edges: Vec<Reference>,
         distance: Number,
     },
 }
@@ -509,14 +531,14 @@ impl Feature {
             Self::Fillet { edges, radius } => F::Fillet {
                 edges: edges
                     .into_iter()
-                    .map(Edge::into_edge)
+                    .map(Reference::into_reference)
                     .collect::<Result<_>>()?,
                 radius_mm: radius.expression(Dimension::Length)?,
             },
             Self::Chamfer { edges, distance } => F::Chamfer {
                 edges: edges
                     .into_iter()
-                    .map(Edge::into_edge)
+                    .map(Reference::into_reference)
                     .collect::<Result<_>>()?,
                 distance_mm: distance.expression(Dimension::Length)?,
             },
@@ -526,14 +548,14 @@ impl Feature {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Edge {
+pub(super) struct Reference {
     producer: ObjectId,
     kind: ferritecad_document::EntityKind,
     digest: String,
     selection: ferritecad_document::Selection,
 }
-impl Edge {
-    fn into_edge(self) -> Result<ferritecad_document::EntityReference> {
+impl Reference {
+    fn into_reference(self) -> Result<ferritecad_document::EntityReference> {
         Ok(ferritecad_document::EntityReference::new(
             ferritecad_document::ReferenceMeaning {
                 producer: self.producer,
@@ -557,6 +579,45 @@ impl Turn {
             Self::FullTurn => ferritecad_document::RevolveExtent::FullTurn,
             Self::Partial { angle } => ferritecad_document::RevolveExtent::Partial {
                 angle: angle.expression(Dimension::Angle)?,
+            },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum Plane {
+    Fixed {
+        placement: ferritecad_types::Transform,
+    },
+    Offset {
+        from: ObjectId,
+        distance: Number,
+    },
+    Face {
+        result: ObjectId,
+        face: Reference,
+        offset: Number,
+    },
+}
+
+impl Plane {
+    fn into_plane(self) -> Result<ferritecad_document::DatumPlane> {
+        use ferritecad_document::DatumPlane as D;
+        Ok(match self {
+            Self::Fixed { placement } => D::Fixed { placement },
+            Self::Offset { from, distance } => D::Offset {
+                from,
+                distance_mm: distance.expression(Dimension::Length)?,
+            },
+            Self::Face {
+                result,
+                face,
+                offset,
+            } => D::Face {
+                result,
+                face: face.into_reference()?,
+                offset_mm: offset.expression(Dimension::Length)?,
             },
         })
     }

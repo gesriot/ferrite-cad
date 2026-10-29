@@ -113,3 +113,16 @@ Change an existing feature with
 `{"kind":"set_regions","object":"<feature UUID>","regions":["<curve UUID>"]}`.
 The shared transaction rebuilds the candidate and refuses any newly failed
 consumer before publication. Undo and Redo restore the same curve references.
+
+## Datum planes
+
+`add_datum_plane` takes `object`, optional `name` and `plane`, whose `kind` is
+`fixed`, `offset` or `face`. A Face carries `result`, `face` and unitful `offset`;
+an Offset carries `from` and unitful `distance`. `set_datum_face` takes `object`
+and a face reference, retaining the result feature. `set_expression` with slot
+`{"kind":"datum_offset"}` changes either offset. All new dependency targets are
+checked against the complete candidate; graph cycles refuse publication.
+
+A plane, its sketch and its feature can be added together. Face resolution uses
+the minting producer, kind, digest and selection. A newly unbuildable plane refuses
+the edit just like a failed feature. See the complete [datum recipe](datum-planes.md).

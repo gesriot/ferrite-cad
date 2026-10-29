@@ -49,6 +49,14 @@ and hole-boundary curves refuse selection without retargeting. Containment
 uses even/odd depth, with immediate child loops as holes. Fixtures are
 regenerated when this payload changes; there is no format migration.
 
+DatumPlane is one object type with a tagged `kind` definition: `fixed` stores
+`placement`; `offset` stores `from` and `distance_mm: Expression`; `face` stores
+`result`, a face `EntityReference` and `offset_mm: Expression`. Offsets are finite,
+signed millimetres. An Offset depends on its source datum with role `plane`; a Face
+depends on its result feature with role `support`. Definitions and dependency rows
+must agree. Sketches still store only their plane UUID. Computed frames are derived,
+not persisted. See [datum planes](datum-planes.md) for orientation and refusals.
+
 The `brep.generative.v2` cache stores a feature's own derivation nodes, bindings,
 ancestry and incidence with its B-Rep; model lineage shares predecessor derivations.
 Scene entities carry the feature whose result holds them, the producer that

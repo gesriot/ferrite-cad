@@ -340,6 +340,33 @@ impl GeometryKernel for OcctKernel {
         &self.identity
     }
 
+    fn support_plane(
+        &mut self,
+        faces: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<ferritecad_kernel::FacePlane> {
+        context.check_cancelled()?;
+        let first = faces
+            .first()
+            .ok_or_else(|| CadError::input("face selection is empty"))?;
+        let shape = first.shape();
+        if faces
+            .iter()
+            .any(|f| f.shape() != shape || f.kind() != SubShapeKind::Face)
+        {
+            return Err(CadError::input("face selection must belong to one result"));
+        }
+        let raw = self.raw(shape)?;
+        let ids: Vec<_> = faces.iter().map(|f| f.index()).collect();
+        let p = self.session.support_plane(raw, &ids, context.tolerance())?;
+        ferritecad_kernel::FacePlane::new(
+            ferritecad_types::Point3::new(p[0], p[1], p[2])
+                .map_err(|e| CadError::kernel_because("face plane point is not finite", e))?,
+            ferritecad_types::Vec3::new(p[3], p[4], p[5])
+                .map_err(|e| CadError::kernel_because("face plane normal is not finite", e))?,
+        )
+    }
+
     fn shape_topology(&mut self, shape: ShapeHandle) -> Result<ferritecad_kernel::ShapeTopology> {
         let raw = self.raw(shape)?;
         let words = self.session.naming_data(raw, false)?;

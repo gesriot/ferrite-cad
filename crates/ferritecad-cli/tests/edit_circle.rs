@@ -139,7 +139,7 @@ fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

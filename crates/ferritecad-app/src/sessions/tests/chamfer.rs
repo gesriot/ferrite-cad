@@ -207,7 +207,12 @@ pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -
         let predecessor = &built.topology().features[&chamfer.base_feature];
         let edge = built
             .topology()
-            .resolve_edges(chamfer.feature, chamfer.base_feature, &[chamfer.edge])
+            .resolve(
+                ferritecad_document::EntityKind::Edge,
+                chamfer.feature,
+                chamfer.base_feature,
+                &[chamfer.edge],
+            )
             .expect("consumed edge")[0];
         let name = ferritecad_topology::generative::generated(
             chamfer.feature,

@@ -313,7 +313,7 @@ fn several_bodies(path: &Path, count: usize) -> Vec<ObjectId> {
                 None,
                 0,
                 Some("XY"),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             )?;
@@ -1693,7 +1693,7 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
                     None,
                     10,
                     Some("XY"),
-                    &ObjectPayload::DatumPlane(DatumPlane {
+                    &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                         placement: Transform::IDENTITY,
                     }),
                 )?;

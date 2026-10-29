@@ -246,7 +246,12 @@ pub fn generated_faces(document: &Document, built: &RebuildResult) -> Vec<Genera
             ObjectPayload::Fillet(f) => {
                 let edge = built
                     .topology()
-                    .resolve_edges(object.id, f.previous, &f.edges)
+                    .resolve(
+                        ferritecad_document::EntityKind::Edge,
+                        object.id,
+                        f.previous,
+                        &f.edges,
+                    )
                     .expect("consumed edge");
                 let input =
                     built.topology().features[&f.previous].entities[edge.first().expect("edge")];
@@ -264,7 +269,12 @@ pub fn generated_faces(document: &Document, built: &RebuildResult) -> Vec<Genera
             ObjectPayload::Chamfer(c) => {
                 let edge = built
                     .topology()
-                    .resolve_edges(object.id, c.previous, &c.edges)
+                    .resolve(
+                        ferritecad_document::EntityKind::Edge,
+                        object.id,
+                        c.previous,
+                        &c.edges,
+                    )
                     .expect("consumed edge");
                 let input =
                     built.topology().features[&c.previous].entities[edge.first().expect("edge")];

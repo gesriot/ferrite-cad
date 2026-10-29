@@ -30,7 +30,7 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId) {
             (
                 plane,
                 0,
-                ObjectPayload::DatumPlane(DatumPlane {
+                ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             ),

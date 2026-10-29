@@ -298,7 +298,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

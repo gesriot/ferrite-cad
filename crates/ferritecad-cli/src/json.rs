@@ -103,6 +103,7 @@ impl From<&CadError> for Failure {
 
 #[derive(Serialize)]
 pub struct Inspection {
+    datum_planes: Vec<serde_json::Value>,
     rebuild: Option<ferritecad_eval::RebuildReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rebuild_error: Option<Failure>,
@@ -410,6 +411,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     // One pinned read, one catalog and one content hash. In particular, do not
     // call read_extrude_source(path) or the text renderer beside this reading.
     let source = ExtrudeEditSource::read(&document)?;
+    let mut planes = std::collections::BTreeMap::new();
     let (rebuild, rebuild_error) = if ferritecad_occt::is_available() {
         let evaluated = (|| -> Result<_> {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
@@ -418,6 +420,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 &mut kernel,
                 &ferritecad_kernel::OperationContext::default(),
             )?;
+            for id in built.order() {
+                if let Some(plane) = built.plane(*id) {
+                    planes.insert(*id, plane);
+                }
+            }
             let report = built.report();
             built.release_all(&mut kernel);
             Ok(report)
@@ -467,7 +474,42 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     };
     let fillets = edge_features(true)?;
     let chamfers = edge_features(false)?;
+    let datum_planes =
+        document
+            .objects()?
+            .into_iter()
+            .filter_map(|object| {
+                use ferritecad_document::DatumPlane as D;
+                let ferritecad_document::ObjectPayload::DatumPlane(datum) = object.payload else {
+                    return None;
+                };
+                let definition = match datum {
+                    D::Fixed { placement } => {
+                        serde_json::json!({"kind": "fixed", "placement": placement})
+                    }
+                    D::Offset { from, distance_mm } => serde_json::json!({
+                        "kind": "offset", "from": from, "distance_mm": distance_mm,
+                    }),
+                    D::Face {
+                        result,
+                        face,
+                        offset_mm,
+                    } => serde_json::json!({
+                        "kind": "face", "result": result, "offset_mm": offset_mm,
+                        "face": {"id": face.id, "producer": face.meaning.producer,
+                            "kind": face.meaning.kind, "digest": face.meaning.digest.to_string(),
+                            "selection": face.meaning.selection},
+                    }),
+                };
+                let computed = planes.get(&object.id).map(|plane| serde_json::json!({
+            "origin": plane.origin(), "x_axis": plane.x_axis(), "normal": plane.normal(),
+        }));
+                Some(serde_json::json!({"object": object.id, "name": object.name,
+            "definition": definition, "computed": computed}))
+            })
+            .collect();
     let result = Inspection {
+        datum_planes,
         rebuild,
         rebuild_error,
         document_id: source.version.document_id,

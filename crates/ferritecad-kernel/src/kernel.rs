@@ -64,6 +64,19 @@ pub trait GeometryKernel {
         ))
     }
 
+    /// Returns a point and outward normal common to all supplied planar faces.
+    /// Refuses non-planar faces, different planes or opposing outward normals.
+    fn support_plane(
+        &mut self,
+        faces: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<crate::FacePlane> {
+        let _ = (faces, context);
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not report oriented face planes",
+        ))
+    }
+
     /// Reads complete operation provenance for every elementary input.
     /// An archive without provenance must refuse rather than report no history.
     fn naming_history(&mut self, shape: ShapeHandle) -> Result<crate::NamingHistory> {

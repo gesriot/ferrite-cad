@@ -25,11 +25,16 @@ use crate::solve::SketchSolveReport;
 /// arithmetic and a gap any larger is a different sketch.
 pub(crate) const JOIN_TOLERANCE: f64 = 1.0e-6;
 
-/// Reads a datum's placement as a plane the kernel can build on.
+/// Reads a fixed datum's placement; dependent datums require an evaluated model.
 pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
-    let origin = datum.placement.apply_to_point(Point3::ORIGIN)?;
-    let x_axis = datum.placement.apply_to_vector(Vec3::X)?;
-    let normal = datum.placement.apply_to_vector(Vec3::Z)?;
+    let DatumPlane::Fixed { placement } = datum else {
+        return Err(CadError::input(
+            "this plane depends on geometry; use its evaluated plane",
+        ));
+    };
+    let origin = placement.apply_to_point(Point3::ORIGIN)?;
+    let x_axis = placement.apply_to_vector(Vec3::X)?;
+    let normal = placement.apply_to_vector(Vec3::Z)?;
     SketchPlane::new(origin, x_axis, normal)
 }
 
@@ -702,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_datum_placement_becomes_a_plane() {
-        let plane = plane_from_datum(&DatumPlane {
+        let plane = plane_from_datum(&DatumPlane::Fixed {
             placement: Transform::IDENTITY,
         })
         .expect("identity is a valid frame");
@@ -715,7 +720,7 @@ mod tests {
     fn a_rotated_datum_carries_its_orientation_through() {
         let rotate = Transform::from_rotation(Vec3::X, std::f64::consts::FRAC_PI_2)
             .expect("a quarter turn about X");
-        let plane = plane_from_datum(&DatumPlane { placement: rotate })
+        let plane = plane_from_datum(&DatumPlane::Fixed { placement: rotate })
             .expect("a rotated frame is still a frame");
 
         // Z rotated a quarter turn about X points along -Y.

@@ -523,7 +523,7 @@ fn native_revolve_angle_edit_refusals_preserve_every_file() {
                 None,
                 plane.ordinal,
                 plane.name.as_deref(),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::from_translation(
                         ferritecad_types::Vec3::new(0., 0., 5.).expect("vector"),
                     )

@@ -508,7 +508,7 @@ fn unsupported_variants(root: &Path) -> Vec<(&'static str, PathBuf, &'static str
                 None,
                 plane.ordinal,
                 plane.name.as_deref(),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::from_translation(
                         ferritecad_types::Vec3::new(0., 0., 5.).expect("vector"),
                     )
@@ -530,7 +530,7 @@ fn unsupported_variants(root: &Path) -> Vec<(&'static str, PathBuf, &'static str
                 None,
                 9,
                 Some("Spare"),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             )
