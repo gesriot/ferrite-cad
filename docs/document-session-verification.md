@@ -195,12 +195,12 @@ request.write_text(json.dumps({"request_version": 1, "height_mm": H0, "points_mm
 plain = out / "source" / "plain.fcad"
 run("create-sketch-extrude", request, "-o", plain, "--json")
 catalog = run("inspect", plain, "--json")["result"]
-candidate = next(c for c in catalog["bodies"][0]["chamfer_edge"]["target"]["candidates"]
-                 if c["corner_mm"] == PLATE[1])
-request.write_text(json.dumps({"request_version": 1, "edge": candidate["edge"], "distance_mm": DIST}))
+sys.path.insert(0, "tools")
+from feature_requests import edge_addition
+request.write_text(json.dumps(edge_addition(catalog, "chamfer", PLATE[1], DIST, plain)))
 chamfered = out / "chamfered.fcad"
-run("chamfer-edge-copy", plain, "--body", catalog["bodies"][0]["body_id"], "--expect-version",
-    catalog["content_version"], "--request", request, "-o", chamfered, "--json")
+run("edit", plain, "--expect-version", catalog["content_version"],
+    "--request", request, "-o", chamfered, "--json")
 c = run("inspect", chamfered, "--json")["result"]
 (sketch,) = c["sketches"]
 edit = sketch["constraint_edit"]

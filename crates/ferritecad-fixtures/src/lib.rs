@@ -449,8 +449,8 @@ pub struct FilletChain {
     pub body: ferritecad_types::ObjectId,
 }
 pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
-    use ferritecad_document::{Body, Dependency, DependencyRole, Fillet, SweptEdge};
-    use ferritecad_types::{ObjectId, ProfileJoint};
+    use ferritecad_document::{Body, Dependency, DependencyRole, Fillet};
+    use ferritecad_types::ObjectId;
     write_plate(path)?;
     let mut document = Document::open(path)?;
     let objects = document.objects()?;
@@ -475,18 +475,28 @@ pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
     let first = ObjectId::new();
     let second = ObjectId::new();
     document.write(|w| {
-        for (id, previous, joint, r, name) in [
+        for (id, previous, edge, r, name) in [
             (
                 first,
                 extrude,
-                ProfileJoint::new(segments[3], segments[0])?,
+                feature_changes::extruded_fixture_edge(
+                    extrude,
+                    profile.plane,
+                    segments[3],
+                    segments[0],
+                ),
                 radius,
                 "Fillet1",
             ),
             (
                 second,
                 first,
-                ProfileJoint::new(segments[1], segments[2])?,
+                feature_changes::extruded_fixture_edge(
+                    extrude,
+                    profile.plane,
+                    segments[1],
+                    segments[2],
+                ),
                 3.0,
                 "Fillet2",
             ),
@@ -498,10 +508,7 @@ pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
                 Some(name),
                 &ObjectPayload::Fillet(Fillet {
                     previous,
-                    edge: SweptEdge {
-                        feature: extrude,
-                        joint,
-                    },
+                    edges: vec![edge],
                     radius_mm: ferritecad_document::Expression::constant(r)?,
                 }),
             )?;
@@ -690,4 +697,11 @@ pub fn vertex_changes(
         ));
     };
     ferritecad_document::move_sketch_vertices(id, &sketch, vertices)
+}
+
+/// Unordered labels for fixture incidence assertions, independent of entity references.
+pub fn ordered_labels(one: StableEntityId, other: StableEntityId) -> [StableEntityId; 2] {
+    let mut labels = [one, other];
+    labels.sort_unstable();
+    labels
 }

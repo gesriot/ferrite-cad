@@ -7,7 +7,7 @@ use ferritecad_document::Document;
 use ferritecad_eval::{RebuildResult, rebuild_cold};
 use ferritecad_kernel::OperationContext;
 use ferritecad_occt::OcctKernel;
-use ferritecad_types::Result;
+use ferritecad_types::{CadError, Result};
 
 use crate::{DocumentArgs, EXIT_FAILED};
 
@@ -47,9 +47,12 @@ pub(crate) fn report(built: &RebuildResult, described: bool) -> Result<String> {
     for (feature, names) in &model.features {
         writeln!(text, "  feature {feature}").expect("writing to a String cannot fail");
         for (name, entities) in &names.bindings {
+            let producer = model.producer(&name.digest).ok_or_else(|| {
+                CadError::topology(format!("name {} has no published producer", name.digest))
+            })?;
             writeln!(
                 text,
-                "    {} {} entities={}",
+                "    producer={producer} kind={} digest={} entities={}",
                 name.kind,
                 name.digest,
                 entities.len()

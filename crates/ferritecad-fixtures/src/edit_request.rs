@@ -40,6 +40,9 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::SetRevolveExtent { object, extent } => json!({
             "kind":"set_revolve_extent", "object":object, "extent":turn_json(extent),
         }),
+        EditChange::SetEdges { object, edges } => json!({
+            "kind":"set_edges", "object":object, "edges":edges_json(edges),
+        }),
         EditChange::SetEndCondition { object, end_condition } => json!({"kind":"set_end_condition", "object":object, "end_condition":end_json(end_condition)}),
         EditChange::SetExpression { object, slot, expression } => json!({
             "kind": "set_expression", "object": object, "slot": slot,
@@ -111,9 +114,9 @@ fn feature_json(feature: &ferritecad_document::FeatureAddition) -> Value {
             "kind":"revolve", "profile":profile, "regions":regions, "axis":axis,
             "extent":turn_json(extent), "operation":operation,
         }),
-        F::Fillet { edge, radius_mm } => json!({"kind":"fillet", "edge":edge,
+        F::Fillet { edges, radius_mm } => json!({"kind":"fillet", "edges":edges_json(edges),
             "radius":{"value":radius_mm.value(),"unit":"mm"}}),
-        F::Chamfer { edge, distance_mm } => json!({"kind":"chamfer", "edge":edge,
+        F::Chamfer { edges, distance_mm } => json!({"kind":"chamfer", "edges":edges_json(edges),
             "distance":{"value":distance_mm.value(),"unit":"mm"}}),
     }
 }
@@ -124,4 +127,15 @@ fn turn_json(extent: &ferritecad_document::RevolveExtent) -> Value {
             "angle":{"value":angle.value(), "unit":"rad"}}),
         _ => unreachable!("fixture covers every current revolution extent"),
     }
+}
+
+pub fn edges_json(edges: &[ferritecad_document::EntityReference]) -> Vec<Value> {
+    edges
+        .iter()
+        .map(|edge| {
+            let meaning = edge.meaning;
+            json!({"producer":meaning.producer, "kind":meaning.kind,
+            "digest":meaning.digest.to_string(), "selection":meaning.selection})
+        })
+        .collect()
 }

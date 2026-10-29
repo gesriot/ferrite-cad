@@ -404,9 +404,12 @@ fn the_eight_corners_of_a_plate_are_named_by_the_joint_and_the_cap() {
     let mut seen = BTreeSet::new();
     for (side, named) in [("start", &start_vertices), ("end", &end_vertices)] {
         for (joint, vertex) in named {
-            assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side} {joint}");
-            assert_eq!(vertex.shape(), result.shape, "{side} {joint}");
-            assert!(seen.insert(*vertex), "{side} {joint} names a vertex twice");
+            assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side} {joint:?}");
+            assert_eq!(vertex.shape(), result.shape, "{side} {joint:?}");
+            assert!(
+                seen.insert(*vertex),
+                "{side} {joint:?} names a vertex twice"
+            );
         }
     }
     assert_eq!(seen.len(), 8);
@@ -530,10 +533,10 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
             // Reached by the tessellation association, by handle identity.
             assert!(
                 drawn.contains(vertex),
-                "{side} {joint} names a vertex the mesh never reaches"
+                "{side} {joint:?} names a vertex the mesh never reaches"
             );
             let mine = occurrences(*vertex);
-            assert!(!mine.is_empty(), "{side} {joint} is drawn nowhere");
+            assert!(!mine.is_empty(), "{side} {joint:?} is drawn nowhere");
 
             // On the cap it is claimed for: one of its occurrences belongs to
             // a face this result calls that cap.
@@ -541,19 +544,19 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
                 let positions = face_positions(*cap);
                 mine.iter().any(|at| positions.contains(at))
             });
-            assert!(on_cap, "{side} {joint} names a vertex not on that cap");
+            assert!(on_cap, "{side} {joint:?} names a vertex not on that cap");
 
             // And it ends the edge swept from its own joint: one of its
             // occurrences is a position that edge is drawn through.
             let swept = swept
                 .get(joint)
-                .unwrap_or_else(|| panic!("{joint} swept no edge"));
+                .unwrap_or_else(|| panic!("{joint:?} swept no edge"));
             assert_eq!(swept.kind(), SubShapeKind::Edge);
             assert_eq!(swept.shape(), result.shape);
             let along = edge_positions(*swept);
             assert!(
                 mine.iter().any(|at| along.contains(at)),
-                "{side} {joint} names a vertex that does not end its own sweep edge"
+                "{side} {joint:?} names a vertex that does not end its own sweep edge"
             );
         }
     }
@@ -563,7 +566,7 @@ fn a_named_cap_vertex_is_on_its_cap_and_ends_its_joints_sweep_edge() {
     for joint in start_vertices.keys() {
         let start = start_vertices[joint];
         let end = end_vertices[joint];
-        assert_ne!(start, end, "{joint} named one vertex on both caps");
+        assert_ne!(start, end, "{joint:?} named one vertex on both caps");
     }
 
     kernel.release(result.shape);
@@ -602,7 +605,7 @@ fn every_way_of_sweeping_a_profile_keeps_the_side_meanings() {
         for joint in start_vertices.keys() {
             assert_ne!(
                 start_vertices[joint], end_vertices[joint],
-                "{what}: {joint} named one vertex on both caps"
+                "{what}: {joint:?} named one vertex on both caps"
             );
         }
         let joints: BTreeSet<_> = start_vertices.keys().copied().collect();
@@ -764,7 +767,7 @@ fn reordering_the_profile_keeps_each_joint_owning_its_cap_vertices() {
     // loop is walked.
     let labels: Vec<StableEntityId> = (0..4).map(|_| StableEntityId::new()).collect();
 
-    let mut owners: Vec<BTreeSet<ferritecad_types::ProfileJoint>> = Vec::new();
+    let mut owners: Vec<BTreeSet<[ferritecad_types::StableEntityId; 2]>> = Vec::new();
     for start in 0..4 {
         let mut segments = Vec::new();
         for step in 0..4 {

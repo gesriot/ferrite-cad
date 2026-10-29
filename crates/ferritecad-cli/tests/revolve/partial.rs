@@ -557,7 +557,7 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 assert!(
                     listed
                         .lines()
-                        .filter(|line| line.starts_with("    face "))
+                        .filter(|line| line.contains(" kind=face "))
                         .count()
                         == named
                 );

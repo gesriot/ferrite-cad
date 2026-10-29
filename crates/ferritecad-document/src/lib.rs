@@ -33,30 +33,20 @@
 //! Unknown types and corrupt payloads fail opening the document.
 
 mod cache;
-mod chamfer;
-mod cut_boundary;
 mod document;
 mod edit;
 mod expression_edit;
 pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue, FeatureAddition};
-mod fillet;
 mod height_edit;
 mod polygon;
 mod revolve;
 mod sketch_changes;
-pub use chamfer::{
-    ChamferCorner, MIN_DISTANCE_MM, MIN_FLAT_MM, check_distance_value, evaluable_chamfer,
-    max_distance_of,
-};
-pub use cut_boundary::{BoundaryOrientation, BoundarySegment, CutBoundary};
-pub use fillet::{
-    FilletCorner, MAX_PLATE_FILLETS, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, check_pair,
-    check_radius_value, corner_for, evaluable_fillet, pair_bound, rectangle_corners, shared_side,
-};
 pub use polygon::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
 pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices};
 pub use sketch_changes::{SketchVertex, move_sketch_vertices, validate_sketch_changes};
 
+mod entity_reference;
+pub use entity_reference::{EntityKind, EntityReference, ReferenceMeaning, Selection};
 mod envelope;
 mod graph;
 mod model;
@@ -74,11 +64,11 @@ pub use edit::{DocumentVersion, ExtrudeEditSource, editable_extrude};
 pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
-    Body, Chamfer, DatumPlane, EndCondition, Expression, Extrude, Fillet, FilletEdge,
-    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter,
-    Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent, STEP_SOURCE_FORMAT, Sketch,
-    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
-    SketchPointSelector, SketchSegmentRef, SolidOperation, SweptEdge,
+    Body, Chamfer, DatumPlane, EndCondition, Expression, Extrude, Fillet, ImportedDefinitionRef,
+    ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2, Revolve,
+    RevolveAngle, RevolveAxis, RevolveExtent, STEP_SOURCE_FORMAT, Sketch, SketchConstraint,
+    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
+    SketchSegmentRef, SolidOperation,
 };
 pub use schema::{CACHE_EXTENSION, DOCUMENT_EXTENSION};
 pub use validate::{Diagnostic, Severity, ValidationReport};

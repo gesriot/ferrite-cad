@@ -1,7 +1,7 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
 Карта возможностей с историей изменений от §24A. Записи отдельных срезов ниже
-сохраняют контекст своих проверок; актуальные изменения 06–09 имеют приоритет.
+сохраняют контекст своих проверок; актуальные изменения 06–10 имеют приоритет.
 После 08b выходные имена выводятся из перестроения. Непотребляемое дно Cut может
 исчезнуть при правке глубины или переходе к ThroughAll; отказ возникает, когда
 падает потребляющая фича. Каталога выходных ссылок и его предупреждений больше нет.
@@ -20,281 +20,13 @@ Intersect берёт проекцию габаритов цели с запас�
 Смена контакта с осью допустима, когда ядро строит валидное тело. Потребляемые
 ссылки должны разрешаться; непотребляемые грани могут исчезать.
 
-§28A: `fillet-edge-copy <source.fcad> --body UUID --expect-version HASH
---request <request.json> -o <copy.fcad> [--json]` скругляет одно вертикальное
-ребро сохранённой прямоугольной плиты и публикует новую копию. Тело копии
-заканчивается именованным `feature.fillet`. Плита — это ровно одна
-непреобразованная XY-плоскость, один Sketch из четырёх Lines без ограничений,
-образующий осевой прямоугольник, прямой Blind/NewBody Extrude с литеральной
-высотой и одно Body.
-
-Ребро называется producer'ом и парой Line UUID угла (`edge.feature_id`,
-`edge.joint`, в любом порядке) — не индексом и не координатами. Радиус
-принимается от 0,01 мм до ½ меньшей из двух смежных Lines. Ничто не
-обрезается и не подменяется.
-
-Новая capability `feature.fillet.v1`: prior-main открывает такую копию только
-для чтения. Stub-сборка находит кандидатов и отказывает геометрии
-(`unsupported`). PlaneGCS не нужен.
-
-Правки радиуса, высоты, координат и ограничений плиты с одним Fillet —
-§28B–E ниже; добавление второго Fillet — §28G. Cut после Fillet и Revolve
-такой детали остаются неподдержанными.
-[Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
-
-§28B: `edit-fillet-radius <source.fcad> --feature UUID --expect-version HASH
---request <request.json> -o <copy.fcad> [--json]` меняет радиус сохранённого
-Fillet §28A и публикует новую копию. Фича остаётся той же фичей на том же
-именованном ребре; ребро в запрос не входит. Меняется только `radius_mm`
-в payload этого Fillet'а (вместе с `payload_hash`) и `meta.modified_at`;
-все UUID, имена, зависимости и capabilities сохраняются. Политика радиуса —
-та же, что в §28A. Тот же радиус принимается и даёт тот же payload.
-
-Discovery — аддитивный `fillets[]` в `inspect --json`, без ядра. Stub-сборка
-находит Fillet, разбирает запрос и затем отказывает геометрии
-(`unsupported`). PlaneGCS не нужен для неограниченного Sketch. Смена ребра,
-радиус 0 как удаление и Chamfer отказывают. Правки под одним Fillet описаны
-в §28C–E; добавление второго — в §28G; радиус любого из двух — §28H ниже.
-[Контракт §28B и исполняемый рецепт](numeric-fillet-radius.md).
-
-§28C: прежний `edit-extrude` меняет высоту плиты под сохранённым Fillet
-§28B-формы и публикует новую копию. Выбирается базовый Extrude (его UUID
-есть в `inspect --json`, у строки `features[]` — аддитивный `fillet_base`).
-Меняется только Blind-расстояние базы (`payload`/`payload_hash` её строки)
-и `meta.modified_at`; строка Fillet, его ребро, радиус, все UUID, имена,
-зависимости и capabilities сохраняются. Политика высоты прежняя: конечное
-положительное число. Измерено на OCCT 8.0.1: высоты от 2e-5 до 1e5 мм, в том
-числе меньше радиуса, скругляются; при 1e-5 мм и ниже OCCT сам отказывает
-(`kernel`), ничего не публикуется. Все сохранённые имена обязаны
-разрешиться после холодной пересборки. Остальные редакторы по-прежнему
-отказывают скруглённой детали. Stub-сборка отвечает `unsupported` на любой
-корректный запрос, discovery работает.
-[Контракт §28C и исполняемый рецепт](edit-fillet-base-height.md).
-
-§28D: прежний `edit-sketch-copy` двигает и меняет размеры прямоугольника под
-сохранённым Fillet §28B-формы и публикует новую копию. Выбирается базовый
-Sketch (его UUID есть в `inspect --json`, у строки `sketches[]` — аддитивный
-`fillet_base`). Запрос прежний: каждая сохранённая Line один раз, в
-сохранённом порядке, контур замкнут, обход прежний. Кандидат обязан быть
-осепараллельным прямоугольником, каждая Line сохраняет свою сторону (ось и
-направление), стык Fillet'а ищется по двум UUID его Line, а не по номеру
-строки или координатам, и прежний радиус проверяется прежней политикой §28A
-(`r ≤ ½` меньшей соседней стороны) без clamp. Меняются только
-`payload`/`payload_hash` строки Sketch; строка Fillet, его ребро, радиус,
-все UUID, имена, зависимости и capabilities сохраняются. Все сохранённые
-имена обязаны разрешиться после холодной пересборки. Слишком маленький
-прямоугольник и Line на другой стороне — `input`; не прямоугольник и UUID
-не базового Sketch (в том числе самого Fillet'а) — `unsupported`. Stub-сборка
-отвечает `unsupported` на любой корректный запрос, discovery работает.
-[Контракт §28D и исполняемый рецепт](edit-fillet-base-sketch.md).
-
-§28E: прежний `edit-sketch-constraints-copy` задаёт, меняет и снимает
-существующие Line-ограничения (H/V, длина и Replace length, одна Fixed-точка,
-равные длины, Parallel/Perpendicular) базового Sketch плиты под сохранённым
-Fillet и публикует новую копию. В `inspect --json` у строки
-`sketches[].constraint_edit` базового Sketch — `available: true` и аддитивный
-`fillet_base` (Fillet, ребро, радиус, `stored_corner_mm`). Хранимые координаты
-остаются начальным приближением решателя; деталь строится из решения PlaneGCS.
-Fillet проверяется при каждой пересборке на решённых Line: тот же
-осепараллельный прямоугольник тех же Line в прежнем порядке, каждая Line на
-своей стороне, стык по двум UUID, `r ≤ ½` меньшей соседней стороны. Хранимые
-длины ограниченной плиты ничего не доказывают: у `fillets[]` появляется
-`profile_constrained`, а `radius_edit.max_radius_mm` тогда `null` — граница
-проверяется при публикации копии. Меняются только `schema_version`/`payload`/
-`payload_hash` строки Sketch и строка capability `sketch.constraints.v1`;
-Fillet, его ребро, радиус, все UUID, имена и зависимости сохраняются. Правка
-радиуса и высоты после ограничений сохраняет их; редактор координат честно
-отказывает Sketch с ограничениями. Слишком узкая решённая плита, Line на
-другой стороне — `input`; потеря прямоугольника — `unsupported`; противоречие
-решателя — `constraint` с UUID. Без ядра — `unsupported` «Open CASCADE»; с
-ядром без PlaneGCS — `unsupported`; discovery работает везде.
-[Контракт §28E и исполняемый рецепт](fillet-base-constraints.md).
-
-§28F: прежний `fillet-edge-copy` (и форма **Fillet edge of …**) скругляет
-ребро плиты, чей Sketch уже размерен Line-ограничениями редактора ограничений,
-в естественном порядке: прямоугольник → H/V, Fixed, размеры → Fillet. Кандидаты
-— стыки хранимых Line по двум UUID; где угол и сколько места для радиуса,
-решает решённая плита, проверяемая тем же evaluator при сборке копии (тот же
-порядок Line, прямоугольник при прежнем допуске 1e-7 мм, каждая Line на своей
-стороне, стык по UUID, `r ≤ ½` меньшей решённой стороны). До решения
-проверяется только значение радиуса (конечное, ≥ 0.01 мм). Allowlist прежний
-§28A: строка Sketch с ограничениями остаётся байт в байт. Команд, запросов,
-payload, capability и схем не добавлено; документ — тот же, что пишет §28E, и
-его читает, пересобирает и экспортирует байт в байт reader `main` после #69.
-Радиус слишком большой для решённой плиты, Line на другой стороне — `input`;
-не прямоугольник — `unsupported`; без PlaneGCS — `unsupported`, без ядра —
-`unsupported` «Open CASCADE»; discovery работает везде.
-[Контракт §28F и исполняемый рецепт](fillet-constrained-plate.md).
-
-§28G: тот же `fillet-edge-copy` добавляет второй Fillet на другом вертикальном
-углу плиты, неограниченной или уже размеренной. История —
-Extrude → Fillet 1 → Fillet 2 → Body tip. `previous_feature_id` называет
-первый Fillet, а `edge.feature_id` остаётся UUID базового Extrude.
-Discovery предлагает три оставшихся угла и историю; для соседнего угла
-учитывает плоский участок не меньше 0,01 мм на общей Line. У размеренной
-плиты окончательное решение принимает rebuild по решённым Line.
-Fillet 2 — payload v2 с `feature.fillet.sequential.v1`; восемь новых имён
-включают `origin_fillet_face` — цилиндр первого Fillet в конечном Body.
-Исходник, Sketch, первая фича и прежние UUID/refs сохраняются. Старый reader
-отказывает новой семантике безопасно. Третий и четвёртый Fillet добавляет
-§28L; повтор того же угла и касание дуг недоступны; радиусы — §28H, высота —
-§28I, координаты Sketch — §28J, ограничения Sketch — §28K.
-[Контракт §28G и исполняемый рецепт](sequential-edge-fillets.md).
-
-§28H: прежний `edit-fillet-radius` с тем же request v1, envelope и exit 0/2/7
-меняет радиус **любого** из двух последовательных Fillet §28G, выбранного по
-точному UUID, и публикует новую копию. Меняются только `payload`/
-`payload_hash` строки выбранного Fillet и `meta.modified_at`; второй Fillet,
-Sketch, все UUID, имена, зависимости и capabilities сохраняются, ничего не
-создаётся. Правило одно — предел угла §28A и правило пары §28G в порядке
-истории: `r2 ≤ L_shared − r1 − 0.01` для соседних углов, для
-противоположных пары нет. Правка первого проверяет весь суффикс: rebuild
-заново судит и Fillet 1, и Fillet 2. У неограниченной плиты
-`radius_edit.max_radius_mm` — точная граница этого правила (для Fillet 1 —
-наибольшее `r1`, которое тот же предикат принимает, по соседним float); у
-размеренной — `null`, судит rebuild на решённых Line. В `fillets[]`
-аддитивно `history_index` и `radius_edit.neighbour`; result добавляет
-`previous_feature_id` и `history_index`. Редактор ограничений для двух
-Fillet отказывал до §28K; высоту меняет §28I, координаты Sketch — §28J,
-ограничения — §28K.
-[Контракт §28H и исполняемый рецепт](edit-sequential-fillet-radii.md).
-
-§28I: прежний `edit-extrude` с теми же аргументами, результатом, envelope и
-exit 0/2/7 меняет Blind-высоту базового Extrude плиты, скруглённой дважды
-(§28G, Extrude → Fillet 1 → Fillet 2 → Body tip), свободной или с
-ограничениями, и публикует новую копию. Меняются только `payload`/
-`payload_hash` строки базового Extrude и `meta.modified_at`; оба Fillet, их
-радиусы, углы и UUID Line, Sketch (сохранённые координаты остаются
-начальным приближением решателя), зависимости, tip Body, все UUID и имена
-сохраняются, ничего не создаётся. Политика высоты прежняя (§28C): конечное
-положительное число; что OCCT скруглить не может, отказывает rebuild
-(`kernel`). История читается тем же reader'ом, что у §28H; writer заново
-выводит подготовку вместе с обоими Fillet. Cold rebuild разрешает все
-имена, включая цилиндр Fillet 1 в конечном Body; кэш промахивается по
-Extrude и обоим Fillet. В `features[].fillet_base` аддитивно
-`second_fillet` — Fillet 2, округляющий результат Fillet 1 (`null` при
-одном Fillet). Ограничения Sketch — §28K.
-[Контракт §28I и исполняемый рецепт](edit-two-fillet-base-height.md).
-
-§28J: прежний `edit-sketch-copy` с тем же request v1, envelope и exit 0/2/7
-переносит и меняет размеры базового прямоугольного Sketch под двумя
-последовательными Fillet (Extrude → Fillet 1 → Fillet 2 → Body tip): свободного
-или с одними Coincident-звеньями замыкания (что остаётся после снятия
-последнего ограничения, §28E). Sketch с любым другим ограничением отказывает
-(`unsupported`) и отсылает к редактору ограничений (§28K). Меняются только геометрия Line в `payload`/
-`payload_hash` этого Sketch (и `meta.modified_at`, если писатель его
-ставит); UUID и порядок кривых, замыкание, Extrude и его высота, оба
-Fillet, их радиусы, рёбра и предшественники, зависимости, tip Body,
-`document_id` и все refs сохраняются, ничего не создаётся, сохранённые
-координаты не заменяются выводом решателя. По новым координатам совместно
-проверяются: осевой прямоугольник из тех же четырёх Line, сторона каждой
-Line, оба сохранённых угла по UUID Line, оба радиуса (`r ≤ ½·min стороны`) и
-пара в порядке истории (`r2 ≤ L − r1 − 0,01 мм` на общей Line соседних углов;
-противоположные углы общей Line не имеют); ничего не подгоняется. Writer
-заново выводит правку из текущего документа внутри транзакции и сравнивает
-payload целиком; cold rebuild разрешает все имена, кэш промахивается по
-Extrude и обоим Fillet, затем высота и каждый радиус по-прежнему правятся. В
-`sketches[]` строка базового Sketch аддитивно получает `fillet_base.second_fillet`
-(как в `features[]` с §28I).
-[Контракт §28J и исполняемый рецепт](edit-two-fillet-base-sketch.md).
-
-§28K: прежний `edit-sketch-constraints-copy` с тем же request v1, envelope и
-exit 0/2/7 добавляет, заменяет и снимает Line-ограничения базового Sketch под
-двумя последовательными Fillet (тот же класс §28G, что читают §28H–§28J).
-Меняются только `schema_version`/`payload`/`payload_hash` строки Sketch и
-строка capability `sketch.constraints.v1` по прежнему договору §28E; UUID
-нетронутых ограничений и Coincident-замыканий сохраняются, новые правила
-получают новые UUID, обе строки Fillet, радиусы, рёбра, предшественники,
-Extrude и его высота, tip Body, `document_id` и refs остаются. Сохранённые
-координаты — начальное приближение решателя и не заменяются решёнными. Оба
-радиуса и их пара проверяются на **решённых** Line тех же UUID при каждом
-rebuild тем же `evaluable_fillet`, что и раньше (стороны, угол, `r ≤ ½·min`
-решённой стороны, пара в порядке истории); сохранённые длины ничего не
-доказывают. Причины называют joint-UUID Fillet или общую Line; конфликт
-решателя — `constraint` с реальными UUID, избыточность публикуется и
-называется в `solve.redundant_constraint_ids`. Снятие всех пользовательских
-ограничений оставляет замыкание, деталь — сохранённая плита, и §28J снова
-доступен. В `sketches[].constraint_edit.fillet_base` аддитивно
-`second_fillet` (`null` при одном Fillet); `constraint_edit.available` —
-`true` для этого класса.
-[Контракт §28K и исполняемый рецепт](edit-two-fillet-base-constraints.md).
-
-§28L: те же `fillet-edge-copy`, `edit-fillet-radius`, `edit-extrude`,
-`edit-sketch-copy` и `edit-sketch-constraints-copy` (request v1, envelope,
-exit 0/2/7 — прежние) работают на истории Extrude → Fillet 1 → … → Fillet *n* →
-Body tip, *n* от 0 до 4: третий и четвёртый разные угол прямоугольной плиты —
-отдельные настоящие Fillet на результате предшественника; угол округляется один
-раз, пятый, ветвление и чужой предшественник — типизированный `unsupported`.
-Радиус любого Fillet ограничен **каждым** соседом по общей Line в порядке
-истории (последний Fillet замыкает пару с первым): предложенный максимум
-принимается, ближайший больший float отказывает; противоположные углы друг
-друга не ограничивают. Новый payload, capability и версия архива не нужны —
-Fillet 3 и 4 хранятся как Fillet 2; предыдущая сборка открывает документ и
-отказывает в rebuild/правках типизированно. JSON v1 аддитивно:
-`fillets[].radius_edit.neighbours` (все прочие Fillet), `fillet_history` на
-строках базового Extrude, Sketch и в контексте редактора ограничений; прежние
-`radius_edit.neighbour` (только для ровно двух) и `fillet_base` (для одного
-или двух) для трёх и четырёх — `null`.
-[Контракт §28L и исполняемый рецепт](rectangular-fillet-history.md).
-
-§29A: первая настоящая Chamfer — равные отступы на одной вертикальной кромке
-прямоугольной плиты, в новой копии. UI: `Chamfer edge of <Body> — <UUID>…` и
-`Edit Chamfer distance …`; CLI: `chamfer-edge-copy` (request v1
-`{"request_version":1,"edge":{"feature_id":…,"joint":[Line,Line]},"distance_mm":d}`)
-и `edit-chamfer-distance` (`{"request_version":1,"distance_mm":d}`; имя по
-параметру, как `edit-fillet-radius`). Единица — **мм**, расстояние от кромки по
-**каждой** из двух смежных граней, а не ширина наклонной площадки (`d·√2`).
-Класс: одна собственная плита, free или closure-only Sketch, forward Blind
-NewBody Extrude; без Cut/Fillet/Chamfer перед ней; ровно одна Chamfer. Хранится
-`feature.chamfer` (payload v1, capability `feature.chamfer.v1`), у новой грани
-своя роль `EdgeChamferFace`; в архиве один добавленный тег, версия 4 прежняя.
-Политика: `0.001 мм ≤ d ≤ min(смежных сторон) − 0.01 мм`; предложенный максимум
-принимается, ближайший больший float отказывает. Измерено: объём
-`(W·D − d²/2)·h`, плоскость с нормалью выбранного угла и площадью `d·√2·h`.
-Остальные редакторы (высота, Sketch, constraints, Fillet, Cut, вторая Chamfer)
-отказывают типизированно с UUID Chamfer; `main` открывает документ только для
-чтения и отказывает в rebuild/экспорте (`feature.chamfer.v1`), частичной плиты
-нет. Discovery аддитивно: `bodies[].chamfer_edge` и верхнеуровневые `chamfers[]`.
-[Контракт §29A и исполняемый рецепт](rectangular-corner-chamfer.md).
-
-§29B: высота базового Extrude плиты с одной Chamfer меняется существующими
-`edit-extrude` / **Edit extrusion…**, в новой копии: Chamfer (UUID, ребро,
-расстояние, семь имён) сохраняется, меняются только payload и hash строки
-Extrude и штамп. Новой команды нет; по границам высоты — общее правило
-(конечное положительное число) плюс измеренный предел самого OCCT: ≤1e-5 мм
-отказ типа `kernel`, 1.2e-5 мм строится. Остальные редакторы по-прежнему
-отказывают с UUID Chamfer. Discovery аддитивно: `features[].chamfer_base`.
-[Контракт §29B и исполняемый рецепт](edit-chamfer-base-height.md).
-
-§29C: четыре вершины базового Sketch плиты с одной Chamfer меняются
-существующими `edit-sketch-copy` / **Edit saved Sketch — new copy**, в новой
-копии: плиту можно увеличить, уменьшить и сдвинуть; Chamfer остаётся на той же
-вершине (по двум UUID Line, не по номеру строки и не по старым координатам) с
-тем же расстоянием, высотой, историей и семью именами. Расстояние проверяется на
-НОВЫХ смежных сторонах (`0.001 ≤ d ≤ min(смежные) − 0.01`, точно на границе,
-никогда не уменьшается); поворот на пол-оборота, зеркало, не-прямоугольник,
-другой порядок/UUID Line отказывают, отказ называет UUID Chamfer. Меняются
-только payload и hash строки Sketch и штамп. Новой команды нет; discovery
-аддитивно: `sketches[].chamfer_base`.
-[Контракт §29C и исполняемый рецепт](edit-chamfer-base-sketch.md).
-
-§29D: управляемые Line-ограничения базового Sketch плиты с одной Chamfer
-(H/V, длина и Replace length, одна Fixed-конечная точка, EqualLength,
-Parallel/Perpendicular, Coincident-замыкание) добавляются, заменяются и
-удаляются существующими `edit-sketch-constraints-copy` / **Edit constraints** в
-новой копии. Размеры и положение прямоугольника решает PlaneGCS; Chamfer остаётся
-на том же углу (по двум UUID Line) с тем же расстоянием. Сохранённые координаты
-остаются начальным приближением решателя и никогда не перезаписываются решением;
-предел расстояния `0.001 ≤ d ≤ min(смежные РЕШЁННЫЕ стороны) − 0.01` проверяется
-на тех же решённых Line при каждой перестройке (точно на границе, без зажима и
-допуска). `edit-extrude` и `edit-chamfer-distance` работают на такой плите и
-сохраняют ограничения байт в байт; редактор координат (§29C) отказывает, пока
-есть пользовательские ограничения, и снова работает после их удаления
-(замыкание остаётся). Меняются только payload/hash строки Sketch (и нужная
-capability по прежней политике) и штамп. Новой команды нет; discovery
-аддитивно: `sketches[].constraint_edit.chamfer_base`,
-`profile_constrained`, а `distance_edit.max_distance_mm` для такой плиты `null`.
-[Контракт §29D и исполняемый рецепт](edit-chamfer-base-constraints.md).
+Fillet and Chamfer consume nonempty sets of named edges from a body's predecessor.
+The window adds the selected viewport edge to its form; CLI `edit` accepts
+`producer`, `kind`, `digest` and `selection` and replaces the set with `set_edges`.
+The kernel decides the radius/distance and requires one valid solid. References
+resolve in the consumed result, with every failed reference reported by identity.
+There are no rectangle, corner, minimum-flat or history-length policies.
+See [Fillet and Chamfer](fillets-and-chamfers.md) for the current contract and recipe.
 
 §30A: CLI не меняется. Окно получает рабочую сессию открытого документа
 ([контракт](document-session.md)): на маршруте высоты Extrude Apply, Undo/Redo и
@@ -308,21 +40,6 @@ capability по прежней политике) и штамп. Новой ко�
 бывшая кнопка подтверждения черновика называется **Confirm draft numbers**.
 `cut-circular-copy` на том же снимке даёт тот же результат во всех ячейках SQL,
 кроме `meta.modified_at` и доказанного соответствия новых UUID.
-
-§30J: CLI не меняется. Форма `Fillet edge of … — UUID…` получает кнопку
-**Add fillet**, которая добавляет новый Fillet в открытый документ шагом общей
-истории через тот же `fillet_edge_copy` ([контракт](add-fillet-session.md));
-бывшая кнопка *Apply fillet* называется **Confirm draft edge and radius** и готовит
-только копию. `fillet-edge-copy` на том же снимке даёт тот же результат во всех
-ячейках SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
-
-§30K: CLI не меняется. Форма `Chamfer edge of … — Body UUID…` получает кнопку
-**Add chamfer**, которая добавляет единственный Chamfer пластины в открытый документ
-шагом общей истории через тот же `chamfer_edge_copy` ([контракт](add-chamfer-session.md));
-бывшая кнопка *Apply chamfer* называется **Confirm draft edge and distance** и меняет
-только историю запросов формы. Класс прежний: только свободная или closure-only
-пластина. `chamfer-edge-copy` на том же снимке даёт тот же результат во всех ячейках
-SQL, кроме `meta.modified_at` и доказанного соответствия новых UUID.
 
 §30L: CLI не меняется: `create`, `create-sketch-extrude`, `create-sketch-revolve`,
 `create-circle-extrude` и `create-annular-extrude` по-прежнему публикуют указанный путь
@@ -452,7 +169,7 @@ JSON v1 доступен только явно перечисленным ком
 | Проверить документ без ядра | Нет отдельной команды. Неоткрываемый файл даёт `Open failed`; это отказ загрузки, не отчёт `validate`. | `ferritecad validate <path> [--json]` | Общий [`validate_document`](../crates/ferritecad-jobs/src/validate.rs): один `Document::open_read_only`, UUID и `Document::validate` из закреплённого снимка, закрытие SQLite до owned результата. Правила и stable codes принадлежат document. | Без writes/миграции/kernel. JSON ok:true и valid:true/false дают 0/1; operational error — 2, delivery failure — 7. Warnings сохраняются. Старые schema/WAL/minimum reader теперь честно отказывают также в text validate. Это не гарантия геометрии/STEP/FBX complete; UI validate/repair отсутствуют. [Протокол](read-only-validation.md). |
 | Cold rebuild нативного графа | Не команда. Open/Export сами делают холодное перестроение как часть чтения. | `ferritecad rebuild --cold <path>` | [`rebuild_cold`](../crates/ferritecad-eval/src/cold.rs) в `ferritecad-eval` против [`OcctKernel`](../crates/ferritecad-occt/src/kernel.rs) / [`GeometryKernel`](../crates/ferritecad-kernel/src/kernel.rs). Документ — `open_read_only`. | Без `--cold` команда отказывает (exit 2, **измерено**). [`rebuild_cached`](../crates/ferritecad-eval/src/cold.rs) есть в библиотеке и тестах и **не** предлагается CLI/UI. Публичного cached-rebuild нет. |
 | Граф зависимостей | Нет. Список определений во вьюере — не dump графа. | `ferritecad dump-graph <path> [--format <text\|dot>]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs), затем прежние [`evaluation_order`](../crates/ferritecad-document/src/graph.rs) и [`render::graph_text` / `graph_dot`](../crates/ferritecad-cli/src/render.rs). | Без миграции и записи (§24J-1, **измерено**). Старая схема, WAL и minimum reader — отказ общего reader, exit 2, пустой stdout. `dot` — Graphviz, не JSON. `--format json` нет (**измерено**, clap exit 2). |
-| Derived topology names | A unique selected face, edge or vertex shows its feature, kind, digest and full derivation. Ambiguous names have no selection binding. | `ferritecad print-topology <path>`; also `inspect`, and `rebuild --cold` without derivations. | `ModelNaming` supplies the primary bindings and complete derivations. The CLI prints feature, kind, digest, description and entity count in deterministic order. Exit 0 when all features build; exit 2 for failed features or an operational error. | No output-name catalogue is stored. Fillet and Chamfer still consume `SweptEdge`; imported topology remains unnamed. |
+| Derived topology names | A unique selected face, edge or vertex shows its feature, kind, digest and full derivation. Ambiguous names have no selection binding. | `ferritecad print-topology <path>`; also `inspect`, and `rebuild --cold` without derivations. | `ModelNaming` supplies the primary bindings and complete derivations. The CLI prints feature, kind, digest, description and entity count in deterministic order. Exit 0 when all features build; exit 2 for failed features or an operational error. | No output-name catalogue is stored. Fillet and Chamfer consume generic edge references; imported topology remains unnamed. |
 | STEP → новый `.fcad` (байты источника внутри) | Нет. Open принимает `.fcad`, не STEP. Отдельное продолжение после §23 это признаёт. | `ferritecad import-step <file.step> -o <out.fcad> [--name <name>] [--force] [--json]` | Общий [`import_step_document`](../crates/ferritecad-jobs/src/import.rs): одно чтение STEP, kernel factory/import callback, владение handles, `Document::store_step_import`, закрытие SQLite и атомарный publish через `Temporary`. Text/JSON CLI готовят один request и отображают owned outcome; JSON 0/4 — publication, 5 — typed reader rejection, 2 — operational error, 7 — delivery failure. [Протокол request/outcome/отмены](shared-step-import.md). | UI не импортирует STEP; CLI cancellation flags отсутствуют. Импорт не делает сборку редактируемой. Нет STEP-экспорта (команды `export-step` нет). |
 | Binary STL одного тела | `Export STL…` → явный UUID при нескольких Body → параметры → `Save STL…`; Cancel и подтверждение Replace. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force] [--json]` | Общий [`export_document_as_stl`](../crates/ferritecad-jobs/src/stl.rs): выбор Body, одно read-only чтение, cold rebuild, `GeometryKernel::tessellate`, `binary_stl`, `Temporary`. CLI — адаптер, UI — owned worker. | Только один native Body; imported-only, сборки и несколько тел одним STL не поддерживаются. JSON сообщает опубликованные destination/Body/triangles/bytes (§24F). [§24E: протокол и границы наблюдения](stl-export-verification.md). |
 | FBX 7.4 ASCII всей модели | `Export FBX…` при принятой сцене. Замена существующего файла — вопрос окна, не `--force`. Отмена есть. | `ferritecad export-fbx <path> -o <file.fbx> [--force] [--json]` | Один маршрут: [`ferritecad_jobs::export_document_as_fbx`](../crates/ferritecad-jobs/src/fbx.rs) ← [`export_scene`](../crates/ferritecad-scene/src/export.rs) ← `prepare::load`. CLI: [`export_fbx::export_fbx`](../crates/ferritecad-cli/src/export_fbx.rs). UI: [`exports::export_into`](../crates/ferritecad-app/src/exports.rs). | Это два клиента одной операции. JSON v1 сообщает опубликованный полный/частичный результат, счётчики и typed omissions; partial — ok:true и exit 6 (§24G). CLI не выставляет отмену; UI — выставляет. |

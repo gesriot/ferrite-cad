@@ -654,8 +654,7 @@ fn independent_branches_continue_at_every_failure_position_without_leaks() {
 
 #[test]
 fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
-    use ferritecad_document::{Fillet, SweptEdge};
-    use ferritecad_types::ProfileJoint;
+    use ferritecad_document::{EntityKind, EntityReference, Fillet, ReferenceMeaning, Selection};
     let (_dir, mut document, plate) = sample();
     let cut = ObjectId::new();
     let dependent = ObjectId::new();
@@ -693,10 +692,12 @@ fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
                 Some("Dependent"),
                 &ObjectPayload::Fillet(Fillet {
                     previous: cut,
-                    edge: SweptEdge {
-                        feature: cut,
-                        joint: ProfileJoint::new(plate.segments[0], plate.segments[1])?,
-                    },
+                    edges: vec![EntityReference::new(ReferenceMeaning {
+                        producer: cut,
+                        kind: EntityKind::Edge,
+                        digest: ferritecad_types::ContentHash::of_bytes(b"dependent edge"),
+                        selection: Selection::One,
+                    })],
                     radius_mm: ferritecad_document::Expression::constant(1.0)
                         .expect("finite constant"),
                 }),

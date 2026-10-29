@@ -5,7 +5,6 @@ use crate::{
     SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
-use std::collections::BTreeSet;
 
 /// A finite, strictly positive Euclidean Line length in millimetres.
 /// Private validated bits make exact Eq safe: NaN and both zeros are excluded.
@@ -276,66 +275,10 @@ impl From<AddLineConstraint> for AddSketchConstraint {
     }
 }
 
-/// Which geometry a managed profile is made of.
-///
-/// Read from the curves and from nothing else. The two families take different
-/// constraints, different slots and different closure rules, and deciding
-/// which is which once is what keeps every one of those from being guessed
-/// again further down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Family {
-    Lines,
-    Circle,
-    /// Two analytic circles, one inside the other: the annular profile of
-    /// [§25L][crate::AnnularExtrusion], now with dimensions of its own.
-    Annulus,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SketchConstraintEdits {
     pub remove: Vec<StableEntityId>,
     pub add: Vec<AddSketchConstraint>,
-}
-
-/// §28E: the managed Line family, asked of a Sketch whose other readers — the
-/// Fillet frame and the evaluator — accept only it.
-pub(crate) fn managed_lines(sketch: &Sketch) -> Result<()> {
-    if classify(sketch)? != Family::Lines {
-        return Err(CadError::unsupported(
-            "constraints are managed here on a profile of Lines only",
-        ));
-    }
-    managed(sketch, Family::Lines)
-}
-
-/// Which family this sketch's curves make it, or why it is neither.
-fn classify(sketch: &Sketch) -> Result<Family> {
-    if sketch
-        .curves
-        .iter()
-        .all(|c| matches!(c.geometry, SketchGeometry::Line { .. }))
-        && !sketch.curves.is_empty()
-    {
-        return Ok(Family::Lines);
-    }
-    if let [only] = sketch.curves.as_slice()
-        && matches!(only.geometry, SketchGeometry::Circle { .. })
-    {
-        return Ok(Family::Circle);
-    }
-    // Two of them are the annular profile. Which is the boundary and which is
-    // the bore is not decided here: that is read from the radii, once, where
-    // the annulus editor already reads it.
-    if let [a, b] = sketch.curves.as_slice()
-        && matches!(a.geometry, SketchGeometry::Circle { .. })
-        && matches!(b.geometry, SketchGeometry::Circle { .. })
-    {
-        return Ok(Family::Annulus);
-    }
-    Err(CadError::unsupported(
-        "constraint edit supports a profile of Lines, one analytic Circle, or two making an \
-         annulus",
-    ))
 }
 
 fn endpoints(curve: StableEntityId) -> (SketchPointRef, SketchPointRef) {
@@ -358,299 +301,14 @@ fn closures(sketch: &Sketch) -> Vec<[SketchPointRef; 2]> {
         })
         .collect()
 }
-/// §28J: whether every stored constraint is a distinct Coincident closure
-/// link at an adjacent Line joint — what the constraint editor leaves when
-/// the last user constraint is removed (§28E). Such links name endpoints, not
-/// coordinates, so a coordinate edit that keeps the loop exactly closed keeps
-/// them satisfied. Any other constraint answers `false`.
-pub(crate) fn closure_links_only(sketch: &Sketch) -> bool {
-    let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
-    let mut seen = BTreeSet::new();
-    let mut ids = BTreeSet::new();
-    sketch.constraints.iter().all(|c| {
-        matches!(c.rule, SketchConstraintRule::Coincident { a, b }
-            if expected.contains(&unordered(a, b)) && seen.insert(unordered(a, b)))
-            && ids.insert(c.id)
-    })
-}
-/// The Line a point pair spans, when it is exactly that Line's Start and End
-/// in either stored orientation.
-fn whole_line(a: SketchPointRef, b: SketchPointRef) -> Option<StableEntityId> {
-    let (start, end) = endpoints(a.curve);
-    (a.curve == b.curve && unordered(a, b) == unordered(start, end)).then_some(a.curve)
-}
 fn segment(curve: StableEntityId) -> SketchSegmentRef {
     let (start, end) = endpoints(curve);
     SketchSegmentRef::new(start, end)
-}
-/// The two distinct Lines a stored pair relationship relates, when both of its
-/// segments are whole Lines. Stored orientation of either segment is kept as it
-/// is; only what it names is read.
-fn related(a: SketchSegmentRef, b: SketchSegmentRef) -> Option<(StableEntityId, StableEntityId)> {
-    let (x, y) = (whole_line(a.from, a.to)?, whole_line(b.from, b.to)?);
-    (x != y).then_some((x, y))
-}
-fn equal_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
-    let SketchConstraintRule::EqualLength { a, b } = *rule else {
-        return None;
-    };
-    related(a, b)
-}
-/// The two distinct Lines a stored Parallel, Perpendicular, directed angle or
-/// collinearity relates. Which of the four it is does not change the slot: they
-/// are four answers to one question. The direction of a directed angle's
-/// vectors is read by nothing here: `related` names the Lines, not the way they
-/// point.
-fn relation_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
-    match *rule {
-        SketchConstraintRule::Parallel { a, b }
-        | SketchConstraintRule::Perpendicular { a, b }
-        | SketchConstraintRule::DirectedAngle { a, b, .. }
-        | SketchConstraintRule::Collinear { a, b } => related(a, b),
-        _ => None,
-    }
-}
-fn line_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
-    if let SketchConstraintRule::Fixed {
-        point,
-        ref x,
-        ref y,
-    } = *rule
-    {
-        return Some((
-            point.curve,
-            LineConstraintKind::Fixed {
-                at: LineEndpoint::of(point.at)?,
-                x: SketchCoordinateMm::new(x.value()).ok()?,
-                y: SketchCoordinateMm::new(y.value()).ok()?,
-            },
-        ));
-    }
-    let (a, b, kind) = match *rule {
-        SketchConstraintRule::Horizontal { a, b } => (a, b, LineConstraintKind::Horizontal),
-        SketchConstraintRule::Vertical { a, b } => (a, b, LineConstraintKind::Vertical),
-        SketchConstraintRule::Distance { a, b, ref distance } => (
-            a,
-            b,
-            LineConstraintKind::Distance(LineLengthMm::new(distance.value()).ok()?),
-        ),
-        _ => return None,
-    };
-    whole_line(a, b).map(|curve| (curve, kind))
-}
-/// What a request occupies: one orientation and one length per Line, at most
-/// one pinned endpoint in the whole profile, whichever Line carries it, one
-/// equal length per unordered pair of Lines, and one relative orientation per
-/// unordered pair of Lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Slot {
-    Orientation(StableEntityId),
-    Length(StableEntityId),
-    Pin,
-    /// Sorted, so (A,B) and (B,A) are the same occupied slot.
-    Equal(StableEntityId, StableEntityId),
-    /// Sorted for the same reason. Parallel, Perpendicular, a directed angle
-    /// and a collinearity answer one question about the pair, so they share
-    /// this slot; an equal length on the same pair is a different question and
-    /// has its own.
-    Relation(StableEntityId, StableEntityId),
-    /// The one radius of one circle.
-    ///
-    /// Its own slot rather than [`Slot::Length`] reused: the two are different
-    /// dimensions of different geometry, and sharing a slot would make a
-    /// document's refusal message name a Line where a circle stands.
-    Radius(StableEntityId),
-    /// The one shared centre of an unordered pair of circles.
-    ///
-    /// Sorted, so naming the boundary first and naming the bore first occupy
-    /// the same slot: they are one relationship asked twice, and a profile that
-    /// stored both would be saying the same thing to the solver twice.
-    Concentric(StableEntityId, StableEntityId),
-}
-fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
-    match kind {
-        LineConstraintKind::Horizontal | LineConstraintKind::Vertical => Slot::Orientation(curve),
-        LineConstraintKind::Distance(_) => Slot::Length(curve),
-        LineConstraintKind::Fixed { .. } => Slot::Pin,
-    }
-}
-fn sorted(a: StableEntityId, b: StableEntityId) -> (StableEntityId, StableEntityId) {
-    if a <= b { (a, b) } else { (b, a) }
-}
-fn equal_slot(a: StableEntityId, b: StableEntityId) -> Slot {
-    let (a, b) = sorted(a, b);
-    Slot::Equal(a, b)
-}
-fn relation_slot(a: StableEntityId, b: StableEntityId) -> Slot {
-    let (a, b) = sorted(a, b);
-    Slot::Relation(a, b)
-}
-fn concentric_slot(a: StableEntityId, b: StableEntityId) -> Slot {
-    let (a, b) = sorted(a, b);
-    Slot::Concentric(a, b)
 }
 /// The centre of a circle, as a point of the sketch.
 fn center(curve: StableEntityId) -> SketchPointRef {
     SketchPointRef::new(curve, SketchPointSelector::Center)
 }
-/// The two distinct circles a stored `Coincident` makes concentric, when that
-/// is what it says.
-///
-/// A `Coincident` is concentricity only when **both** of its points are centres
-/// and they belong to different curves. Every other `Coincident` — in
-/// particular the closure link between two Line endpoints — is not this, is not
-/// read as this, and stays exactly as protected as it was.
-fn concentric_of(rule: &SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
-    let SketchConstraintRule::Coincident { a, b } = rule else {
-        return None;
-    };
-    (a.at == SketchPointSelector::Center
-        && b.at == SketchPointSelector::Center
-        && a.curve != b.curve)
-        .then_some((a.curve, b.curve))
-}
-/// The slot a stored circle rule occupies, and the circle it names.
-///
-/// A pinned centre takes the profile-wide [`Slot::Pin`], the same slot a pinned
-/// Line endpoint takes: a profile holds one pin whichever geometry carries it,
-/// and the two families never share a profile anyway.
-fn circle_slot_of(rule: &SketchConstraintRule) -> Option<(Slot, StableEntityId)> {
-    match *rule {
-        SketchConstraintRule::Radius { curve, .. } => Some((Slot::Radius(curve), curve)),
-        SketchConstraintRule::Fixed { point, .. } if point.at == SketchPointSelector::Center => {
-            Some((Slot::Pin, point.curve))
-        }
-        _ => None,
-    }
-}
-
-/// The slot a stored rule occupies on an annular profile, and every circle it
-/// names.
-///
-/// The single-circle vocabulary plus concentricity, which only a pair can hold.
-/// Written as its own reading rather than as [`circle_slot_of`] widened: that
-/// one answers for a profile with no second circle to name, and a `Coincident`
-/// there could only ever be a link this editor does not manage.
-fn annulus_slot_of(rule: &SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
-    if let Some((a, b)) = concentric_of(rule) {
-        return Some((concentric_slot(a, b), [a, b]));
-    }
-    circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve]))
-}
-
-/// The slot a stored rule occupies and every Line it names, or `None` when the
-/// rule is not one this family manages.
-fn slot_of(rule: &SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
-    if let Some((a, b)) = equal_of(rule) {
-        return Some((equal_slot(a, b), [a, b]));
-    }
-    if let Some((a, b)) = relation_of(rule) {
-        return Some((relation_slot(a, b), [a, b]));
-    }
-    let (curve, kind) = line_of(rule)?;
-    Some((line_slot(curve, kind), [curve, curve]))
-}
-/// §29D: the first stored constraint of a Line profile that is neither one the
-/// managed family holds nor one of its adjacent-joint closure links — the
-/// guilty one a refusal names.
-pub(crate) fn first_outside_managed_lines(sketch: &Sketch) -> Option<&SketchConstraint> {
-    let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
-    sketch.constraints.iter().find(|c| {
-        slot_of(&c.rule).is_none()
-            && !matches!(c.rule, SketchConstraintRule::Coincident { a, b }
-                if expected.contains(&unordered(a, b)))
-    })
-}
-/// Preserve only this declared family of stored relationships; never simplify others.
-fn managed(sketch: &Sketch, family: Family) -> Result<()> {
-    match family {
-        Family::Circle | Family::Annulus => return managed_circles(sketch, family),
-        Family::Lines => {}
-    }
-    let curve_ids: BTreeSet<_> = sketch.curves.iter().map(|c| c.id).collect();
-    let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
-    let mut seen_ids = BTreeSet::new();
-    let mut lines = BTreeSet::new();
-    let mut joins = BTreeSet::new();
-    for c in &sketch.constraints {
-        if !seen_ids.insert(c.id) {
-            return Err(CadError::unsupported("duplicate constraint UUID"));
-        }
-        if let Some((slot, curves)) = slot_of(&c.rule) {
-            if !curves.iter().all(|c| curve_ids.contains(c)) || !lines.insert(slot) {
-                return Err(CadError::unsupported(match slot {
-                    Slot::Pin => "constraint edit supports at most one Fixed endpoint per profile",
-                    Slot::Equal(..) => {
-                        "constraint edit refuses a duplicate equal length on one pair of Lines"
-                    }
-                    Slot::Relation(..) => {
-                        "constraint edit refuses more than one Parallel, Perpendicular, directed angle or Collinear on one pair of Lines"
-                    }
-                    _ => "constraint edit refuses duplicate orientation or length on a Line",
-                }));
-            }
-        } else if let SketchConstraintRule::Coincident { a, b } = c.rule {
-            let pair = unordered(a, b);
-            if !expected.contains(&pair) || !joins.insert(pair) {
-                return Err(CadError::unsupported(
-                    "constraint edit requires unique Coincident links at adjacent Line joints",
-                ));
-            }
-        } else {
-            return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length or Parallel/Perpendicular/directed angle/Collinear between two whole Lines and adjacent-joint Coincident families",
-            ));
-        }
-    }
-    if !lines.is_empty() && joins != expected {
-        return Err(CadError::unsupported(
-            "existing H/V, length, equal length, Parallel/Perpendicular/directed angle/Collinear or Fixed endpoint require all persisted Coincident closure links",
-        ));
-    }
-    Ok(())
-}
-
-/// The circle families' own version of the same rule.
-///
-/// A circle has no joints, so there is no closure to require and no Coincident
-/// to preserve for that reason: what a managed circle profile may hold is one
-/// radius per circle and one pinned centre, and — when there are two circles —
-/// one concentricity between them. A `Coincident` here is therefore either that
-/// concentricity or nothing this editor manages; the Line closure it protects
-/// elsewhere cannot occur on a profile with no Line in it.
-fn managed_circles(sketch: &Sketch, family: Family) -> Result<()> {
-    let curves: BTreeSet<_> = sketch.curves.iter().map(|c| c.id).collect();
-    let mut seen_ids = BTreeSet::new();
-    let mut slots = BTreeSet::new();
-    for c in &sketch.constraints {
-        if !seen_ids.insert(c.id) {
-            return Err(CadError::unsupported("duplicate constraint UUID"));
-        }
-        let Some((slot, named)) = family_slot_of(family, &c.rule) else {
-            return Err(CadError::unsupported(match family {
-                Family::Annulus => {
-                    "constraint edit supports only a positive radius per Circle, one fixed centre \
-                     and one concentricity on an annular profile"
-                }
-                _ => {
-                    "constraint edit supports only one positive radius and one fixed centre on an \
-                     analytic Circle"
-                }
-            }));
-        };
-        if !named.iter().all(|id| curves.contains(id)) || !slots.insert(slot) {
-            return Err(CadError::unsupported(match slot {
-                Slot::Pin => "constraint edit supports at most one fixed centre per circle",
-                Slot::Concentric(..) => {
-                    "constraint edit supports at most one concentricity per pair of Circles"
-                }
-                _ => "constraint edit refuses more than one radius on a circle",
-            }));
-        }
-    }
-    Ok(())
-}
-
 /// Which of a managed profile's circles bounds the part and which is the bore,
 /// or `None` when the profile is not two circles.
 ///
@@ -810,17 +468,6 @@ pub fn sketch_constraint_changes(
         .collect();
     crate::validate_sketch_changes(id, sketch, &changes)?;
     Ok(changes)
-}
-
-fn family_slot_of(
-    family: Family,
-    rule: &SketchConstraintRule,
-) -> Option<(Slot, [StableEntityId; 2])> {
-    match family {
-        Family::Lines => slot_of(rule),
-        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
-        Family::Annulus => annulus_slot_of(rule),
-    }
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ Reused: `edit_circle_copy` / `edit_annulus_copy` (through `StepTicket::edit_circ
 `StepTicket::edit_annulus`), the session's two-phase step, its history, dirty-by-comparison,
 Save, the working-copy lease for exports and the private-folder protections. Not introduced: a
 second copier, evaluator, history or writer, or any write to the logical file before Save. The
-other copy-only editors (*Edit extrusion…* copy; Add Fillet until [§30J](add-fillet-session.md), Add Chamfer until [§30K](add-chamfer-session.md)) stay copy
+other copy-only editors (*Edit extrusion…* copy; Add Fillet until [§30J](fillets-and-chamfers.md), Add Chamfer until [§30K](fillets-and-chamfers.md)) stay copy
 workflows.
 
 ## Not claimed
@@ -94,9 +94,9 @@ run from this container; that the historical OOM is fixed.
 The saved partial Revolve angle joins the session in [§30E](generic-sweeps.md).
 
 Existing Fillet radii now Apply through the same session, including while dirty:
-[§30G](fillet-radius-session-apply.md). Fillet copy remains clean-only; a new Fillet joined
-the session in [§30J](add-fillet-session.md).
+[§30G](fillets-and-chamfers.md). Fillet copy remains clean-only; a new Fillet joined
+the session in [§30J](fillets-and-chamfers.md).
 
 Existing Chamfer distances now Apply through the same session, including while dirty:
-[§30H](chamfer-distance-session-apply.md). Distance copy remains clean-only; a new Chamfer joined
-the session in [§30K](add-chamfer-session.md).
+[§30H](fillets-and-chamfers.md). Distance copy remains clean-only; a new Chamfer joined
+the session in [§30K](fillets-and-chamfers.md).

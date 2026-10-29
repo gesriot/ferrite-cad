@@ -283,6 +283,34 @@ pub(super) fn check_added_identity_map(map: &BTreeMap<Id, Id>, earlier: &[Id], b
     }
 }
 
+pub(super) fn pair_edge_references(
+    map: &mut BTreeMap<Id, Id>,
+    ours: &ObjectPayload,
+    theirs: &ObjectPayload,
+) {
+    let edges = |payload: &ObjectPayload| match payload {
+        ObjectPayload::Fillet(f) => f.edges.clone(),
+        ObjectPayload::Chamfer(c) => c.edges.clone(),
+        _ => panic!("an edge feature"),
+    };
+    let (ours, theirs) = (edges(ours), edges(theirs));
+    assert_eq!(ours.len(), theirs.len());
+    for (ours, theirs) in ours.iter().zip(&theirs) {
+        let mut meaning = ours.meaning;
+        if let Some(mapped) = map.get(&meaning.producer.to_bytes()) {
+            meaning.producer = ObjectId::from_bytes(*mapped).expect("mapped UUID");
+        }
+        assert_eq!(
+            meaning, theirs.meaning,
+            "pair by the complete consumed meaning"
+        );
+        assert!(
+            map.insert(ours.id.to_bytes(), theirs.id.to_bytes())
+                .is_none()
+        );
+    }
+}
+
 pub(super) fn same_model(ours: &Path, theirs: &Path, map: &BTreeMap<Id, Id>, why: &str) {
     assert_eq!(
         sql_mapped(ours, map),

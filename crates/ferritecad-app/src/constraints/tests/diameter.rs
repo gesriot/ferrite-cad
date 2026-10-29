@@ -844,7 +844,7 @@ fn native_diameter_form_worker_and_cli_publish_the_same_radii_ids_sql_and_solid(
         let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
         assert!(
             text.lines()
-                .filter(|line| line.trim_start().starts_with("face "))
+                .filter(|line| line.contains(" kind=face "))
                 .count()
                 == 4,
             "{text}"

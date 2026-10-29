@@ -18,18 +18,22 @@ fn names(document: &Document) -> ModelNaming {
     let names = built.topology().clone();
     assert_scene_names(document, &built, &mut kernel);
     for object in document.objects().expect("objects") {
-        let (previous, edge) = match object.payload {
-            ObjectPayload::Fillet(f) => (f.previous, f.edge),
-            ObjectPayload::Chamfer(c) => (c.previous, c.edge),
+        let (previous, edges) = match object.payload {
+            ObjectPayload::Fillet(f) => (f.previous, f.edges),
+            ObjectPayload::Chamfer(c) => (c.previous, c.edges),
             _ => continue,
         };
-        let selected = names.swept_edge(previous, edge).expect("generative edge");
-        assert_eq!(selected.kind(), SubShapeKind::Edge);
-        assert_eq!(
-            selected.shape(),
-            built.shape(previous).expect("predecessor")
-        );
-        assert!(names.features[&previous].entities.contains_key(&selected));
+        let selected = names
+            .resolve_edges(object.id, previous, &edges)
+            .expect("generative edges");
+        for selected in selected {
+            assert_eq!(selected.kind(), SubShapeKind::Edge);
+            assert_eq!(
+                selected.shape(),
+                built.shape(previous).expect("predecessor")
+            );
+            assert!(names.features[&previous].entities.contains_key(&selected));
+        }
     }
     for (feature, result) in &names.features {
         for entity in result.topology.adjacent_faces.keys() {
@@ -500,7 +504,6 @@ fn retain_tool_cap_derivations_when_the_same_cut_deletes_their_descendants() {
 
 #[test]
 fn keep_a_reference_compact_after_fifty_generations() {
-    use ciborium::value::Value;
     use ferritecad_topology::generative::{curve_root, generated};
     let feature = ferritecad_types::ObjectId::new();
     let mut name = curve_root(feature, ferritecad_types::StableEntityId::new(), None);
@@ -526,16 +529,16 @@ fn keep_a_reference_compact_after_fifty_generations() {
             name,
             SubShapeKind::Face,
         );
-        let reference = Value::Array(vec![
-            Value::Bytes(producer.to_bytes().to_vec()),
-            Value::Integer(0.into()),
-            Value::Bytes(name.digest.as_bytes().to_vec()),
-            Value::Integer(0.into()),
-        ]);
-        let mut cbor = Vec::new();
-        ciborium::ser::into_writer(&reference, &mut cbor).expect("encode reference");
+        let reference = ferritecad_document::ReferenceMeaning {
+            producer,
+            kind: ferritecad_document::EntityKind::Face,
+            digest: name.digest,
+            selection: ferritecad_document::Selection::One,
+        };
+        let cbor = reference.to_bytes().expect("encode reference");
         assert_eq!(cbor.len(), 54);
-        let decoded: Value = ciborium::de::from_reader(cbor.as_slice()).expect("decode reference");
+        let decoded =
+            ferritecad_document::ReferenceMeaning::from_bytes(&cbor).expect("decode reference");
         assert_eq!(reference, decoded);
     }
 }
@@ -642,16 +645,16 @@ fn restore_all_name_sets_with_their_brep_without_replaying_history() {
         let edge = restored_edge[0];
         let result = if chamfer {
             kernel
-                .chamfer_edge(
-                    &ChamferRequest::new(input, edge, 1.).expect("chamfer request"),
+                .chamfer_edges(
+                    &ChamferRequest::new(input, &[edge], 1.).expect("chamfer request"),
                     &OperationContext::default(),
                 )
                 .expect("chamfer")
                 .shape
         } else {
             kernel
-                .fillet_edge(
-                    &FilletRequest::new(input, edge, 1.).expect("fillet request"),
+                .fillet_edges(
+                    &FilletRequest::new(input, &[edge], 1.).expect("fillet request"),
                     &OperationContext::default(),
                 )
                 .expect("fillet")

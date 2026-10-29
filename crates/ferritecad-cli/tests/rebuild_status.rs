@@ -85,8 +85,8 @@ fn incomplete_rebuild_and_export_report_statuses_and_edit_refusals_are_structure
             transaction::line_rule(&json!(curves[2]), "horizontal"),
             transaction::line_rule(&json!(curves[3]), "vertical"),
             transaction::fixed(&json!(curves[0]), "start", 0., 0.),
-            transaction::distance(&json!(curves[0]), 4.),
-            transaction::distance(&json!(curves[1]), 4.),
+            transaction::distance(&json!(curves[0]), 1.),
+            transaction::distance(&json!(curves[1]), 1.),
         ])
         .to_string(),
     )

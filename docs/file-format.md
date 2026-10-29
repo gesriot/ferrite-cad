@@ -49,9 +49,23 @@ and hole-boundary curves refuse selection without retargeting. Containment
 uses even/odd depth, with immediate child loops as holes. Fixtures are
 regenerated when this payload changes; there is no format migration.
 
-The `brep.generative.v1` cache stores derived names with the B-Rep; its codec is
-unchanged. Scene entities carry the feature, kind, name digest and complete
-reachable derivation. A name with several entities has no scene selection binding.
-Fillet and Chamfer continue to store `SweptEdge { feature, joint }`; the retained
-corner-to-edge query resolves their consumed input. An edit may remove an
-unconsumed output name. The existing no-new-failed-features rule protects consumers.
+The `brep.generative.v2` cache stores a feature's own derivation nodes, bindings,
+ancestry and incidence with its B-Rep; model lineage shares predecessor derivations.
+Scene entities carry the feature whose result holds them, the producer that
+minted the name, the kind and the name digest. A name with several entities has
+no exact scene selection binding.
+
+Fillet stores `previous`, a nonempty `edges` vector and `radius_mm: Expression`;
+Chamfer stores `previous`, `edges` and `distance_mm: Expression`. Each
+`EntityReference` stores a diagnostic `StableEntityId` alongside its meaning.
+The meaning is the CBOR array `[bstr16, uint, bstr32, uint]`: producer UUID,
+kind (face 0, edge 1, vertex 2), name digest and selection (one 0, all descendants 1).
+Its canonical encoding is 54 bytes. Reading checks field lengths, tags, array arity
+and trailing bytes. The diagnostic UUID is outside that meaning and the cache key.
+Fillet and Chamfer require unique edge meanings. Their keys contain the predecessor
+key, sorted meanings and amount. Reordering references or changing diagnostic UUIDs
+does not invalidate geometry.
+
+An edit may remove an unconsumed output name. The no-new-failed-features rule protects
+consumers. A known name without descendants refuses; an exact selection with several
+edges refuses, while an explicit all-descendants selection consumes the full set.

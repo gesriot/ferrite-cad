@@ -217,14 +217,22 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             let mut details = vec![];
             for feature in &result.facts.objects {
                 match &feature.payload {
-                    ObjectPayload::Fillet(f) if Some(f.edge.feature) == base => {
+                    ObjectPayload::Fillet(f)
+                        if f.edges
+                            .iter()
+                            .any(|edge| Some(edge.meaning.producer) == base) =>
+                    {
                         details.push(format!(
                             "Rounded by Fillet {} · radius {} mm",
                             feature.id,
                             f.radius_mm.value()
                         ))
                     }
-                    ObjectPayload::Chamfer(c) if Some(c.edge.feature) == base => {
+                    ObjectPayload::Chamfer(c)
+                        if c.edges
+                            .iter()
+                            .any(|edge| Some(edge.meaning.producer) == base) =>
+                    {
                         details.push(format!(
                             "Chamfer {} · distance {} mm",
                             feature.id,

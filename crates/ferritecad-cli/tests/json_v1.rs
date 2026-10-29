@@ -1125,7 +1125,7 @@ fn native_json_inspect_edit_contract() {
         assert!(
             rebuilt
                 .lines()
-                .filter(|line| line.starts_with("    face "))
+                .filter(|line| line.contains(" kind=face "))
                 .count()
                 == 6
         );

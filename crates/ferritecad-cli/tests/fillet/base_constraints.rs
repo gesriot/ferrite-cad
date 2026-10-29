@@ -87,7 +87,7 @@ fn published(
         assert_eq!(g.line(i), f.line(i), "Line {i}");
     }
     let chamfer = &after["chamfers"][0];
-    for key in ["feature_id", "edge", "expression", "previous_feature_id"] {
+    for key in ["feature_id", "edges", "expression", "previous_feature_id"] {
         assert_eq!(chamfer[key], chamfer_before[key], "{key}");
     }
 
@@ -120,10 +120,8 @@ fn published(
     copy
 }
 
-/// The largest distance the domain's one predicate accepts on the Lines the
-/// rebuild of `path` solved its plate from: the evaluator's own question, asked
-/// of the very presentation it was asked of.
-fn solved_max_distance(path: &Path) -> f64 {
+/// A narrow positive remainder measured from the solved sides of this fixture.
+fn near_solved_side(path: &Path) -> f64 {
     let d = Document::open_read_only(path).expect("reopen");
     let objects = d.objects().expect("objects");
     let sketch = objects
@@ -131,13 +129,6 @@ fn solved_max_distance(path: &Path) -> f64 {
         .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
         .expect("the plate's Sketch")
         .id;
-    let chamfer = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Chamfer(c) => Some(c.clone()),
-            _ => None,
-        })
-        .expect("the Chamfer");
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
         .expect("cold rebuild");
@@ -152,11 +143,19 @@ fn solved_max_distance(path: &Path) -> f64 {
             geometry: c.geometry().clone(),
         })
         .collect();
-    let corner = ferritecad_document::evaluable_chamfer(&objects, &chamfer, Some(&curves))
-        .expect("the saved distance fits");
+    // Independent rectangular-fixture geometry; the application has no distance bound.
+    let minimum = curves
+        .iter()
+        .map(|c| match c.geometry {
+            ferritecad_document::SketchGeometry::Line { start, end } => {
+                (end.x - start.x).hypot(end.y - start.y)
+            }
+            _ => panic!("fixture Line"),
+        })
+        .fold(f64::INFINITY, f64::min);
     built.release_all(&mut k);
     d.close().expect("close");
-    corner.max_distance_mm
+    minimum - 0.01
 }
 
 fn plate_with_chamfer(
@@ -455,11 +454,8 @@ fn native_replace_length_exact_removals_and_closure_recovery_keep_the_chamfer() 
     check_brep(&m, rect, crate::sketch::mapped(rect, corner), 3.0, 9.5);
 }
 
-/// The distance bound is the SOLVED plate's, in both directions and exactly.
-/// A stored side too short for a distance the solved plate allows publishes it;
-/// a stored side long enough for a distance the solved plate refuses does not;
-/// and on a solved plate the largest accepted distance (read from the very Lines
-/// the rebuild solved) is accepted and the next float above it is refused.
+/// Chamfer distances use solved geometry, including values beyond the former
+/// analytic limit. An impossible distance fails in the kernel atomically.
 #[test]
 fn native_the_distance_bound_is_the_solved_plates_exactly() {
     if !solving() {
@@ -508,8 +504,8 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     assert_eq!(v["ok"], true, "{v}");
     let (m, _) = measure_c(&fifteen, None);
     check_brep(&m, rect, moved, 15.0, H);
-    // The largest distance, from the solved sides themselves, and the next float.
-    let largest = solved_max_distance(&first);
+    // A small remainder and the next float both remain valid.
+    let largest = near_solved_side(&first);
     assert!(
         (largest - (rect[2].min(rect[3]) - 0.01)).abs() < 1e-9,
         "{largest}"
@@ -518,12 +514,12 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     assert_eq!(v["ok"], true, "{v}");
     let (m, _) = measure_c(&edge, None);
     check_brep(&m, rect, moved, largest, H);
-    // The next float above the largest, exactly. A JSON number is not exact to
+    // The next float above that fixture value. A JSON number is not exact to
     // the last digit through the request reader, so the exact neighbours are
     // written through the shipped preparation and writer and judged by the real
     // solver's cold rebuild and the evaluator's own predicate.
-    for (distance, fits) in [(largest, true), (largest.next_up(), false)] {
-        let copy = g.root.path().join(format!("exact-{fits}.fcad"));
+    for (distance, fits) in [(largest, true), (largest.next_up(), true), (100., false)] {
+        let copy = g.root.path().join(format!("exact-{distance}.fcad"));
         std::fs::copy(&first, &copy).expect("copy");
         let mut d = Document::open(&copy).expect("writable");
         let prepared = ferritecad_document::EditChange::constant(
@@ -541,21 +537,19 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
         assert_eq!(built.all_built(), fits);
         if !fits {
             let text = built.report().failed[0].message.clone();
-            assert!(
-                text.contains(&id) && text.contains("does not fit the solved plate"),
-                "{text}"
-            );
+            assert_eq!(built.report().failed[0].id.to_string(), id);
+            assert!(text.contains("geometry kernel failure"), "{text}");
         }
         built.release_all(&mut k);
         d.close().expect("close");
     }
     let names = entries(g.root.path());
-    let (never, v) = try_distance(&first, largest + 1e-6, "never");
+    let (never, v) = try_distance(&first, 100., "never");
     assert_eq!(v["ok"], false, "{v}");
-    assert_eq!(v["error"]["kind"], "input", "{v}");
+    assert_eq!(v["error"]["kind"], "kernel", "{v}");
     let text = v.to_string();
     assert!(
-        text.contains(&id) && text.contains("does not fit the solved plate"),
+        text.contains(&id) && text.contains("geometry kernel failure"),
         "{text}"
     );
     assert!(!never.exists());
@@ -571,21 +565,18 @@ fn native_the_distance_bound_is_the_solved_plates_exactly() {
     h.ask_constraints(&[], &dimensioned(&h, [0.0, 0.0], 30.0, 4.0));
     let never = h.root.path().join("never.fcad");
     let v = reply(h.constrain(&never).output().expect("process"), CONSTRAIN, 2);
-    assert_eq!(refused(&v), "input", "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     let text = v.to_string();
     assert!(
-        text.contains(&id.to_string()) && text.contains("does not fit the solved plate"),
+        text.contains(&id.to_string()) && text.contains("geometry kernel failure"),
         "{text}"
     );
     assert_eq!(entries(h.root.path()), names, "no destination or scratch");
     assert_eq!(std::fs::read(&h.source).expect("bytes"), before);
 }
 
-/// Real solver outcomes and refusals, each leaving the directory and the source
-/// as they were: a solved plate whose sides turned, a plate that is no longer a
-/// rectangle, a real conflict naming UUIDs, a stale version, an occupied
-/// destination; and a real redundant constraint is reported by UUID while the
-/// Chamfer stays.
+/// Nonrectangular solved profiles build when valid. Solver conflicts, stale
+/// versions and occupied destinations refuse atomically; redundancy keeps its UUID.
 #[test]
 fn native_constraint_refusals_under_a_chamfer_are_atomic() {
     if !solving() {
@@ -612,8 +603,8 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
     // 2.0 mm deep leaves less than 2.375 + 0.01 for the distance.
     refuse(
         &dimensioned(&f, [0., 0.], 30., 2.0),
-        &["input"],
-        &[&chamfer, "does not fit the solved plate"],
+        &["kernel"],
+        &[&chamfer, "geometry kernel failure"],
     );
     // The first Line's start pinned 5 mm beyond its own end, the sides held
     // H/V: a rectangle 5 mm wide whose first Line runs the other way, which is
@@ -629,9 +620,11 @@ fn native_constraint_refusals_under_a_chamfer_are_atomic() {
         })
         .collect();
     add.push(pin(&f.line(0), starts[1][0] + 5.0, starts[0][1]));
-    refuse(&add, &["input"], &[&chamfer, "side"]);
+    crate::constraints::accepted_deformation(&f, &add, "chamfer-flipped");
+    std::fs::remove_file(f.root.path().join("chamfer-flipped.fcad")).expect("tidy");
     // One length and nothing to hold the sides: the plate slants.
-    refuse(&[length(&f.line(0), 30.)], &["input", "unsupported"], &[]);
+    crate::constraints::accepted_deformation(&f, &[length(&f.line(0), 30.)], "chamfer-slanted");
+    std::fs::remove_file(f.root.path().join("chamfer-slanted.fcad")).expect("tidy");
     // A real conflict: both horizontal sides dimensioned differently.
     let mut conflict = dimensioned(&f, [0., 0.], 30., 10.);
     let opposite = (1..4)

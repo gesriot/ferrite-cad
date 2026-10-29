@@ -132,7 +132,7 @@ impl CountingMock {
     fn carry(
         &mut self,
         inputs: &[ShapeHandle],
-        deleted: Option<SubShapeHandle>,
+        deleted: &[SubShapeHandle],
         operation: NamingOperation,
     ) -> OperationResult {
         let shape = self.shape();
@@ -146,7 +146,7 @@ impl CountingMock {
         };
         for input in inputs {
             for (sub, faces) in &self.topology[input].adjacent_faces {
-                if Some(*sub) == deleted {
+                if deleted.contains(sub) {
                     history.relations.insert((
                         NamingInput::SubShape(*sub),
                         NamingRelation::Deleted,
@@ -165,11 +165,11 @@ impl CountingMock {
                 }
             }
         }
-        if let Some(edge) = deleted {
-            let face = Self::face(shape, 9999);
+        for (index, edge) in deleted.iter().enumerate() {
+            let face = Self::face(shape, 9999 + index as u64);
             topology.adjacent_faces.insert(face, BTreeSet::new());
             history.relations.insert((
-                NamingInput::SubShape(edge),
+                NamingInput::SubShape(*edge),
                 NamingRelation::Generated,
                 Some(face),
             ));
@@ -238,11 +238,11 @@ impl GeometryKernel for CountingMock {
         context.check_cancelled()?;
         Ok(self.carry(
             &[request.target(), request.tool()],
-            None,
+            &[],
             NamingOperation::Cut,
         ))
     }
-    fn fillet_edge(
+    fn fillet_edges(
         &mut self,
         request: &FilletRequest,
         context: &OperationContext,
@@ -250,11 +250,11 @@ impl GeometryKernel for CountingMock {
         context.check_cancelled()?;
         Ok(self.carry(
             &[request.target()],
-            Some(request.edge()),
+            request.edges(),
             NamingOperation::Fillet,
         ))
     }
-    fn chamfer_edge(
+    fn chamfer_edges(
         &mut self,
         request: &ChamferRequest,
         context: &OperationContext,
@@ -262,7 +262,7 @@ impl GeometryKernel for CountingMock {
         context.check_cancelled()?;
         Ok(self.carry(
             &[request.target()],
-            Some(request.edge()),
+            request.edges(),
             NamingOperation::Chamfer,
         ))
     }
@@ -273,7 +273,7 @@ impl GeometryKernel for CountingMock {
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
-        Ok(self.carry(&[source], None, NamingOperation::Extrude))
+        Ok(self.carry(&[source], &[], NamingOperation::Extrude))
     }
     fn tessellate(
         &mut self,

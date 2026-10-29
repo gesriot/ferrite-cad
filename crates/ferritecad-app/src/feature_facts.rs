@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Stored geometry the existing forms can draw; Apply decides whether it builds.
 use ferritecad_document::{
-    EditChange, EndCondition, Expression, FeatureAddition, ObjectPayload, ObjectRecord, Point2,
-    Sketch, SketchCurve, SketchGeometry, SweptEdge,
+    EditChange, EndCondition, EntityReference, Expression, FeatureAddition, ObjectPayload,
+    ObjectRecord, Point2, Sketch, SketchCurve, SketchGeometry,
 };
 use ferritecad_types::{ObjectId, Result, StableEntityId};
 
@@ -144,22 +144,15 @@ pub(crate) struct CutParameterChoice {
     pub saved: Option<SavedCut>,
     pub refusal: Option<String>,
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Corner {
-    pub feature: ObjectId,
-    pub joint: ferritecad_types::ProfileJoint,
-    pub corner_mm: [f64; 2],
-    pub adjacent_lengths_mm: [f64; 2],
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PickedEdge {
+    pub reference: EntityReference,
+    pub description: String,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EdgeTarget {
     pub body: ObjectId,
-    pub base_feature: ObjectId,
-    pub profile: ObjectId,
-    pub height_mm: f64,
     pub previous_feature: ObjectId,
-    pub constrained: bool,
-    pub corners: Vec<Corner>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EdgeChoice {
@@ -181,28 +174,28 @@ impl EdgeTarget {
         }])
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct EdgeFillet {
-    pub edge: SweptEdge,
+    pub edges: Vec<EntityReference>,
     pub radius_mm: f64,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct EdgeChamfer {
-    pub edge: SweptEdge,
+    pub edges: Vec<EntityReference>,
     pub distance_mm: f64,
 }
 impl EdgeFillet {
-    pub fn feature(self) -> Result<FeatureAddition> {
+    pub fn feature(&self) -> Result<FeatureAddition> {
         Ok(FeatureAddition::Fillet {
-            edge: self.edge,
+            edges: self.edges.clone(),
             radius_mm: Expression::constant(self.radius_mm)?,
         })
     }
 }
 impl EdgeChamfer {
-    pub fn feature(self) -> Result<FeatureAddition> {
+    pub fn feature(&self) -> Result<FeatureAddition> {
         Ok(FeatureAddition::Chamfer {
-            edge: self.edge,
+            edges: self.edges.clone(),
             distance_mm: Expression::constant(self.distance_mm)?,
         })
     }
@@ -219,6 +212,15 @@ pub(crate) fn read(
             continue;
         };
         let Some(tip) = b.tip_feature else { continue };
+        edges.push(EdgeChoice {
+            body: body.id,
+            name: body.name.clone(),
+            target: Some(EdgeTarget {
+                body: body.id,
+                previous_feature: tip,
+            }),
+            refusal: None,
+        });
         let mut chain = Vec::new();
         let mut cursor = Some(tip);
         let mut seen = std::collections::BTreeSet::new();
@@ -274,43 +276,6 @@ pub(crate) fn read(
             target: Some(target.clone()),
             refusal: None,
         });
-        let mut corners = Vec::new();
-        for (i, (id, start, end)) in lines.iter().enumerate() {
-            let (next_id, next_start, next_end) = lines[(i + 1) % lines.len()];
-            if *end != next_start {
-                continue;
-            }
-            let Ok(joint) = ferritecad_types::ProfileJoint::new(*id, next_id) else {
-                continue;
-            };
-            corners.push(Corner {
-                feature: base.id,
-                joint,
-                corner_mm: [end.x, end.y],
-                adjacent_lengths_mm: [
-                    (end.x - start.x).hypot(end.y - start.y),
-                    (next_end.x - end.x).hypot(next_end.y - end.y),
-                ],
-            });
-        }
-        if matches!(&base.payload, ObjectPayload::Extrude(e)
-            if !e.reversed && matches!(e.end_condition, EndCondition::Blind { .. }))
-        {
-            edges.push(EdgeChoice {
-                body: body.id,
-                name: body.name.clone(),
-                target: Some(EdgeTarget {
-                    body: body.id,
-                    base_feature: base.id,
-                    profile,
-                    height_mm,
-                    previous_feature: tip,
-                    constrained: !sketch.constraints.is_empty(),
-                    corners,
-                }),
-                refusal: None,
-            });
-        }
         for o in chain.into_iter().rev() {
             let ObjectPayload::Extrude(cut) = &o.payload else {
                 continue;

@@ -11,12 +11,12 @@ Each new feature costs more as existing features multiply: the editor recognises
 combinations of document shapes rather than composing general operations. A user
 cannot build an arbitrary part through the supported modelling path.
 
-The current code makes that cost visible:
+The code at the time of this decision made that cost visible:
 
 * **Whitelisted geometry.** [The evaluator](../../crates/ferritecad-eval/src/cold.rs)
-  calls `evaluable_fillet` in the [document crate's Fillet policy](../../crates/ferritecad-document/src/fillet.rs).
+  calls `evaluable_fillet` in the [document crate's Fillet policy](https://github.com/gesriot/ferrite-cad/blob/40a675e1ae705c425274db1a13e9db6c3a83faba/crates/ferritecad-document/src/fillet.rs).
   It permits only vertical corners of a rectangular plate, up to
-  `MAX_PLATE_FILLETS = 4`; [Chamfer](../../crates/ferritecad-document/src/chamfer.rs)
+  `MAX_PLATE_FILLETS = 4`; [Chamfer](https://github.com/gesriot/ferrite-cad/blob/40a675e1ae705c425274db1a13e9db6c3a83faba/crates/ferritecad-document/src/chamfer.rs)
   permits one such corner with no Cut or Fillet. The
   [Cut editor](../../crates/ferritecad-document/src/cut_edit.rs) admits up to
   `MAX_CIRCULAR_CUTS = 16`, including on supported simple Line polygons, not just

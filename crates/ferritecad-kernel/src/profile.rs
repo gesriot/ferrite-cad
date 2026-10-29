@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_types::{
-    CadError, CanonicalHasher, Point3, ProfileJoint, Result, StableEntityId, Vec3, normalize_f64,
+    CadError, CanonicalHasher, Point3, Result, StableEntityId, Vec3, normalize_f64,
 };
 
 /// A point in a sketch plane's own coordinates, in millimetres.
@@ -385,28 +385,6 @@ impl ProfileLoop {
         matches!(self.shape, Shape::Closed(_))
     }
 
-    /// The unordered pair of segment labels meeting at each corner.
-    ///
-    /// There is one answer per corner, not necessarily one per distinct pair.
-    /// A two-segment loop therefore reports the same pair twice. Consumers
-    /// naming topology must treat that pair as ambiguous rather than choosing
-    /// one of the two corners by position.
-    ///
-    /// A loop that is one closed curve reports none: it has no corners, and a
-    /// joint of a segment with itself would be a name for a place that is not
-    /// on the drawing.
-    pub fn joints(&self) -> impl ExactSizeIterator<Item = ProfileJoint> + '_ {
-        let corners: &[ProfileSegment] = match &self.shape {
-            Shape::Chain(segments) => segments,
-            Shape::Closed(_) => &[],
-        };
-        corners.iter().enumerate().map(move |(index, segment)| {
-            let before = corners[(index + corners.len() - 1) % corners.len()].label;
-            ProfileJoint::new(before, segment.label)
-                .expect("profile segment labels are distinct by construction")
-        })
-    }
-
     fn feed(&self, hasher: &mut CanonicalHasher) {
         // The two shapes key apart by name, so a chain and a closed curve
         // never collide even if they ever carried the same segments. Chains
@@ -570,62 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn a_square_has_one_joint_for_each_adjacent_pair() {
-        let profile = square().expect("closes");
-        let labels: Vec<_> = profile
-            .segments()
-            .iter()
-            .map(|segment| segment.label)
-            .collect();
-        let joints: Vec<_> = profile.joints().collect();
-
-        assert_eq!(joints.len(), labels.len());
-        for index in 0..labels.len() {
-            assert_eq!(
-                joints[index],
-                ProfileJoint::new(
-                    labels[(index + labels.len() - 1) % labels.len()],
-                    labels[index]
-                )
-                .expect("the square has distinct labels")
-            );
-        }
-        assert_eq!(
-            joints
-                .iter()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            labels.len(),
-            "each corner of this profile has a different pair"
-        );
-    }
-
-    #[test]
-    fn two_segments_have_two_corners_but_only_one_unordered_pair() {
-        let a = PlanarPoint::new(0.0, 0.0).expect("finite");
-        let b = PlanarPoint::new(10.0, 0.0).expect("finite");
-        let profile = ProfileLoop::new(vec![
-            ProfileSegment::new(
-                StableEntityId::new(),
-                SegmentGeometry::line(a, b).expect("line"),
-            ),
-            ProfileSegment::new(
-                StableEntityId::new(),
-                SegmentGeometry::line(b, a).expect("line"),
-            ),
-        ])
-        .expect("the two segments close");
-
-        let joints: Vec<_> = profile.joints().collect();
-        assert_eq!(joints.len(), 2, "the loop has two geometric corners");
-        assert_eq!(
-            joints[0], joints[1],
-            "the unordered name cannot tell them apart"
-        );
-    }
-
-    #[test]
     fn an_open_loop_is_refused() {
         let a = PlanarPoint::new(0.0, 0.0).expect("finite");
         let b = PlanarPoint::new(10.0, 0.0).expect("finite");
@@ -742,12 +664,6 @@ mod tests {
         let loop_ = circle(10.0).expect("a circle closes on itself");
         assert_eq!(loop_.segments().len(), 1);
         assert!(loop_.is_closed_curve());
-        assert_eq!(
-            loop_.joints().len(),
-            0,
-            "a circle has no corner, so it names none"
-        );
-        assert_eq!(loop_.joints().count(), 0);
         // And it bounds a region like any other loop.
         let profile = Profile::new(SketchPlane::world_xy(), loop_, Vec::new()).expect("valid");
         assert_eq!(profile.segments().count(), 1);

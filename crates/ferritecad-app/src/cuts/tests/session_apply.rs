@@ -97,11 +97,7 @@ pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> CutObservat
         .collect();
     let base_feature=reading.objects.iter().find(|o|matches!(&o.payload,ferritecad_document::ObjectPayload::Extrude(e) if e.previous.is_none())).expect("base").id;
     CutObservation {
-        profile_sketch: reading.fillet_bodies[0]
-            .target
-            .as_ref()
-            .expect("base")
-            .profile,
+        profile_sketch: crate::feature_tests::fixture_target(reading).profile,
         stored: tools[index].clone(),
         tools,
         base_feature,

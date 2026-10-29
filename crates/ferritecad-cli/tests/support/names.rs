@@ -20,7 +20,7 @@ pub fn face_count(names: &Names) -> usize {
 pub fn printed_face_descriptions(text: &str) -> Vec<&str> {
     text.lines()
         .zip(text.lines().skip(1))
-        .filter_map(|(header, description)| header.starts_with("    face ").then_some(description))
+        .filter_map(|(header, description)| header.contains(" kind=face ").then_some(description))
         .collect()
 }
 
@@ -246,7 +246,7 @@ pub fn generated_faces(document: &Document, built: &RebuildResult) -> Vec<Genera
             ObjectPayload::Fillet(f) => {
                 let edge = built
                     .topology()
-                    .swept_edges(f.previous, f.edge)
+                    .resolve_edges(object.id, f.previous, &f.edges)
                     .expect("consumed edge");
                 let input =
                     built.topology().features[&f.previous].entities[edge.first().expect("edge")];
@@ -264,7 +264,7 @@ pub fn generated_faces(document: &Document, built: &RebuildResult) -> Vec<Genera
             ObjectPayload::Chamfer(c) => {
                 let edge = built
                     .topology()
-                    .swept_edges(c.previous, c.edge)
+                    .resolve_edges(object.id, c.previous, &c.edges)
                     .expect("consumed edge");
                 let input =
                     built.topology().features[&c.previous].entities[edge.first().expect("edge")];

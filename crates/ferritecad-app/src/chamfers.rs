@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: MIT
 //! Draft fields over stored geometry; the shared transaction judges Apply.
-use crate::feature_facts::{
-    Corner as ChamferCorner, EdgeChamfer, EdgeChoice as ChamferChoice,
-    EdgeTarget as SavedChamferTarget,
-};
+use crate::feature_facts::{EdgeChamfer, EdgeChoice as ChamferChoice, PickedEdge};
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_document::{DocumentVersion, ExpressionSlotValue, SweptEdge};
+use ferritecad_document::{DocumentVersion, ExpressionSlotValue};
 use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, ObjectId, Result};
 use std::path::{Path, PathBuf};
 
-/// What the form holds before any of it is a request: the chosen corner, by
-/// its position in the catalogue's list, and the distance as text.
-///
-/// The position never leaves the form. What is sent is the corner the
-/// catalogue listed at that position, by its producer and its two Lines.
+/// Selected viewport meanings and the typed amount, before transaction validation.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Typed {
-    corner: Option<usize>,
+    edges: Vec<PickedEdge>,
     distance: String,
 }
 
@@ -80,39 +73,21 @@ struct Draft {
 }
 
 impl Draft {
-    fn corners(&self) -> &[ChamferCorner] {
-        self.choice
-            .target
-            .as_ref()
-            .map(|t| t.corners.as_slice())
-            .unwrap_or_default()
-    }
-
-    /// The typed state as one request, judged by the document's own rule.
-    fn chamfer(&self, typed: &Typed) -> Result<(ChamferCorner, EdgeChamfer)> {
-        let corner = typed
-            .corner
-            .and_then(|i| self.corners().get(i))
-            .ok_or_else(|| CadError::input("choose one vertical edge to chamfer"))?;
+    fn chamfer(&self, typed: &Typed) -> Result<EdgeChamfer> {
         let distance_mm = typed
             .distance
             .trim()
             .parse::<f64>()
             .map_err(|_| CadError::input("enter a finite chamfer distance in mm"))?;
-        let chamfer = EdgeChamfer {
-            edge: SweptEdge {
-                feature: corner.feature,
-                joint: corner.joint,
-            },
+        let feature = EdgeChamfer {
+            edges: typed.edges.iter().map(|edge| edge.reference).collect(),
             distance_mm,
         };
         let target = self.choice.target.as_ref().expect("form has target");
-        target.addition(chamfer.feature()?, "Chamfer")?;
-        Ok((*corner, chamfer))
+        target.addition(feature.feature()?, "Chamfer")?;
+        Ok(feature)
     }
-
-    /// The accepted request the form is at, when the text still says it.
-    fn confirmed(&self) -> Option<(ChamferCorner, EdgeChamfer)> {
+    fn confirmed(&self) -> Option<EdgeChamfer> {
         (self.history.can_undo() && *self.history.current() == self.typed)
             .then(|| self.chamfer(&self.typed).ok())
             .flatten()
@@ -151,6 +126,7 @@ impl DistanceDraft {
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
+    selected: Option<std::result::Result<PickedEdge, String>>,
     draft: Option<Draft>,
     pending: Option<EditRequest>,
     distance: Option<DistanceDraft>,
@@ -171,6 +147,10 @@ pub(crate) struct Editor {
 }
 
 impl Editor {
+    pub(crate) fn set_selected(&mut self, selected: std::result::Result<PickedEdge, String>) {
+        self.selected = Some(selected);
+    }
+
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some() || self.distance.is_some()
     }
@@ -512,50 +492,29 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        crate::form_window(ui, "Chamfer one vertical edge")
+        crate::form_window(ui, "Chamfer selected edges")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
                 if !self.outcome.is_empty() {
                     ui.label(format!("Document: {}", self.outcome));
                 }
-                ui.label(
-                    "Cuts one vertical edge of the plate away at one equal distance along both \
-                     of its faces. The edge is named by the base Extrude and the two Lines that \
-                     meet at its corner.",
-                );
+                ui.label("Select an edge in the viewport, then add it to this list.");
                 ui.small(format!(
-                    "Body {} · base Extrude {} · profile {} · {} mm tall · {}",
+                    "Body {} · {}",
                     target.body,
-                    target.base_feature,
-                    target.profile,
-                    target.height_mm,
                     crate::sessions::shown_as(&draft.source)
-                ));
-                ui.small(format!(
-                    "Distance in mm, measured along each face (the slanted flat is that × √2 \
-                     wide): from {} mm to the shorter adjacent side less {} mm.",
-                    ferritecad_document::MIN_DISTANCE_MM,
-                    ferritecad_document::MIN_FLAT_MM
                 ));
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel chamfer draft").clicked() {
                         cancel = true;
                     }
-                    ui.label("Edge:");
-                    // Bounded, so Save and Cancel stay in reach.
-                    egui::ScrollArea::vertical()
-                        .id_salt("chamfer-edges")
-                        .max_height(160.)
-                        .show(ui, |ui| {
-                            for (i, corner) in target.corners.iter().enumerate() {
-                                ui.radio_value(
-                                    &mut draft.typed.corner,
-                                    Some(i),
-                                    describe_candidate(corner, &target),
-                                );
-                            }
-                        });
+                    crate::edge_selection::draw(
+                        ui,
+                        &mut draft.typed.edges,
+                        self.selected.as_ref(),
+                        &mut draft.refusal,
+                    );
                     ui.horizontal(|ui| {
                         ui.label("Distance (mm):");
                         ui.add(
@@ -565,7 +524,7 @@ impl Editor {
                                 .desired_width(110.),
                         );
                     });
-                    // §30K: into the open document, no file name; the current corner
+                    // Into the open document, no file name; the current selection
                     // and valid distance, whether or not the draft was confirmed.
                     let valid = draft.chamfer(&draft.typed);
                     if ui
@@ -575,7 +534,7 @@ impl Editor {
                         )
                         .clicked()
                     {
-                        let (_, chamfer) = valid.as_ref().copied().expect("validated draft");
+                        let chamfer = valid.as_ref().expect("validated draft");
                         self.pending_add = Some(EditRequest {
                             source: draft.source.clone(),
                             expected: draft.version,
@@ -630,10 +589,11 @@ impl Editor {
                             });
                     }
                     match draft.confirmed() {
-                        Some((corner, chamfer)) => {
+                        Some(chamfer) => {
                             ui.small(format!(
-                                "Ready: chamfer the edge at ({}, {}) with d{} mm",
-                                corner.corner_mm[0], corner.corner_mm[1], chamfer.distance_mm
+                                "Ready: {} edge reference(s), {} mm",
+                                chamfer.edges.len(),
+                                chamfer.distance_mm
                             ));
                             if ui
                                 .add_enabled(!self.unsaved, egui::Button::new("Save chamfer copy…"))
@@ -678,22 +638,6 @@ impl Editor {
             self.dismiss();
         }
     }
-}
-
-/// One corner as the form lists it: where, which Lines, and the limit.
-fn describe(corner: &ChamferCorner) -> String {
-    let [a, b] = corner.joint.segments();
-    format!(
-        "Corner ({}, {}) — Lines {a} | {b}; stored sides {} × {} mm",
-        corner.corner_mm[0],
-        corner.corner_mm[1],
-        corner.adjacent_lengths_mm[0],
-        corner.adjacent_lengths_mm[1]
-    )
-}
-
-fn describe_candidate(corner: &ChamferCorner, _target: &SavedChamferTarget) -> String {
-    describe(corner)
 }
 
 /// The distance edit's completion, through exactly the same two steps.
@@ -847,7 +791,7 @@ pub(crate) mod tests {
     /// (33, 3.25), written by the shipped preparation and writer, no kernel.
     pub(crate) fn chamfered(distance_mm: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = crate::fillets::tests::plate();
-        let target = source.chamfer_bodies[0].target.clone().expect("a target");
+        let target = crate::feature_tests::fixture_target(&source);
         let corner = target
             .corners
             .iter()
@@ -857,10 +801,7 @@ pub(crate) mod tests {
         let changes = target
             .addition(
                 (EdgeChamfer {
-                    edge: SweptEdge {
-                        feature: corner.feature,
-                        joint: corner.joint,
-                    },
+                    edges: vec![corner.reference],
                     distance_mm,
                 })
                 .feature()

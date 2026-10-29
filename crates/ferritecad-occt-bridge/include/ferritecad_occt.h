@@ -497,49 +497,37 @@ FcOcctStatus fc_occt_import_step(
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * Rounds exactly one edge of a shape to one constant radius (§28A).
+ * Rounds a nonempty set of target edges in one builder at one finite positive
+ * radius. Every edge must belong to the target. The kernel decides whether
+ * the operation fits and must return exactly one valid solid with a finite
+ * volume change, in which every selected edge generated at least one face.
+ * `IsDone()` alone is not trusted. A concave round may add volume.
  *
- * `edge` indexes `target`'s own sub-shape table and must be an edge; a
- * sub-shape of any other shape, or of another kind, is refused. `radius` is in
- * millimetres, finite and positive. Whether it fits the part is the caller's
- * policy; this refuses only what the kernel itself reports.
- *
- * Success requires every one of: the builder reports done; the result is
- * exactly one solid; BRepCheck_Analyzer calls it valid; it encloses less
- * volume than the target, by a finite positive amount written to
- * `*out_removed_volume`; and at least one face generated from the edge lies
- * in the result. `IsDone()` alone is not trusted — see fc_occt_fillet_all.
- *
- * # History
- *
- * What became of every registered sub-shape of the target is asked while the
- * builder is alive and stored with the result; read it with
- * fc_occt_naming_data on the result. Relations identify their input shapes
- * and include the faces generated from the rounded edge.
- *
- * Cancellation: consulted before the build and installed as a progress
- * indicator. On success `*out_shape` receives a session-local identifier.
+ * The retained history covers every registered target sub-shape, including
+ * generated faces and vertex junctions. Read it with fc_occt_naming_data.
+ * Cancellation is checked before the build and by its progress indicator.
+ * Success writes the session-local shape and signed removed volume.
  */
-FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
-                                 uint64_t edge, double radius,
+FcOcctStatus fc_occt_fillet_edges(FcOcctSession *session, uint64_t target,
+                                 const uint64_t *edges, size_t edge_count, double radius,
                                  FcOcctCancelFn cancel, void *cancel_context,
                                  uint64_t *out_shape, double *out_removed_volume,
                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
- * Cuts exactly one edge of a shape away at one equal distance along both of
- * its faces (§29A).
+ * Chamfers a nonempty set of target edges in one builder at one equal
+ * distance along both adjacent faces.
  *
- * Arguments, success conditions and history are those of fc_occt_fillet_edge,
+ * Arguments, success conditions and history are those of fc_occt_fillet_edges,
  * with `distance` in millimetres, finite and positive, in place of a radius.
  * The builder is BRepFilletAPI_MakeChamfer's symmetric form, which takes no
  * reference face, so the two distances are equal by construction and no
  * arbitrary choice of face can change the result. The faces generated from
- * the edge are read with fc_occt_naming_data; what became of every
+ * each edge are read with fc_occt_naming_data; what became of every
  * registered sub-shape of the target is read with fc_occt_naming_data.
  */
-FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
-                                  uint64_t edge, double distance,
+FcOcctStatus fc_occt_chamfer_edges(FcOcctSession *session, uint64_t target,
+                                  const uint64_t *edges, size_t edge_count, double distance,
                                   FcOcctCancelFn cancel, void *cancel_context,
                                   uint64_t *out_shape, double *out_removed_volume,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;

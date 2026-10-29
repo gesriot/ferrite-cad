@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_document::{
-    Document, EditChange, EndCondition, FeatureAddition, ObjectPayload, Point2, Sketch,
-    SketchCurve, SketchGeometry, SweptEdge,
+    Document, EditChange, EndCondition, EntityKind, EntityReference, FeatureAddition,
+    ObjectPayload, Point2, ReferenceMeaning, Selection, Sketch, SketchCurve, SketchGeometry,
 };
-use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
+use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 
 pub fn body(document: &Document) -> Result<ObjectId> {
     document
@@ -104,15 +104,73 @@ pub fn circular_tool(
         ],
     })
 }
-pub fn swept_edge(document: &Document, body: ObjectId, corner: usize) -> Result<SweptEdge> {
+/// The fixture explicitly specifies the birth derivation of its chosen extrusion edge.
+/// No geometry search or production corner translator participates in selection.
+pub fn plate_edge(document: &Document, body: ObjectId, corner: usize) -> Result<EntityReference> {
     let (feature, _, sketch) = base_profile(document, body)?;
     let count = sketch.curves.len();
-    Ok(SweptEdge {
-        feature,
-        joint: ProfileJoint::new(
-            sketch.curves[(corner + count - 1) % count].id,
-            sketch.curves[corner % count].id,
-        )?,
+    let before = sketch.curves[(corner + count - 1) % count].id;
+    let after = sketch.curves[corner % count].id;
+    Ok(extruded_fixture_edge(feature, sketch.plane, before, after))
+}
+
+pub fn extruded_fixture_edge(
+    feature: ObjectId,
+    plane: ObjectId,
+    before: StableEntityId,
+    after: StableEntityId,
+) -> EntityReference {
+    use ferritecad_types::{CanonicalHasher, ContentHash};
+    use std::collections::BTreeSet;
+    let expression = |kind: &str,
+                      tag: &str,
+                      owner: Option<ObjectId>,
+                      inputs: Vec<(&str, ContentHash)>,
+                      extra: u8| {
+        let mut hash = CanonicalHasher::new("naming.expression");
+        hash.bytes(tag.as_bytes())
+            .bytes(kind.as_bytes())
+            .bytes(&[extra]);
+        if let Some(owner) = owner {
+            hash.bytes(&owner.to_bytes());
+        }
+        // These fixture expressions have same-kind operands, so digest order is canonical.
+        for (kind, digest) in inputs.into_iter().collect::<BTreeSet<_>>() {
+            hash.bytes(kind.as_bytes()).hash(&digest);
+        }
+        hash.finish()
+    };
+    let mut faces = Vec::new();
+    let mut witnesses = Vec::new();
+    for (curve, end) in [(before, 1), (after, 0)] {
+        let mut hash = CanonicalHasher::new("naming.curve");
+        hash.bytes(&feature.to_bytes())
+            .bytes(&curve.to_bytes())
+            .bytes(&plane.to_bytes());
+        let root = hash.finish();
+        faces.push((
+            "face",
+            expression("face", "generated", Some(feature), vec![("edge", root)], 0),
+        ));
+        let endpoint = expression("vertex", "curve-end", None, vec![("edge", root)], end);
+        witnesses.push((
+            "edge",
+            expression(
+                "edge",
+                "generated",
+                Some(feature),
+                vec![("vertex", endpoint)],
+                0,
+            ),
+        ));
+    }
+    let incident = expression("edge", "incident-faces", None, faces, 0);
+    witnesses.push(("edge", incident));
+    EntityReference::new(ReferenceMeaning {
+        producer: feature,
+        kind: EntityKind::Edge,
+        digest: expression("edge", "boundary", Some(feature), witnesses, 0),
+        selection: Selection::One,
     })
 }
 
@@ -123,7 +181,7 @@ pub fn edge_addition(
     amount: f64,
     chamfer: bool,
 ) -> Result<EditChange> {
-    let edge = swept_edge(document, body, corner)?;
+    let edge = plate_edge(document, body, corner)?;
     let amount = ferritecad_document::Expression::constant(amount)?;
     Ok(EditChange::AddFeature {
         object: ObjectId::new(),
@@ -131,12 +189,12 @@ pub fn edge_addition(
         name: Some(if chamfer { "Chamfer" } else { "Fillet" }.into()),
         feature: if chamfer {
             FeatureAddition::Chamfer {
-                edge,
+                edges: vec![edge],
                 distance_mm: amount,
             }
         } else {
             FeatureAddition::Fillet {
-                edge,
+                edges: vec![edge],
                 radius_mm: amount,
             }
         },

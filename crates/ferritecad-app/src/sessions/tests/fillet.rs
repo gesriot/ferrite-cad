@@ -462,8 +462,8 @@ fn gate(count: usize, name: &str) {
         refuse(&mut s, &stale).contains("document changed after this form was opened"),
         "stale form guard"
     );
-    let bad = request(&s, 0, 6.25);
-    assert!(refuse(&mut s, &bad).contains("too large"));
+    let bad = request(&s, 0, 100.);
+    assert!(refuse(&mut s, &bad).contains("kernel"));
     let r = request(&s, 0, chosen.radius_mm + 0.125);
     let reading = crate::sketch_facts::read(&current).expect("reading");
     let (form, _) = typed_radius(
@@ -695,11 +695,11 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
     assert!(matches!(apply(&mut s, &other), Edited::Show(_)));
     move_native(&mut s, true);
     assert!(s.can_redo());
-    for (index, value, need) in [(0, "7.25", "too large"), (2, "7.125", "Line")] {
+    for index in [0, 2] {
         let current = s.export_path().expect("current");
         let reading = crate::sketch_facts::read(&current).expect("reading");
         let saved = history(&current)[index].clone();
-        let (mut form, r) = typed_radius(&current, &reading, &s, saved.feature, value);
+        let (mut form, r) = typed_radius(&current, &reading, &s, saved.feature, "100");
         let draft = draft_state(&form);
         let before = (
             s.export_path(),
@@ -708,18 +708,12 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
             s.session_saved_version(),
         );
         let (g, rx) = start(&mut s, &r);
-        let error = rx.recv().expect("answer").expect_err("solved refusal");
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
-        let text = error.to_string();
-        assert!(text.contains(need), "{text}");
-        if index == 2 {
-            assert!(text.contains(&chosen.feature.to_string()), "{text}");
-            let [a, b] = saved.edge.joint.segments();
-            assert!(
-                text.contains(&a.to_string()) || text.contains(&b.to_string()),
-                "{text}"
-            );
-        }
+        let error = rx.recv().expect("answer").expect_err("kernel refusal");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+        assert!(
+            error.to_string().contains(&saved.feature.to_string()),
+            "{error}"
+        );
         assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
         visible_outcome(&mut form, &s.status);
         assert_eq!(draft_state(&form), draft);
@@ -791,19 +785,11 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
         let current = s.export_path().expect("square");
         let reading = crate::sketch_facts::read(&current).expect("reading");
         let fourth = history(&current)[3].clone();
-        let beside = history(&current)[neighbour].clone();
-        let shared = *fourth
-            .edge
-            .joint
-            .segments()
-            .iter()
-            .find(|id| beside.edge.joint.segments().contains(id))
-            .expect("shared Line");
-        let (mut form, r) = typed_radius(&current, &reading, &s, fourth.feature, "7.125");
+        let (mut form, r) = typed_radius(&current, &reading, &s, fourth.feature, "100");
         let draft = draft_state(&form);
         let reason = refuse(&mut s, &r);
         assert!(
-            reason.contains(&beside.feature.to_string()) && reason.contains(&shared.to_string()),
+            reason.contains(&fourth.feature.to_string()) && reason.contains("kernel"),
             "{reason}"
         );
         visible_outcome(&mut form, &reason);
@@ -895,6 +881,25 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
         assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
         crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
         let request = form.take_apply_request().expect("Apply");
+        if !whole_side {
+            assert!(matches!(apply(&mut session, &request), Edited::Show(_)));
+            let path = session
+                .export_path()
+                .expect("nonrectangular profile accepted");
+            let d = Document::open_read_only(&path).expect("document");
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            let built =
+                ferritecad_eval::rebuild_cold(&d, &mut k, &Default::default()).expect("rebuild");
+            assert!(built.all_built());
+            assert!(
+                k.is_valid(built.shape(fillet.feature).expect("Fillet"))
+                    .expect("BRepCheck")
+            );
+            built.release_all(&mut k);
+            move_native(&mut session, true);
+            assert_eq!(sql(&session.export_path().expect("undo")), accepted_cells);
+            continue;
+        }
         let before = state(&session);
         assert_eq!(apply(&mut session, &request), Edited::Failed);
         assert!(

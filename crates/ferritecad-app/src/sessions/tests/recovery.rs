@@ -481,7 +481,7 @@ fn recovery_child_entry() {
             );
             let current = s.export_path().expect("current");
             let reading = crate::sketch_facts::read(&current).expect("reading");
-            let target = reading.fillet_bodies[0].target.clone().expect("target");
+            let target = crate::feature_tests::fixture_target(&reading);
             let edited = super::add_fillet::add(
                 &mut s,
                 &ferritecad_jobs::EditRequest {
@@ -492,10 +492,7 @@ fn recovery_child_entry() {
                         body: target.body,
                         name: Some("Fillet".into()),
                         feature: (crate::feature_facts::EdgeFillet {
-                            edge: ferritecad_document::SweptEdge {
-                                feature: target.base_feature,
-                                joint: target.corners[0].joint,
-                            },
+                            edges: vec![target.corners[0].reference],
                             radius_mm: 2.5,
                         })
                         .feature()

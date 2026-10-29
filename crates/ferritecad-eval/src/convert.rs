@@ -451,7 +451,6 @@ mod tests {
         assert!(profile.inner().is_empty());
         let outer = profile.outer();
         assert!(outer.is_closed_curve(), "not approximated by a chain");
-        assert_eq!(outer.joints().len(), 0);
         let segment = outer.segments().first().expect("one curve");
         assert_eq!(segment.label, id, "the circle's own identity");
         assert!(
@@ -493,7 +492,6 @@ mod tests {
 
             let boundary = profile.outer();
             assert!(boundary.is_closed_curve(), "not approximated by a chain");
-            assert_eq!(boundary.joints().len(), 0);
             let drawn = boundary.segments().first().expect("one curve");
             assert_eq!(drawn.label, outer.id, "the larger circle bounds the region");
             assert!(matches!(
@@ -505,7 +503,6 @@ mod tests {
             assert_eq!(profile.inner().len(), 1);
             let hole = &profile.inner()[0];
             assert!(hole.is_closed_curve());
-            assert_eq!(hole.joints().len(), 0);
             let drawn = hole.segments().first().expect("one curve");
             assert_eq!(drawn.label, inner.id, "the smaller circle is the hole");
             assert!(matches!(

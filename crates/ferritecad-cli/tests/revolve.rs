@@ -711,7 +711,7 @@ fn native_revolve_geometry_names_cache_reopen_and_exports() {
     assert!(
         listed
             .lines()
-            .filter(|line| line.starts_with("    face "))
+            .filter(|line| line.contains(" kind=face "))
             .count()
             == 6,
         "{listed}"

@@ -19,7 +19,7 @@ mod naming;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
-use ferritecad_document::{Document, ObjectPayload, SweptEdge};
+use ferritecad_document::{Document, ObjectPayload};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_fixtures::{drop_segment, open_plate};
 use ferritecad_kernel::{
@@ -29,7 +29,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
-use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Tolerance};
+use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId, Tolerance};
 
 macro_rules! kernel_or_skip {
     () => {
@@ -132,11 +132,38 @@ fn build(request: &ExtrudeRequest) -> Built {
     }
 }
 
-fn sweep_reference(feature: ObjectId, joint: ProfileJoint) -> SweptEdge {
-    SweptEdge { feature, joint }
+fn side_intersection(
+    feature: ObjectId,
+    joint: [StableEntityId; 2],
+) -> (ObjectId, [StableEntityId; 2]) {
+    (feature, joint)
 }
-fn resolve_sweep(map: &ModelNaming, edge: &SweptEdge) -> Result<Vec<SubShapeHandle>> {
-    Ok(vec![map.swept_edge(edge.feature, *edge)?])
+fn resolve_intersection(
+    map: &ModelNaming,
+    pair: &(ObjectId, [StableEntityId; 2]),
+) -> Result<Vec<SubShapeHandle>> {
+    resolve_intersection_in_plane(map, pair, naming::plane_id())
+}
+
+fn resolve_intersection_in_plane(
+    map: &ModelNaming,
+    (feature, joint): &(ObjectId, [StableEntityId; 2]),
+    plane: ObjectId,
+) -> Result<Vec<SubShapeHandle>> {
+    let name = naming::name_at_incidence(
+        map,
+        *feature,
+        SubShapeKind::Edge,
+        joint.map(|curve| naming::side_name(*feature, plane, curve)),
+    )?;
+    let reference =
+        ferritecad_document::EntityReference::new(ferritecad_document::ReferenceMeaning {
+            producer: *feature,
+            kind: ferritecad_document::EntityKind::Edge,
+            digest: name.digest,
+            selection: ferritecad_document::Selection::One,
+        });
+    map.resolve_edges(*feature, *feature, &[reference])
 }
 
 fn cap_edge_name(
@@ -163,17 +190,16 @@ fn side_name(feature: ObjectId, segment: StableEntityId) -> ferritecad_topology:
 }
 
 /// The corner where the segment before `index` meets the segment at `index`.
-fn joint_at(labels: &[StableEntityId], index: usize) -> ProfileJoint {
-    ProfileJoint::new(
+fn joint_at(labels: &[StableEntityId], index: usize) -> [StableEntityId; 2] {
+    ferritecad_fixtures::ordered_labels(
         labels[(index + labels.len() - 1) % labels.len()],
         labels[index],
     )
-    .expect("two different segments")
 }
 
 /// The one edge a joint resolves to.
-fn sweep_edge_of(built: &Built, joint: ProfileJoint) -> Result<SubShapeHandle> {
-    let resolved = resolve_sweep(&built.map, &sweep_reference(built.feature, joint))?;
+fn sweep_edge_of(built: &Built, joint: [StableEntityId; 2]) -> Result<SubShapeHandle> {
+    let resolved = resolve_intersection(&built.map, &side_intersection(built.feature, joint))?;
     assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
     Ok(resolved[0])
 }
@@ -189,15 +215,16 @@ fn a_profile_joint_derives_the_edge_running_along_the_sweep() {
     let segments = segments_of(&document).expect("reads the sketch");
     let feature = extrusion_of(&document);
 
-    let joint = ProfileJoint::new(segments[0], segments[1]).expect("two different segments");
-    let reference = sweep_reference(feature, joint);
+    let joint = ferritecad_fixtures::ordered_labels(segments[0], segments[1]);
+    let reference = side_intersection(feature, joint);
 
     let mut kernel = OcctKernel::new().expect("opens");
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("Open CASCADE rebuilds the stored plate");
 
-    let resolved = resolve_sweep(built.topology(), &reference)
-        .unwrap_or_else(|error| panic!("{joint} names no edge: {error}"));
+    let resolved =
+        resolve_intersection_in_plane(built.topology(), &reference, profile_plane(&document))
+            .unwrap_or_else(|error| panic!("{joint:?} names no edge: {error}"));
     assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
     assert_eq!(resolved[0].kind(), SubShapeKind::Edge);
 
@@ -221,7 +248,7 @@ fn a_profile_joint_derives_the_edge_running_along_the_sweep() {
             "a stored joint mentions {forbidden}: {written}"
         );
     }
-    for segment in joint.segments() {
+    for segment in joint {
         assert!(written.contains(&segment.to_string()));
     }
 
@@ -239,7 +266,7 @@ fn the_four_joints_and_the_eight_cap_edges_cover_the_plate_exactly_once() {
     for index in 0..labels.len() {
         let joint = joint_at(&labels, index);
         let edge = sweep_edge_of(&built, joint)
-            .unwrap_or_else(|error| panic!("{joint} names no edge: {error}"));
+            .unwrap_or_else(|error| panic!("{joint:?} names no edge: {error}"));
         assert_eq!(edge.kind(), SubShapeKind::Edge);
         assert_eq!(edge.shape(), built.shape);
         assert!(swept.insert(edge), "{edge} was named by two joints");
@@ -288,7 +315,7 @@ fn each_joint_names_the_edge_where_its_own_two_swept_faces_meet() {
         let edge = sweep_edge_of(&built, joint).expect("named");
 
         let mut expected = BTreeSet::new();
-        for segment in joint.segments() {
+        for segment in joint {
             let faces = naming::resolve(
                 &built.map,
                 built.feature,
@@ -302,7 +329,7 @@ fn each_joint_names_the_edge_where_its_own_two_swept_faces_meet() {
         let found = bounding.get(&edge).expect("the edge is drawn");
         assert_eq!(
             found, &expected,
-            "{joint} names an edge bounded by the wrong faces"
+            "{joint:?} names an edge bounded by the wrong faces"
         );
     }
 
@@ -340,7 +367,7 @@ fn every_way_of_sweeping_one_profile_names_the_same_joints() {
         for index in 0..labels.len() {
             let joint = joint_at(&labels, index);
             let edge = sweep_edge_of(&built, joint)
-                .unwrap_or_else(|error| panic!("{what}: {joint} names no edge: {error}"));
+                .unwrap_or_else(|error| panic!("{what}: {joint:?} names no edge: {error}"));
             assert_eq!(edge.shape(), built.shape);
             named.insert(joint);
         }
@@ -364,10 +391,10 @@ fn a_joint_between_two_lines_is_not_confused_with_one_against_the_arc() {
 
     // labels[0] is the arc. The joint of the two lines is the only one that
     // touches neither end of it.
-    let between_lines = ProfileJoint::new(labels[1], labels[2]).expect("two segments");
+    let between_lines = ferritecad_fixtures::ordered_labels(labels[1], labels[2]);
     let against_arc = [
-        ProfileJoint::new(labels[0], labels[1]).expect("two segments"),
-        ProfileJoint::new(labels[2], labels[0]).expect("two segments"),
+        ferritecad_fixtures::ordered_labels(labels[0], labels[1]),
+        ferritecad_fixtures::ordered_labels(labels[2], labels[0]),
     ];
 
     let straight = sweep_edge_of(&built, between_lines).expect("named");
@@ -406,48 +433,6 @@ fn a_joint_between_two_lines_is_not_confused_with_one_against_the_arc() {
         );
     }
     assert!(drawn.values().all(|count| *count >= 1));
-
-    built.kernel.release(built.shape);
-}
-
-#[test]
-fn a_pair_that_meets_nowhere_and_a_joint_of_another_feature_each_name_nothing() {
-    kernel_or_skip!();
-
-    let (request, labels) = plate(10.0).expect("a valid plate");
-    let mut built = build(&request);
-
-    // Opposite sides of a rectangle share no corner.
-    let apart = ProfileJoint::new(labels[0], labels[2]).expect("two segments");
-    let apart_refusal = sweep_edge_of(&built, apart).expect_err("no corner is theirs");
-    assert_eq!(apart_refusal.kind(), ErrorKind::Topology);
-    assert!(
-        apart_refusal.to_string().contains("has 0 descendants"),
-        "{apart_refusal}"
-    );
-
-    // A joint of segments this feature never swept.
-    let foreign = ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("two");
-    let foreign_refusal = sweep_edge_of(&built, foreign).expect_err("not this profile's corner");
-    assert_eq!(foreign_refusal.kind(), ErrorKind::Topology);
-    assert!(
-        foreign_refusal.to_string().contains("has 0 descendants"),
-        "{foreign_refusal}"
-    );
-
-    // A reference to a feature that produced nothing at all.
-    let elsewhere = sweep_reference(ObjectId::new(), joint_at(&labels, 1));
-    let absent = resolve_sweep(&built.map, &elsewhere).expect_err("another feature");
-    assert_eq!(absent.kind(), ErrorKind::Input);
-    assert!(absent.to_string().contains("naming root has no plane"));
-
-    // Three refusals, three different reasons, each naming what it refused.
-    let reasons = BTreeSet::from([
-        apart_refusal.to_string(),
-        foreign_refusal.to_string(),
-        absent.to_string(),
-    ]);
-    assert_eq!(reasons.len(), 3, "two refusals read the same");
 
     built.kernel.release(built.shape);
 }
@@ -503,11 +488,11 @@ fn a_profile_whose_two_segments_meet_at_two_corners_names_neither() {
     );
     let mut built = build(&request);
 
-    let ambiguous = ProfileJoint::new(arc_label, chord_label).expect("two segments");
+    let ambiguous = ferritecad_fixtures::ordered_labels(arc_label, chord_label);
     let refusal = sweep_edge_of(&built, ambiguous).expect_err("this pair names two corners");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
     assert!(
-        refusal.to_string().contains("has 2 descendants"),
+        refusal.to_string().contains("selects 2 entities"),
         "{refusal}"
     );
 
@@ -539,13 +524,13 @@ fn two_plates_of_the_same_shape_do_not_share_the_names_of_their_corners() {
     // the other even though a plate corner is there to be found.
     let joint = joint_at(&first_labels, 1);
     assert!(sweep_edge_of(&one, joint).is_ok());
-    let refusal = resolve_sweep(&other.map, &sweep_reference(other.feature, joint))
+    let refusal = resolve_intersection(&other.map, &side_intersection(other.feature, joint))
         .expect_err("another plate's corner");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
 
     // Nor does naming the right pair against the wrong producer work.
-    let borrowed = sweep_reference(one.feature, joint_at(&second_labels, 1));
-    assert!(resolve_sweep(&one.map, &borrowed).is_err());
+    let borrowed = side_intersection(one.feature, joint_at(&second_labels, 1));
+    assert!(resolve_intersection(&one.map, &borrowed).is_err());
 
     one.kernel.release(one.shape);
     other.kernel.release(other.shape);
@@ -565,20 +550,22 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
 
     // drop_segment removes the last curve and extends its predecessor, so the
     // corner between the first two segments is untouched by the edit.
-    let kept = ProfileJoint::new(segments[0], segments[1]).expect("two segments");
-    let reference = sweep_reference(feature, kept);
+    let kept = ferritecad_fixtures::ordered_labels(segments[0], segments[1]);
+    let reference = side_intersection(feature, kept);
 
     let mut kernel = OcctKernel::new().expect("opens");
     let before = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("rebuilds the plate");
-    let named_before = resolve_sweep(before.topology(), &reference).expect("the corner is named");
+    let named_before =
+        resolve_intersection_in_plane(before.topology(), &reference, profile_plane(&document))
+            .expect("the corner is named");
     assert_eq!(named_before.len(), 1);
     let kept_name = before.topology().feature(feature).expect("named").entities[&named_before[0]];
     before.release_all(&mut kernel);
 
     let gone = drop_segment(&mut document).expect("removes a segment");
     assert!(
-        !kept.touches(gone),
+        !kept.contains(&gone),
         "this edit must not touch the corner under test"
     );
 
@@ -611,7 +598,7 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
         })
         .expect("sketch plane");
     let mut expected = BTreeSet::new();
-    for segment in kept.segments() {
+    for segment in kept {
         expected.extend(
             naming::resolve(
                 after.topology(),
@@ -631,9 +618,12 @@ fn editing_a_part_of_the_profile_that_is_not_the_corner_leaves_its_name_alone() 
 
     // The corner that the removed segment was half of is gone, and says so
     // rather than borrowing a neighbour.
-    let lost = sweep_reference(feature, ProfileJoint::new(gone, segments[0]).expect("two"));
+    let lost = side_intersection(
+        feature,
+        ferritecad_fixtures::ordered_labels(gone, segments[0]),
+    );
     assert!(
-        resolve_sweep(after.topology(), &lost).is_err(),
+        resolve_intersection_in_plane(after.topology(), &lost, plane).is_err(),
         "a lost corner must not resolve"
     );
 
@@ -672,6 +662,21 @@ fn segments_of(document: &Document) -> Result<Vec<StableEntityId>> {
         panic!("the sketch is not a sketch");
     };
     Ok(sketch.curves.iter().map(|curve| curve.id).collect())
+}
+
+fn profile_plane(document: &Document) -> ObjectId {
+    document
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find_map(|object| {
+            if let ObjectPayload::Sketch(sketch) = object.payload {
+                Some(sketch.plane)
+            } else {
+                None
+            }
+        })
+        .expect("fixture sketch")
 }
 
 /// The plate's extrusion.
@@ -769,7 +774,7 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
 
     let (request, labels) = plate(10.0).expect("a valid plate");
     let feature = ObjectId::new();
-    let joints: Vec<ProfileJoint> = (0..labels.len())
+    let joints: Vec<[StableEntityId; 2]> = (0..labels.len())
         .map(|index| joint_at(&labels, index))
         .collect();
 
@@ -783,7 +788,8 @@ fn the_names_of_corners_survive_a_file_and_a_new_session_but_their_handles_do_no
 
         let mut named = Vec::new();
         for joint in &joints {
-            let found = resolve_sweep(&map, &sweep_reference(feature, *joint)).expect("named");
+            let found =
+                resolve_intersection(&map, &side_intersection(feature, *joint)).expect("named");
             assert_eq!(found.len(), 1);
             named.push(found[0]);
         }

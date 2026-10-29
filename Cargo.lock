@@ -837,6 +837,7 @@ dependencies = [
  "ferritecad-occt",
  "ferritecad-scene",
  "ferritecad-sketch-solver",
+ "ferritecad-topology",
  "ferritecad-types",
  "same-file",
  "tempfile",

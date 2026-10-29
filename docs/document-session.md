@@ -141,10 +141,10 @@ same session. Add Cut remains copy-only; existing-Cut copy still requires a clea
 document. See [Cut session contract](generic-sweeps.md).
 
 §30G applies an existing Fillet radius through this session, including while dirty.
-Add Fillet and radius copy remain clean-only. See [Fillet session contract](fillet-radius-session-apply.md).
+Add Fillet and radius copy remain clean-only. See [Fillet session contract](fillets-and-chamfers.md).
 
 §30H applies an existing Chamfer distance through this session, including while dirty.
-Add Chamfer and distance copy remain clean-only. See [Chamfer session contract](chamfer-distance-session-apply.md).
+Add Chamfer and distance copy remain clean-only. See [Chamfer session contract](fillets-and-chamfers.md).
 
 §30I adds a new circular Cut through this same session, including while dirty
 (**Add cut**). Save cut copy, Add Fillet, Add Chamfer and the other copies remain
@@ -171,8 +171,8 @@ nothing; closing a tab and Quit ask about each unsaved tab. One picture at a tim
 
 §30J adds a new Fillet through this same session, including while dirty (**Add
 fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only. See
-[Add Fillet session contract](add-fillet-session.md).
+[Add Fillet session contract](fillets-and-chamfers.md).
 
 §30K adds the plate's one Chamfer through this same session, including while dirty
 (**Add chamfer**), on a free or closure-only plate only. Save chamfer copy and the
-other copies remain clean-only. See [Add Chamfer session contract](add-chamfer-session.md).
+other copies remain clean-only. See [Add Chamfer session contract](fillets-and-chamfers.md).

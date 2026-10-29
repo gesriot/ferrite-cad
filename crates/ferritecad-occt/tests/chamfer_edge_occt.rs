@@ -19,7 +19,7 @@ use ferritecad_kernel::{
     ProfileSegment, SegmentGeometry, SketchPlane, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_types::{ProfileJoint, Result, StableEntityId};
+use ferritecad_types::{Result, StableEntityId};
 
 macro_rules! kernel_or_skip {
     () => {{
@@ -61,8 +61,12 @@ fn plate(corners: &[[f64; 2]; 4]) -> Result<(ExtrudeRequest, Vec<StableEntityId>
     ))
 }
 
-fn corner_of(corners: &[[f64; 2]; 4], labels: &[StableEntityId], joint: ProfileJoint) -> [f64; 2] {
-    let [a, b] = joint.segments();
+fn corner_of(
+    corners: &[[f64; 2]; 4],
+    labels: &[StableEntityId],
+    joint: [StableEntityId; 2],
+) -> [f64; 2] {
+    let [a, b] = joint;
     let ia = labels.iter().position(|l| *l == a).expect("a");
     let ib = labels.iter().position(|l| *l == b).expect("b");
     let ends = |i: usize| [corners[i], corners[(i + 1) % 4]];
@@ -93,11 +97,11 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
 
         for (joint, edge) in naming::sweep_edges(&mut kernel, built.shape).clone() {
             for d in [0.75, 3.0625] {
-                let chamfer = ChamferRequest::new(built.shape, edge, d).expect("request");
+                let chamfer = ChamferRequest::new(built.shape, &[edge], d).expect("request");
                 let mut track = faces.clone();
                 track.push(edge);
                 let result = kernel
-                    .chamfer_edge(&chamfer, &context)
+                    .chamfer_edges(&chamfer, &context)
                     .expect("a real chamfer");
                 let trace = kernel
                     .naming_history(result.shape)
@@ -169,7 +173,7 @@ fn one_selected_vertical_edge_is_chamfered_to_the_corner_it_names_and_every_trac
                 // The cut edge is gone. The two sides meeting there and both
                 // caps are trimmed; the two sides away from it are what they were.
                 assert_eq!(naming::survival(&trace, edge), NamingRelation::Deleted);
-                let [a, b] = joint.segments();
+                let [a, b] = joint;
                 for (label, side) in labels.iter().zip(&faces) {
                     let touched = *label == a || *label == b;
                     let outputs: Vec<_> = naming::surviving(&trace, *side).collect();
@@ -224,30 +228,30 @@ fn a_chamfer_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing() {
         .expect("an edge");
     let live = kernel.live_shape_count();
 
-    assert!(ChamferRequest::new(built.shape, faces[0], 1.0).is_err());
-    assert!(ChamferRequest::new(built.shape, foreign_edge, 1.0).is_err());
+    assert!(ChamferRequest::new(built.shape, &[faces[0]], 1.0).is_err());
+    assert!(ChamferRequest::new(built.shape, &[foreign_edge], 1.0).is_err());
     for distance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(ChamferRequest::new(built.shape, edge, distance).is_err());
+        assert!(ChamferRequest::new(built.shape, &[edge], distance).is_err());
     }
     let missing = SubShapeHandle::new(built.shape, SubShapeKind::Edge, u64::MAX);
-    let r = ChamferRequest::new(built.shape, missing, 1.0).expect("well formed");
-    assert!(kernel.chamfer_edge(&r, &context).is_err());
-    let good = ChamferRequest::new(built.shape, edge, 1.0).expect("request");
+    let r = ChamferRequest::new(built.shape, &[missing], 1.0).expect("well formed");
+    assert!(kernel.chamfer_edges(&r, &context).is_err());
+    let good = ChamferRequest::new(built.shape, &[edge], 1.0).expect("request");
     // The kernel's own limit — the whole shorter side — never clamped to
     // something it can build.
-    let wide = ChamferRequest::new(built.shape, edge, D).expect("request");
-    assert!(kernel.chamfer_edge(&wide, &context).is_err());
+    let wide = ChamferRequest::new(built.shape, &[edge], D).expect("request");
+    assert!(kernel.chamfer_edges(&wide, &context).is_err());
     // A planar answer is asked of a plane only.
     let cancel = CancelToken::new();
     cancel.cancel();
     let cancelled = OperationContext::default().with_cancel(cancel);
-    assert!(kernel.chamfer_edge(&good, &cancelled).is_err());
+    assert!(kernel.chamfer_edges(&good, &cancelled).is_err());
     assert!(kernel.face_plane(faces[0]).is_ok());
     assert_eq!(kernel.live_shape_count(), live, "a refusal kept a shape");
 
     kernel.release(other.shape);
-    let gone = ChamferRequest::new(other.shape, foreign_edge, 1.0).expect("request");
-    assert!(kernel.chamfer_edge(&gone, &context).is_err());
+    let gone = ChamferRequest::new(other.shape, &[foreign_edge], 1.0).expect("request");
+    assert!(kernel.chamfer_edges(&gone, &context).is_err());
     kernel.release(built.shape);
     assert_eq!(kernel.live_shape_count(), 0);
 }

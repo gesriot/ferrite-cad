@@ -857,7 +857,7 @@ void Step8_Tessellate(StepResult& r, const SharedGeom& geom)
 //   * that vertex belongs to the finished solid by IsSame, lies on the cap it
 //     is claimed for, and ends the edge swept from that same corner.
 //
-// It says nothing about ProfileJoint uniqueness. A profile whose unordered
+// It says nothing about the uniqueness of a fixture curve pair. A profile whose unordered
 // joint occurs at two corners - a two-segment loop - still yields two distinct
 // positional vertices per side here, which is precisely why the ambiguity has
 // to be resolved above this layer and not below it.

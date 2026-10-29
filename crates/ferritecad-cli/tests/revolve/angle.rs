@@ -271,7 +271,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
             assert!(
                 listed
                     .lines()
-                    .filter(|line| line.starts_with("    face "))
+                    .filter(|line| line.contains(" kind=face "))
                     .count()
                     == named,
                 "{listed}"

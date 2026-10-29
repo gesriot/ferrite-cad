@@ -8,7 +8,7 @@ use ferritecad_jobs::{DocumentSession, EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
 
 #[test]
-fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
+fn side_vertex_and_radius_edits_use_kernel_validity_in_one_transaction() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
@@ -29,10 +29,12 @@ fn a_side_and_radius_are_one_transaction_while_one_vertex_is_refused() {
         unreachable!("fixture sketch")
     };
     for (both_vertices, radius, refusal) in [
-        (false, 8.0, Some("not an axis-aligned rectangle")),
-        (false, 2.0, Some("not an axis-aligned rectangle")),
-        (true, 8.0, Some("too large")),
+        (false, 8.0, None),
+        (false, 2.0, None),
+        (true, 8.0, None),
         (true, 2.0, None),
+        (false, 100.0, Some("kernel")),
+        (true, 100.0, Some("kernel")),
     ] {
         let moves: Vec<_> = sketch
             .curves

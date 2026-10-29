@@ -152,26 +152,36 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
             }
             ObjectPayload::Fillet(fillet) => {
                 if let Some(names) = built.topology().feature(*id) {
-                    let [a, b] = fillet.edge.joint.segments();
+                    let edge_count = built
+                        .topology()
+                        .resolve_edges(*id, fillet.previous, &fillet.edges)?
+                        .len();
                     write!(
                         line,
-                        "solid, {} named faces; r{} mm at {} joint {a}|{b}",
+                        "solid, {} named faces; radius {} mm on {} edge(s) \
+                         from {} edge reference(s)",
                         names.named_face_count(),
                         fillet.radius_mm.value(),
-                        named(fillet.edge.feature)
+                        edge_count,
+                        fillet.edges.len()
                     )
                     .expect("writing to a String cannot fail");
                 }
             }
             ObjectPayload::Chamfer(chamfer) => {
                 if let Some(names) = built.topology().feature(*id) {
-                    let [a, b] = chamfer.edge.joint.segments();
+                    let edge_count = built
+                        .topology()
+                        .resolve_edges(*id, chamfer.previous, &chamfer.edges)?
+                        .len();
                     write!(
                         line,
-                        "solid, {} named faces; d{} mm at {} joint {a}|{b}",
+                        "solid, {} named faces; distance {} mm on {} edge(s) \
+                         from {} edge reference(s)",
                         names.named_face_count(),
                         chamfer.distance_mm.value(),
-                        named(chamfer.edge.feature)
+                        edge_count,
+                        chamfer.edges.len()
                     )
                     .expect("writing to a String cannot fail");
                 }

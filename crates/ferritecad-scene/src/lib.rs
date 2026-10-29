@@ -291,6 +291,10 @@ impl EdgeNames {
 pub struct EntityMeaning {
     /// The feature whose result holds the entity.
     pub feature: ObjectId,
+    /// The feature that minted the name, which a stored reference names as its
+    /// producer (ADR 0007 §4). It differs from `feature` when an entity is
+    /// kept through later features.
+    pub producer: ObjectId,
     pub kind: ferritecad_kernel::SubShapeKind,
     /// The name's digest.
     pub digest: ContentHash,
@@ -930,9 +934,13 @@ fn generative_meanings(
                 continue;
             }
             let entity = *entities.first().expect("one binding");
+            let producer = model.producer(&name.digest).ok_or_else(|| {
+                CadError::topology(format!("name {} has no published producer", name.digest))
+            })?;
             named.entry(entity).or_default().push(BoundMeaning {
                 meaning: EntityMeaning {
                     feature: *feature,
+                    producer,
                     kind: name.kind,
                     digest: name.digest,
                     description: model.describe(*feature, *name)?,
@@ -1311,6 +1319,7 @@ mod tests {
         let feature = ObjectId::new();
         EntityMeaning {
             feature,
+            producer: feature,
             kind,
             digest: ContentHash::of_bytes(format!("{feature}:{kind}:{end}").as_bytes()),
             description: format!("feature {feature}, boundary on cap end={end}"),

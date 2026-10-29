@@ -103,14 +103,19 @@ fn a_whole_document_reports_every_primary_name_in_portable_terms() {
     for (kind, count) in [("face", 6), ("edge", 12), ("vertex", 8)] {
         let lines: Vec<_> = report
             .lines()
-            .filter(|line| line.starts_with(&format!("    {kind} ")))
+            .filter(|line| line.contains(&format!(" kind={kind} ")))
             .collect();
         assert_eq!(lines.len(), count);
         for line in lines {
             let fields: Vec<_> = line.split_whitespace().collect();
-            assert_eq!(fields[1].len(), 64);
-            assert!(fields[1].bytes().all(|byte| byte.is_ascii_hexdigit()));
-            assert_eq!(fields[2], "entities=1");
+            assert_eq!(fields.len(), 4);
+            let producer = fields[0].strip_prefix("producer=").expect("producer");
+            assert!(producer.parse::<ferritecad_types::ObjectId>().is_ok());
+            assert_eq!(fields[1], format!("kind={kind}"));
+            let digest = fields[2].strip_prefix("digest=").expect("digest");
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert_eq!(fields[3], "entities=1");
         }
     }
     for root in [
@@ -163,7 +168,7 @@ fn removing_an_unconsumed_segment_reports_only_current_names() {
     assert_eq!(
         report
             .lines()
-            .filter(|line| line.starts_with("    face "))
+            .filter(|line| line.contains(" kind=face "))
             .count(),
         5
     );

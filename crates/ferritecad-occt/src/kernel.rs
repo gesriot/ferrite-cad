@@ -669,23 +669,22 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn fillet_edge(
+    fn fillet_edges(
         &mut self,
         request: &FilletRequest,
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
-        let edge = request.edge();
-        self.check_edge_operation_names(request.target(), target, edge, "fillet", "rounds")?;
+        for edge in request.edges() {
+            self.check_edge_operation_names(request.target(), target, *edge, "fillet", "rounds")?;
+        }
+        let edges: Vec<_> = request.edges().iter().map(|edge| edge.index()).collect();
 
         context.progress().report(0.0);
-        let (raw, removed_volume) = self.session.fillet_edge(
-            target,
-            edge.index(),
-            request.radius_mm(),
-            context.cancel(),
-        )?;
+        let (raw, removed_volume) =
+            self.session
+                .fillet_edges(target, &edges, request.radius_mm(), context.cancel())?;
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
@@ -708,23 +707,22 @@ impl GeometryKernel for OcctKernel {
         }
     }
 
-    fn chamfer_edge(
+    fn chamfer_edges(
         &mut self,
         request: &ChamferRequest,
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
         let target = self.raw(request.target())?;
-        let edge = request.edge();
-        self.check_edge_operation_names(request.target(), target, edge, "chamfer", "cuts")?;
+        for edge in request.edges() {
+            self.check_edge_operation_names(request.target(), target, *edge, "chamfer", "cuts")?;
+        }
+        let edges: Vec<_> = request.edges().iter().map(|edge| edge.index()).collect();
 
         context.progress().report(0.0);
-        let (raw, removed_volume) = self.session.chamfer_edge(
-            target,
-            edge.index(),
-            request.distance_mm(),
-            context.cancel(),
-        )?;
+        let (raw, removed_volume) =
+            self.session
+                .chamfer_edges(target, &edges, request.distance_mm(), context.cancel())?;
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);

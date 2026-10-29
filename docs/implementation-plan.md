@@ -3827,8 +3827,8 @@ editor refuses a filleted part by naming the Fillet.
 
 The historical fillet-corpus OOM is not claimed fixed.
 
-[Contract and executable recipe](single-edge-fillet.md),
-[verification](single-edge-fillet-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **§28B — change the radius of the saved Fillet, in a new copy.** The Fillet
 §28A saved stays the same feature on the same named edge; only its radius
@@ -3859,8 +3859,8 @@ implementation:
 - Nothing new is keyed: `eval.fillet.named` already holds the radius bits,
   so the Fillet misses and the plate is reused.
 
-[Contract and executable recipe](numeric-fillet-radius.md),
-[verification](edit-fillet-radius-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **§28C — change the height of a rounded plate, in a new copy.** The plate
 under the one saved Fillet takes a new Blind height through the existing
@@ -3888,8 +3888,8 @@ recorded before implementation:
   Cut history nor a Fillet, and does not reach this one.
 - Every other editor keeps refusing a filleted part by name.
 
-[Contract and executable recipe](edit-fillet-base-height.md),
-[verification](edit-fillet-base-height-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **§28D — move or resize the rectangle under a rounded plate, in a new copy.**
 The base Sketch under the one saved Fillet takes new Line coordinates through
@@ -3921,8 +3921,8 @@ implementation:
 - `sketches[]` gains the additive `fillet_base`; the constraint, circle and
   annulus editors keep refusing a filleted part by name.
 
-[Contract and executable recipe](edit-fillet-base-sketch.md),
-[verification](edit-fillet-base-sketch-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **§28D-1 — restore the saved vertices of the open Line draft.** In **Edit saved
 Sketch — new copy**, **Restore saved vertices** sits with Undo and Redo. It
@@ -3982,8 +3982,8 @@ implementation:
 - An older build refuses to rebuild such a document by name (its Fillet reader
   requires an unconstrained profile); no new capability is needed.
 
-[Contract and executable recipe](fillet-base-constraints.md),
-[verification](fillet-base-constraints-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent review found no production defect. Pinned native checks and the
 real macOS window scenario passed, including refusal recovery, Save Cancel,
@@ -4024,8 +4024,8 @@ implementation:
 - The document is readable, rebuildable and editable by the reader on `main`
   after #69, measured; that reader still refuses to create such a Fillet.
 
-[Contract and executable recipe](fillet-constrained-plate.md),
-[verification](fillet-constrained-plate-verification.md).
+[Contract and executable recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent review found no production defect. Pinned local native checks
 (505 executed, four build-specific N/A and one ignored timing test) and the
@@ -4046,8 +4046,8 @@ arcs must leave at least 0.01 mm of their shared solved Line flat. Source
 rows and identities are preserved by the shared transaction/copy job.
 The third Fillet, touching arcs, editing a two-Fillet history, Cut with
 Fillet and Chamfer remain outside this slice; milestone 5C remains open.
-[Contract and recipe](sequential-edge-fillets.md),
-[verification](sequential-edge-fillets-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent review corrected stale public capability statements. Pinned local
 checks executed 865 tests (four build-specific N/A and one old ignored timing
@@ -4069,8 +4069,8 @@ Fillet and those after it. Discovery adds `history_index` and
 `history_index`. The one-Fillet path is unchanged; height, Sketch and
 constraint editors still refuse a two-Fillet history. A third Fillet, Cut
 with Fillet and Chamfer remain outside; milestone 5C remains open.
-[Contract and recipe](edit-sequential-fillet-radii.md),
-[verification](edit-sequential-fillet-radii-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent review replaced the unbounded inverse-radius float walk with
 bounded bisection and explicit invalid-input refusal. Pinned local checks
@@ -4096,8 +4096,8 @@ the writer re-derives both. The cache misses the plate and both Fillets. The
 Sketch and constraint editors still refuse a two-Fillet history; a third
 Fillet, Cut with Fillet and Chamfer remain outside; milestone 5C remains
 open.
-[Contract and recipe](edit-two-fillet-base-height.md),
-[verification](edit-two-fillet-base-height-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent review found no product-code correction. Pinned local checks
 executed 547 tests (four build-specific N/A and one ignored timing benchmark
@@ -4122,8 +4122,8 @@ writer re-derives the whole edit inside its transaction. The cache misses the
 plate and both Fillets. The constraint editor still refuses a two-Fillet
 history; a third Fillet, Cut with Fillet and Chamfer remain outside;
 milestone 5C remains open.
-[Contract and recipe](edit-two-fillet-base-sketch.md),
-[verification](edit-two-fillet-base-sketch-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent PR #74 review (2026-09-30): corrected stale edit guidance; 603
 local native tests plus 22 domain/six CLI tests after that correction passed.
@@ -4150,8 +4150,8 @@ second check, and the stored bound proves nothing. Removing every user
 constraint leaves the closure links and offers the Sketch's coordinates
 (§28J) again. A third Fillet, Cut with Fillet and Chamfer remain outside;
 milestone 5C remains open.
-[Contract and recipe](edit-two-fillet-base-constraints.md),
-[verification](edit-two-fillet-base-constraints-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 Independent PR #75 review (2026-09-30): clarified the shared reader comment
 and redundancy contract; strengthened the GUI comparator, whose old broad
@@ -4188,8 +4188,8 @@ class and `null` for three or four. The previous build opens such a document
 and refuses to rebuild or edit it, typed, never as a partial Body. Chamfer,
 Cut with Fillet, arbitrary edges and in-place Save remain outside; milestone 5C
 remains open.
-[Contract and recipe](rectangular-fillet-history.md),
-[verification](rectangular-fillet-history-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 
 **§29A — one equal-distance Chamfer on one vertical edge of a rectangular plate,
@@ -4208,8 +4208,8 @@ the B-Rep: volume `(W·D − d²/2)·h`, one plane whose outward normal and posi
 say which corner, area `d·√2·h`; the independent STL and the pinned ufbx agree.
 Every other editor refuses a chamfered Body by the Chamfer's UUID; `main` opens
 such a document read-only and refuses to rebuild it. Milestone 5C remains open.
-[Contract and recipe](rectangular-corner-chamfer.md),
-[verification](rectangular-corner-chamfer-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **Independent review of §28L (2026-10-01).** Corrected stale reader links and
 an overstated Fillet Undo/Redo claim (request history belongs to Sketch and
@@ -4252,8 +4252,8 @@ bound comes from the adjacent sides); OCCT chamfers from 1.2e-5 mm up and refuse
 at the chosen corner and on an independent STL parse; the cache misses for the
 plate and the Chamfer at a new height. Every other editor still refuses by the
 Chamfer's UUID. Milestone 5C remains open.
-[Contract and recipe](edit-chamfer-base-height.md),
-[verification](edit-chamfer-base-height-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **Independent review of §29B (2026-10-01).** Fixed the shared height job's
 legacy reference exception: a Chamfer now requires every saved name to resolve
@@ -4287,8 +4287,8 @@ request, payload, capability or archive/SQLite version; the only wire addition i
 parse; the cache misses for the Extrude and the Chamfer on a new plate. Constraint
 editors, a second Chamfer, a Fillet or Cut beside it stay refused by UUID.
 Milestone 5C remains open.
-[Contract and recipe](edit-chamfer-base-sketch.md),
-[verification](edit-chamfer-base-sketch-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 **Independent review of §29C (2026-10-02).** No blocking code finding;
 clarified the distinction between seven Chamfer-owned names and additional
@@ -4328,8 +4328,8 @@ cold rebuild decide. No new command, request, payload, capability or
 archive/SQLite version; the wire additions are `profile_constrained` and
 `sketches[].constraint_edit.chamfer_base`, and `distance_edit.max_distance_mm` is
 `null` for a constrained plate. Milestone 5C remains open.
-[Contract and recipe](edit-chamfer-base-constraints.md),
-[verification](edit-chamfer-base-constraints-verification.md).
+[Contract and recipe](fillets-and-chamfers.md),
+[verification](fillets-and-chamfers.md).
 
 
 **§29D independent review (2026-10-02).** Fixed the constrained distance form's
@@ -4483,8 +4483,8 @@ form versions and two-phase acceptance preserve scene/history/draft on refusal.
 Existing solved bounds, every neighbour, UUIDs and strict refs are unchanged.
 Exact widget/native/stub/mixed gates, all-cell SQL/CLI comparison, independent
 geometry, pinned ufbx, directed mutations and a real-window recipe are tracked
-in [contract](fillet-radius-session-apply.md) and
-[verification](fillet-radius-session-apply-verification.md).
+in [contract](fillets-and-chamfers.md) and
+[verification](fillets-and-chamfers.md).
 Code/workflow `63feb377` passed 15/15 CI jobs; logs proved 21 new exact gate
 executions and strict Fillet reader markers on all three platforms. Both directed
 mutations compiled, failed assertions, and were restored before positive gates.
@@ -4511,8 +4511,8 @@ The domain/evaluator policy (0.001 mm, `min(sides) − 0.01`, exact, never clamp
 solved sides on a constrained base) and strict refs are unchanged. Exact widget,
 native, stub and mixed gates, all-cell SQL/CLI comparison, B-Rep and independent
 STL corner geometry, pinned ufbx, directed mutations and a real-window recipe are
-tracked in [contract](chamfer-distance-session-apply.md) and
-[verification](chamfer-distance-session-apply-verification.md).
+tracked in [contract](fillets-and-chamfers.md) and
+[verification](fillets-and-chamfers.md).
 Code/workflow `79d18a0c` passed 15/15 CI jobs. Independent PR #88 review read all
 21 new exact result lines across three platforms, including the nine native/mixed
 executions missing from the author's log tail, and the Chamfer strict-reader
@@ -4568,7 +4568,7 @@ mixed and constrained gates, all-cell SQL/CLI comparison under a proved bijectio
 new identities only, Undo/Redo without remap, byte-equal unsaved/branch STL/FBX,
 per-corner geometry, pinned ufbx, two directed mutations, a window comparator with
 seven negative controls and a real-window recipe are tracked in
-[contract](add-fillet-session.md) and [verification](add-fillet-session-verification.md).
+[contract](fillets-and-chamfers.md) and [verification](fillets-and-chamfers.md).
 Add Chamfer, the clean-only copy routes and Revolve creation remain copy-only.
 Independent macOS review completed the real window recipe: dirty height/vertices,
 two adjacent Adds, radius Apply, unsaved exports, complete Undo/Redo, Save, bound
@@ -4599,8 +4599,8 @@ domain's reason. Widget, native, stub, mixed and constrained gates, all-cell SQL
 comparison under a proved bijection of new identities only, Undo/Redo without remap,
 byte-equal unsaved/branch STL/FBX, per-corner plane and volume, pinned ufbx, two
 directed mutations, a window comparator with seven negative controls and a
-real-window recipe are tracked in [contract](add-chamfer-session.md) and
-[verification](add-chamfer-session-verification.md). The clean-only copy routes and
+real-window recipe are tracked in [contract](fillets-and-chamfers.md) and
+[verification](fillets-and-chamfers.md). The clean-only copy routes and
 Revolve creation remain copy-only. Independent macOS review completed the real
 window recipe, all-cell SQL comparison with seven negative controls and strict
 FBX/oriented STL joins. Viewer peak was 211.689 MiB, normal pressure, exit 0;

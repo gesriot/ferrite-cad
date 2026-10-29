@@ -129,12 +129,12 @@ request.write_text(json.dumps({"request_version": 1, "height_mm": H0, "points_mm
 polygon = out / "source" / "polygon.fcad"
 run("create-sketch-extrude", request, "-o", polygon, "--json")
 catalog = run("inspect", polygon, "--json")["result"]
-candidate = next(c for c in catalog["bodies"][0]["chamfer_edge"]["target"]["candidates"]
-                 if c["corner_mm"] == PLATE[1])
-request.write_text(json.dumps({"request_version": 1, "edge": candidate["edge"], "distance_mm": DIST}))
-chamfered = out / "source" / "chamfered.fcad"
-run("chamfer-edge-copy", polygon, "--body", catalog["bodies"][0]["body_id"], "--expect-version",
-    catalog["content_version"], "--request", request, "-o", chamfered, "--json")
+sys.path.insert(0, "tools")
+from feature_requests import edge_addition
+request.write_text(json.dumps(edge_addition(catalog, "chamfer", PLATE[1], DIST, polygon)))
+chamfered = out / "chamfered.fcad"
+run("edit", polygon, "--expect-version", catalog["content_version"],
+    "--request", request, "-o", chamfered, "--json")
 c = run("inspect", chamfered, "--json")["result"]
 (sketch,) = c["sketches"]
 edit = sketch["constraint_edit"]

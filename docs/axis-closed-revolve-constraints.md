@@ -28,10 +28,11 @@ def output_names(path):
         fields = line.split()
         if len(fields) == 2 and fields[0] == "feature":
             feature = fields[1]
-        elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
-            assert feature and len(fields[1]) == 64, line
-            assert fields[2] == "entities=1", line
-            names.append((feature, fields[0], fields[1]))
+        elif len(fields) == 4 and fields[0].startswith("producer="):
+            row = dict(field.split("=", 1) for field in fields)
+            assert row["producer"] == feature and len(row["digest"]) == 64, line
+            assert row["entities"] == "1", line
+            names.append((feature, row["kind"], row["digest"]))
     assert names, text
     return sorted(names)
 

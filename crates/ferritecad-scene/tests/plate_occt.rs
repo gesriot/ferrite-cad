@@ -533,6 +533,7 @@ fn plate_primary_names_match_every_drawn_entity_and_its_incidence() {
         let name = names.entities[&entity];
         assert_eq!(meanings.len(), 1);
         assert_eq!(meanings[0].feature, *feature);
+        assert_eq!(meanings[0].producer, *feature);
         assert_eq!(meanings[0].kind, name.kind);
         assert_eq!(meanings[0].digest, name.digest);
         assert_eq!(
@@ -641,6 +642,59 @@ fn plate_primary_names_match_every_drawn_entity_and_its_incidence() {
     assert_eq!(cap_edges.len(), 8);
     assert_eq!(cap_vertices.len(), 8);
     assert!(swept.values().all(|edge| !cap_edges.contains(edge)));
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+/// A plate edge kept through a Cut is drawn in the Cut's result, but its
+/// producer stays the Extrude that minted it; the pocket's rims are the Cut's.
+#[test]
+fn edges_kept_through_a_cut_keep_the_producer_that_minted_them() {
+    if !is_available() {
+        ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
+        return;
+    }
+    use ferritecad_fixtures::feature_changes::{base_profile, body, circular_tool};
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("pocket.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("plate");
+    let mut document = Document::open(&path).expect("document");
+    let body = body(&document).expect("body");
+    let (base, _, _) = base_profile(&document, body).expect("profile");
+    let cut = circular_tool(
+        &document,
+        body,
+        [20., 20.],
+        5.,
+        ferritecad_document::EndCondition::ThroughAll,
+    )
+    .expect("pocket");
+    document.write_changes(&cut.changes).expect("pocket");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("rebuild");
+    assert!(built.all_built());
+    let scene = ferritecad_scene::snapshot_from_rebuild(
+        &document,
+        &built,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &context,
+    )
+    .expect("scene");
+    let mut producers = BTreeSet::new();
+    for pick in (0..).map_while(|ordinal| scene.snapshot.edge_of(0, ordinal)) {
+        for meaning in scene.edges.of(pick, &scene.snapshot) {
+            assert_eq!(meaning.feature, cut.feature);
+            assert_eq!(
+                built.topology().producer(&meaning.digest),
+                Some(meaning.producer)
+            );
+            producers.insert(meaning.producer);
+        }
+    }
+    assert_eq!(producers, BTreeSet::from([base, cut.feature]));
     built.release_all(&mut kernel);
     assert_eq!(kernel.live_shape_count(), 0);
 }

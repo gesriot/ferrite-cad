@@ -1860,7 +1860,27 @@ fn chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour() {
     for i in [0, 2, 3] {
         assert_eq!(dragged.points[i], before.points[i], "vertex {i} was moved");
     }
-    crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Chamfer"]);
+    if ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        let mut request = e.edit_request().expect("payload");
+        let destination = tempfile::tempdir().expect("directory");
+        request.destination = destination.path().join("skewed.fcad");
+        let before = std::fs::read(&path).expect("source");
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        ferritecad_jobs::edit_copy(&request, &mut kernel, &Default::default())
+            .expect("the kernel accepts this nonrectangular profile under Chamfer");
+        let document =
+            ferritecad_document::Document::open_read_only(&request.destination).expect("published");
+        let rebuilt = ferritecad_eval::rebuild_cold(&document, &mut kernel, &Default::default())
+            .expect("rebuild");
+        assert!(rebuilt.all_built());
+        for object in document.objects().expect("objects") {
+            if let Some(shape) = rebuilt.shape(object.id) {
+                assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
+            }
+        }
+        rebuilt.release_all(&mut kernel);
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
     assert!(e.take_edit_request().is_none());
     choose(&ctx, &mut e, "Undo draft");
     assert_eq!(e.draft, saved);

@@ -9,8 +9,8 @@
 use ferritecad_exchange::{Diagnostic as ImportDiagnostic, PersistedScene};
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, ProfileJoint,
-    Result, StableEntityId, Transform, normalize_f64,
+    CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Result,
+    StableEntityId, Transform, normalize_f64,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -848,40 +848,17 @@ impl Revolve {
     }
 }
 
-/// The one edge a [`Fillet`] rounds or a [`Chamfer`] cuts, by what it means
-/// (§29A: the neutral name of what §28A called `FilletEdge`; the fields, and so
-/// the stored and wire form of a Fillet, are unchanged).
-///
-/// The feature that made the edge and the corner of that feature's profile it
-/// was swept from: the same unordered pair of Line UUIDs
-/// recorded by the profile. Never an index, a
-/// coordinate or a reference UUID; the evaluator finds exactly this edge in
-/// the producer's output or refuses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SweptEdge {
-    /// The feature whose output the edge belongs to.
-    pub feature: ObjectId,
-    /// The profile corner the edge was swept from.
-    pub joint: ProfileJoint,
-}
-
-/// The edge a [`Fillet`] rounds; see [`SweptEdge`].
-pub type FilletEdge = SweptEdge;
-
-/// Cuts one edge of an earlier feature's result away, at one equal distance
-/// along both adjacent faces (§29A).
+/// Chamfers named edges in an earlier feature's result at one equal distance.
 ///
 /// Modifies a result, so it names the feature it consumes (ADR 0004). The
-/// distance is an expression in millimetres and is **not** the width of
-/// the slanted face, which is `distance_mm * sqrt(2)`. In this slice the edge
-/// is swept by the very feature the Chamfer consumes.
+/// distance is an expression in millimetres measured along the adjacent faces,
+/// not the width of the slanted face. References resolve in `previous`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Chamfer {
     /// The feature whose result this cuts.
     pub previous: ObjectId,
-    pub edge: SweptEdge,
+    pub edges: Vec<crate::EntityReference>,
     pub distance_mm: Expression,
 }
 
@@ -893,19 +870,22 @@ impl Chamfer {
         hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
         hasher.field("previous").bytes(&self.previous.to_bytes());
-        let [one, other] = self.edge.joint.segments();
-        hasher
-            .field("edge")
-            .bytes(&self.edge.feature.to_bytes())
-            .bytes(&one.to_bytes())
-            .bytes(&other.to_bytes());
+        hasher.field("edges");
+        for meaning in self
+            .edges
+            .iter()
+            .map(|edge| edge.meaning)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            meaning.feed(&mut hasher);
+        }
         hasher.field("distance_mm");
         self.distance_mm.feed(&mut hasher);
         hasher.finish()
     }
 }
 
-/// Rounds one edge of an earlier feature's result (§28A).
+/// Rounds named edges in an earlier feature's result at one radius.
 ///
 /// Modifies a result, so it names the feature it consumes, exactly as a Cut
 /// does (ADR 0004): the Body names its tip and ownership is derived. The
@@ -915,7 +895,7 @@ impl Chamfer {
 pub struct Fillet {
     /// The feature whose result this rounds.
     pub previous: ObjectId,
-    pub edge: FilletEdge,
+    pub edges: Vec<crate::EntityReference>,
     pub radius_mm: Expression,
 }
 
@@ -927,12 +907,15 @@ impl Fillet {
         hasher.algorithm_version(1);
         tolerance.feed(&mut hasher);
         hasher.field("previous").bytes(&self.previous.to_bytes());
-        let [one, other] = self.edge.joint.segments();
-        hasher
-            .field("edge")
-            .bytes(&self.edge.feature.to_bytes())
-            .bytes(&one.to_bytes())
-            .bytes(&other.to_bytes());
+        hasher.field("edges");
+        for meaning in self
+            .edges
+            .iter()
+            .map(|edge| edge.meaning)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            meaning.feed(&mut hasher);
+        }
         hasher.field("radius_mm");
         self.radius_mm.feed(&mut hasher);
         hasher.finish()
@@ -1366,9 +1349,7 @@ impl ObjectPayload {
                     (_, Some(_)) => Ok(()),
                 }
             }
-            // One finite positive radius. Whether it fits the edge is a
-            // question about geometry, asked by the policy that knows the
-            // part (`fillet::FilletCorner::check_radius`) and again by the evaluator.
+            // The kernel judges whether a positive amount fits the selected geometry.
             Self::Fillet(fillet) => {
                 let radius = normalize_f64(fillet.radius_mm.value())?;
                 if radius <= 0.0 {
@@ -1376,12 +1357,8 @@ impl ObjectPayload {
                         "a fillet radius must be positive, found {radius} mm"
                     )));
                 }
-                Ok(())
+                crate::entity_reference::validate_edges(&fillet.edges)
             }
-            // One finite positive distance, at the feature's own bounds;
-            // whether it fits the part is `chamfer::ChamferCorner::check_distance`,
-            // asked again by the evaluator. The edge is the previous
-            // feature's own.
             Self::Chamfer(chamfer) => {
                 let distance = normalize_f64(chamfer.distance_mm.value())?;
                 if distance <= 0.0 {
@@ -1389,12 +1366,7 @@ impl ObjectPayload {
                         "a chamfer distance must be positive, found {distance} mm"
                     )));
                 }
-                if chamfer.edge.feature != chamfer.previous {
-                    return Err(CadError::unsupported(
-                        "this build chamfers an edge of the feature a Chamfer consumes",
-                    ));
-                }
-                Ok(())
+                crate::entity_reference::validate_edges(&chamfer.edges)
             }
             Self::ImportedStep(imported) => imported.validate(),
         }
@@ -1537,10 +1509,12 @@ mod tests {
         let point = SketchPointRef::new(StableEntityId::new(), SketchPointSelector::Start);
         let other = SketchPointRef::new(point.curve, SketchPointSelector::End);
         let segment = SketchSegmentRef::new(point, other);
-        let edge = SweptEdge {
-            feature: ObjectId::new(),
-            joint: ProfileJoint::new(point.curve, StableEntityId::new()).expect("distinct lines"),
-        };
+        let edge = crate::EntityReference::new(crate::ReferenceMeaning {
+            producer: ObjectId::new(),
+            kind: crate::EntityKind::Edge,
+            digest: ContentHash::of_bytes(b"test edge"),
+            selection: crate::Selection::One,
+        });
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let invalid = Expression {
                 source: "1".into(),
@@ -1576,13 +1550,13 @@ mod tests {
             }
             for payload in [
                 ObjectPayload::Fillet(Fillet {
-                    previous: edge.feature,
-                    edge,
+                    previous: edge.meaning.producer,
+                    edges: vec![edge],
                     radius_mm: invalid.clone(),
                 }),
                 ObjectPayload::Chamfer(Chamfer {
-                    previous: edge.feature,
-                    edge,
+                    previous: edge.meaning.producer,
+                    edges: vec![edge],
                     distance_mm: invalid.clone(),
                 }),
                 ObjectPayload::Revolve(Revolve {

@@ -29,7 +29,6 @@ pub(crate) struct Selected {
     pub body: ferritecad_types::ObjectId,
     pub base_feature: ferritecad_types::ObjectId,
     pub profile: ferritecad_types::ObjectId,
-    pub joint: ferritecad_types::ProfileJoint,
 }
 pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> Selected {
     use ferritecad_document::ObjectPayload;
@@ -48,10 +47,10 @@ pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> Selected {
         .id;
     let mut previous = base;
     for i in 0..=index {
-        let (id, f) = objects
+        let id = objects
             .iter()
             .find_map(|o| match &o.payload {
-                ObjectPayload::Fillet(f) if f.previous == previous => Some((o.id, f)),
+                ObjectPayload::Fillet(f) if f.previous == previous => Some(o.id),
                 _ => None,
             })
             .expect("fillet in history");
@@ -61,7 +60,6 @@ pub(crate) fn selected(reading: &ExtrudeEditSource, index: usize) -> Selected {
                 body,
                 base_feature: base,
                 profile,
-                joint: f.edge.joint,
             };
         }
         previous = id;

@@ -298,10 +298,11 @@ unsafe extern "C" {
     ) -> i32;
 
     #[allow(clippy::too_many_arguments)]
-    fn fc_occt_fillet_edge(
+    fn fc_occt_fillet_edges(
         session: *mut RawSession,
         target: u64,
-        edge: u64,
+        edges: *const u64,
+        edge_count: usize,
         radius: f64,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
@@ -311,10 +312,11 @@ unsafe extern "C" {
     ) -> i32;
 
     #[allow(clippy::too_many_arguments)]
-    fn fc_occt_chamfer_edge(
+    fn fc_occt_chamfer_edges(
         session: *mut RawSession,
         target: u64,
-        edge: u64,
+        edges: *const u64,
+        edge_count: usize,
         distance: f64,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
@@ -1012,12 +1014,12 @@ impl Session {
         Ok(buffer)
     }
 
-    /// Rounds exactly one edge of `target` (§28A): the new shape and the
+    /// Rounds the selected edges of `target`: the new shape and the
     /// volume removed, measured by the bridge as a difference.
-    pub(crate) fn fillet_edge(
+    pub(crate) fn fillet_edges(
         &mut self,
         target: u64,
-        edge: u64,
+        edges: &[u64],
         radius: f64,
         cancel: &CancelToken,
     ) -> Result<(u64, f64)> {
@@ -1028,10 +1030,11 @@ impl Session {
         // SAFETY: the out-parameters are valid for the call, the token is
         // borrowed for exactly its duration, and the bridge is noexcept.
         let status = unsafe {
-            fc_occt_fillet_edge(
+            fc_occt_fillet_edges(
                 self.raw,
                 target,
-                edge,
+                edges.as_ptr(),
+                edges.len(),
                 radius,
                 Some(cancel_trampoline),
                 context,
@@ -1040,17 +1043,17 @@ impl Session {
                 &mut error,
             )
         };
-        interpret(status, &error, "rounding one edge")?;
+        interpret(status, &error, "rounding the selected edges")?;
         Ok((shape, removed))
     }
 
-    /// Cuts exactly one edge of `target` away at one equal distance (§29A):
+    /// Cuts the selected edges of `target` away at one equal distance:
     /// the new shape and the volume removed, measured by the bridge as a
     /// difference.
-    pub(crate) fn chamfer_edge(
+    pub(crate) fn chamfer_edges(
         &mut self,
         target: u64,
-        edge: u64,
+        edges: &[u64],
         distance: f64,
         cancel: &CancelToken,
     ) -> Result<(u64, f64)> {
@@ -1061,10 +1064,11 @@ impl Session {
         // SAFETY: the out-parameters are valid for the call, the token is
         // borrowed for exactly its duration, and the bridge is noexcept.
         let status = unsafe {
-            fc_occt_chamfer_edge(
+            fc_occt_chamfer_edges(
                 self.raw,
                 target,
-                edge,
+                edges.as_ptr(),
+                edges.len(),
                 distance,
                 Some(cancel_trampoline),
                 context,
@@ -1073,7 +1077,7 @@ impl Session {
                 &mut error,
             )
         };
-        interpret(status, &error, "chamfering one edge")?;
+        interpret(status, &error, "chamfering the selected edges")?;
         Ok((shape, removed))
     }
 
@@ -2469,11 +2473,12 @@ mod tests {
         ));
         for (entry, parameters) in [
             (
-                "FcOcctStatus fc_occt_fillet_edge(",
+                "FcOcctStatus fc_occt_fillet_edges(",
                 &[
                     "FcOcctSession *session",
                     "uint64_t target",
-                    "uint64_t edge",
+                    "const uint64_t *edges",
+                    "size_t edge_count",
                     "double radius",
                     "FcOcctCancelFn cancel",
                     "void *cancel_context",
@@ -2483,11 +2488,12 @@ mod tests {
                 ][..],
             ),
             (
-                "FcOcctStatus fc_occt_chamfer_edge(",
+                "FcOcctStatus fc_occt_chamfer_edges(",
                 &[
                     "FcOcctSession *session",
                     "uint64_t target",
-                    "uint64_t edge",
+                    "const uint64_t *edges",
+                    "size_t edge_count",
                     "double distance",
                     "FcOcctCancelFn cancel",
                     "void *cancel_context",
@@ -2565,14 +2571,26 @@ mod tests {
         // An edge the target does not have, a face where an edge belongs, a
         // target the session does not hold, and a cancelled run.
         let edge = corner(&mut session, shape, 0)[0];
-        assert!(session.fillet_edge(shape, u64::MAX, 2.5, &never).is_err());
-        assert!(session.fillet_edge(shape, side, 2.5, &never).is_err());
-        assert!(session.fillet_edge(u64::MAX, edge, 2.5, &never).is_err());
+        assert!(
+            session
+                .fillet_edges(shape, &[u64::MAX], 2.5, &never)
+                .is_err()
+        );
+        assert!(session.fillet_edges(shape, &[side], 2.5, &never).is_err());
+        assert!(
+            session
+                .fillet_edges(u64::MAX, &[edge], 2.5, &never)
+                .is_err()
+        );
         let cancelled = CancelToken::new();
         cancelled.cancel();
-        assert!(session.fillet_edge(shape, edge, 2.5, &cancelled).is_err());
+        assert!(
+            session
+                .fillet_edges(shape, &[edge], 2.5, &cancelled)
+                .is_err()
+        );
         // A radius the kernel cannot build is refused, never clamped.
-        assert!(session.fillet_edge(shape, edge, d, &never).is_err());
+        assert!(session.fillet_edges(shape, &[edge], d, &never).is_err());
         assert_eq!(session.live_shape_count(), 1, "a refusal kept nothing");
 
         let r = 2.375;
@@ -2580,7 +2598,7 @@ mod tests {
         for joint in 0..4 {
             let edge = corner(&mut session, shape, joint)[0];
             let (rounded, removed) = session
-                .fillet_edge(shape, edge, r, &never)
+                .fillet_edges(shape, &[edge], r, &never)
                 .expect("a real fillet");
             let expected = (1.0 - std::f64::consts::PI / 4.0) * r * r * h;
             assert!(
