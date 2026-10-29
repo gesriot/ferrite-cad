@@ -275,12 +275,13 @@ of legacy maps. Median milliseconds:
 | Overlapping tools | 7.732 | 8.058 | 0.917 | 8.981 |
 | Pocket | 2.009 | 2.030 | 0.453 | 2.482 |
 
-### Shared derivation graph measurements
+#### Shared derivation graph measurements
 
 Measure the shared graph against main `9f982b3e` in one session, with three samples
 per completed long case and a 6144 MiB watchdog. The complete before/after tables,
-archive sections and growth exponents are in [PR #135](https://github.com/gesriot/ferrite-cad/pull/135).
-Each cell below is main → shared graph; times are medians in milliseconds.
+archive sections and growth exponents are in
+[PR #135](https://github.com/gesriot/ferrite-cad/pull/135). Each cell below is
+main → shared graph; times are medians in milliseconds.
 
 | History | Stored nodes | Naming ms | Cached ms | Archive MiB |
 |---|---:|---:|---:|---:|

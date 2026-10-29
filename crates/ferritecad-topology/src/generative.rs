@@ -417,12 +417,12 @@ impl ModelNaming {
         } else {
             None
         };
-        if node.is_none_or(|node| node.kind() != name.kind) {
-            return Err(CadError::topology(
+        match node {
+            Some(node) if node.kind() == name.kind => Ok(node),
+            _ => Err(CadError::topology(
                 "invalid or incomplete naming derivation graph",
-            ));
+            )),
         }
-        Ok(node.expect("checked operand"))
     }
 
     pub fn cache_key(&self, owner: ObjectId, geometry: ContentHash) -> ContentHash {

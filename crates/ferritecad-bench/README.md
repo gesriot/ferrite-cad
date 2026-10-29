@@ -129,9 +129,9 @@ Timing scopes:
   preparation is excluded from these windows.
 - `cache_ms`: the actual evaluator's `rebuild_cached` with a primed cache, in a
   fresh kernel session. Every feature must report `Hit`. Cold, replay and cached
-  results must agree on each feature's owned derivation keys, primary name multiplicities and
-  complete ancestry expressed through primary names. No fallback rebuild counts
-  as a cache sample.
+  results must agree on each feature's owned derivation keys, primary name
+  multiplicities and complete ancestry expressed through primary names. No
+  fallback rebuild counts as a cache sample.
 
 There is no untimed warm-up of an entire long history. Each sample runs cold,
 naming replay, then cached rebuild, releasing each model before the next one.
