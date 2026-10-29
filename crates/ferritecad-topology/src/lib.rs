@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Complete generative topology and profile-corner edge selection.
+//! Complete generative topology and consumed entity references.
 mod archive;
 mod codec;
 mod description;
@@ -9,7 +9,6 @@ pub use codec::ARCHIVE_CACHE_KIND;
 pub use generative::ModelNaming;
 
 pub mod generative;
-mod swept_edge;
 
 mod derivation;
 

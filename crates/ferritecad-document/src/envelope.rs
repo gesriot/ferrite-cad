@@ -28,8 +28,7 @@ impl Envelope {
     }
 
     pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
-        ciborium::from_reader(self.payload.as_slice())
-            .map_err(|e| CadError::input_because(format!("decoding {} payload", self.type_name), e))
+        decode_exact(&self.payload, &format!("{} payload", self.type_name))
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
@@ -40,9 +39,18 @@ impl Envelope {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        ciborium::from_reader(bytes)
-            .map_err(|e| CadError::input_because("decoding object envelope", e))
+        decode_exact(bytes, "object envelope")
     }
+}
+
+fn decode_exact<T: DeserializeOwned>(bytes: &[u8], what: &str) -> Result<T> {
+    let mut reader = std::io::Cursor::new(bytes);
+    let value = ciborium::from_reader(&mut reader)
+        .map_err(|e| CadError::input_because(format!("decoding {what}"), e))?;
+    if reader.position() != bytes.len() as u64 {
+        return Err(CadError::input(format!("trailing bytes in {what}")));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -66,6 +74,22 @@ mod tests {
         let read = Envelope::from_bytes(&bytes).expect("deserialises");
         assert_eq!(read, envelope);
         assert_eq!(read.decode::<Sample>().expect("decodes"), sample);
+    }
+
+    #[test]
+    fn reference_payload_and_envelope_refuse_trailing_bytes() {
+        let meaning = crate::ReferenceMeaning {
+            producer: ferritecad_types::ObjectId::new(),
+            kind: crate::EntityKind::Edge,
+            digest: ferritecad_types::ContentHash::of_bytes(b"edge"),
+            selection: crate::Selection::One,
+        };
+        let mut envelope = Envelope::encode("reference", &meaning).expect("encode");
+        let mut bytes = envelope.to_bytes().expect("envelope");
+        bytes.push(0);
+        assert!(Envelope::from_bytes(&bytes).is_err());
+        envelope.payload.push(0);
+        assert!(envelope.decode::<crate::ReferenceMeaning>().is_err());
     }
 
     #[test]

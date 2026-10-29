@@ -16,6 +16,10 @@ pub(super) enum Change {
         feature_name: Option<String>,
         feature: Feature,
     },
+    SetEdges {
+        object: ObjectId,
+        edges: Vec<Edge>,
+    },
     SetRegions {
         object: ObjectId,
         regions: Vec<StableEntityId>,
@@ -89,6 +93,13 @@ impl Change {
                 feature_object,
                 feature_name,
                 feature: feature.into_feature()?,
+            },
+            Self::SetEdges { object, edges } => EditChange::SetEdges {
+                object,
+                edges: edges
+                    .into_iter()
+                    .map(Edge::into_edge)
+                    .collect::<Result<_>>()?,
             },
             Self::SetRegions { object, regions } => EditChange::SetRegions { object, regions },
             Self::SetOperation { object, operation } => {
@@ -457,11 +468,11 @@ pub(super) enum Feature {
         operation: ferritecad_document::SolidOperation,
     },
     Fillet {
-        edge: Edge,
+        edges: Vec<Edge>,
         radius: Number,
     },
     Chamfer {
-        edge: Edge,
+        edges: Vec<Edge>,
         distance: Number,
     },
 }
@@ -495,12 +506,18 @@ impl Feature {
                 extent: extent.into_extent()?,
                 operation,
             },
-            Self::Fillet { edge, radius } => F::Fillet {
-                edge: edge.into_edge()?,
+            Self::Fillet { edges, radius } => F::Fillet {
+                edges: edges
+                    .into_iter()
+                    .map(Edge::into_edge)
+                    .collect::<Result<_>>()?,
                 radius_mm: radius.expression(Dimension::Length)?,
             },
-            Self::Chamfer { edge, distance } => F::Chamfer {
-                edge: edge.into_edge()?,
+            Self::Chamfer { edges, distance } => F::Chamfer {
+                edges: edges
+                    .into_iter()
+                    .map(Edge::into_edge)
+                    .collect::<Result<_>>()?,
                 distance_mm: distance.expression(Dimension::Length)?,
             },
         })
@@ -510,15 +527,21 @@ impl Feature {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Edge {
-    feature: ObjectId,
-    joint: [StableEntityId; 2],
+    producer: ObjectId,
+    kind: ferritecad_document::EntityKind,
+    digest: String,
+    selection: ferritecad_document::Selection,
 }
 impl Edge {
-    fn into_edge(self) -> Result<ferritecad_document::SweptEdge> {
-        Ok(ferritecad_document::SweptEdge {
-            feature: self.feature,
-            joint: ferritecad_types::ProfileJoint::new(self.joint[0], self.joint[1])?,
-        })
+    fn into_edge(self) -> Result<ferritecad_document::EntityReference> {
+        Ok(ferritecad_document::EntityReference::new(
+            ferritecad_document::ReferenceMeaning {
+                producer: self.producer,
+                kind: self.kind,
+                digest: self.digest.parse()?,
+                selection: self.selection,
+            },
+        ))
     }
 }
 

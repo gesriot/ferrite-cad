@@ -48,8 +48,7 @@ pub use context::{CancelToken, OperationContext, ProgressSink};
 pub use handle::{FaceSurface, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 pub use identity::KernelIdentity;
 pub use kernel::{
-    GeometryKernel, boolean_cache_key, chamfer_cache_key, extrude_cache_key, fillet_cache_key,
-    revolve_cache_key, tessellation_cache_key,
+    GeometryKernel, boolean_cache_key, extrude_cache_key, revolve_cache_key, tessellation_cache_key,
 };
 pub use profile::{
     PlanarPoint, Profile, ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchPlane,

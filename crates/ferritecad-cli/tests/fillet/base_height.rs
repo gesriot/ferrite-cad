@@ -87,8 +87,8 @@ fn heightened(
 
     assert_eq!(after["chamfers"][0]["feature_id"], json!(id.to_string()));
     assert_eq!(
-        after["chamfers"][0]["edge"],
-        before_catalog["chamfers"][0]["edge"]
+        after["chamfers"][0]["edges"][0],
+        before_catalog["chamfers"][0]["edges"][0]
     );
     assert_eq!(after["chamfers"][0]["expression"]["value"], DIST);
 

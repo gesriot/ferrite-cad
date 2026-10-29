@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
 use ferritecad_document::*;
-use ferritecad_fixtures::feature_changes::{body, circular_tool, swept_edge};
+use ferritecad_fixtures::feature_changes::{body, circular_tool, plate_edge};
 use ferritecad_jobs::{EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
 use ferritecad_types::ObjectId;
@@ -263,19 +263,19 @@ fn edge_additions_reconcile_names_after_mixed_geometry_changes() {
         let d = Document::open_read_only(&src).expect("source");
         let b = body(&d).expect("body");
         let feature = ObjectId::new();
-        let edge = swept_edge(&d, b, 0).expect("edge");
+        let edge = plate_edge(&d, b, 0).expect("edge");
         let addition = |value| EditChange::AddFeature {
             object: feature,
             body: b,
             name: Some("New edge feature".into()),
             feature: if chamfer {
                 FeatureAddition::Chamfer {
-                    edge,
+                    edges: vec![edge],
                     distance_mm: Expression::constant(value).expect("number"),
                 }
             } else {
                 FeatureAddition::Fillet {
-                    edge,
+                    edges: vec![edge],
                     radius_mm: Expression::constant(value).expect("number"),
                 }
             },
@@ -309,7 +309,7 @@ fn edge_additions_reconcile_names_after_mixed_geometry_changes() {
         );
         if !chamfer {
             let second = ObjectId::new();
-            let edge = swept_edge(&d, b, 1).expect("adjacent edge");
+            let edge = plate_edge(&d, b, 1).expect("adjacent edge");
             let next = root.path().join("two-fillets.fcad");
             publish(&request(
                 &dest,
@@ -319,7 +319,7 @@ fn edge_additions_reconcile_names_after_mixed_geometry_changes() {
                     body: b,
                     name: None,
                     feature: FeatureAddition::Fillet {
-                        edge,
+                        edges: vec![edge],
                         radius_mm: Expression::constant(3.).expect("radius"),
                     },
                 }],
@@ -510,6 +510,51 @@ fn additions_to_the_second_body_survive_session_undo_redo_and_save() {
             .commit_move(session.begin_redo().expect("redo"))
             .expect("commit redo");
         assert_eq!(verify(session.current().path()), names);
+        let names = if kind == "cut" {
+            names
+        } else {
+            let current = Document::open_read_only(session.current().path()).expect("current");
+            let ObjectPayload::Body(body) =
+                current.object(second).expect("body").expect("row").payload
+            else {
+                panic!("body")
+            };
+            let edges = (0..4)
+                .map(|corner| plate_edge(&current, second, corner).expect("fixture edge"))
+                .collect();
+            let step = session
+                .begin_step()
+                .edit(
+                    vec![EditChange::SetEdges {
+                        object: body.tip_feature.expect("tip"),
+                        edges,
+                    }],
+                    session.current().version(),
+                    &mut k,
+                    |_, _| unreachable!("no imports"),
+                    &OperationContext::default(),
+                )
+                .expect("replace the edge set");
+            session.commit_step(step).expect("commit set");
+            let all = verify(session.current().path());
+            assert_ne!(all, names, "four edges change geometry and names");
+            session
+                .commit_move(session.begin_undo().expect("undo set"))
+                .expect("undo");
+            assert_eq!(verify(session.current().path()), names);
+            session
+                .commit_move(session.begin_redo().expect("redo set"))
+                .expect("redo");
+            assert_eq!(verify(session.current().path()), all);
+            assert_eq!(
+                Document::open_read_only(session.current().path())
+                    .expect("accepted")
+                    .object(first)
+                    .expect("untouched first body"),
+                first_record
+            );
+            all
+        };
         assert_eq!(std::fs::read(&src).expect("unchanged disk"), original);
         let copy = root.path().join(format!("{kind}-saved.fcad"));
         Document::open_read_only(session.current().path())
@@ -676,4 +721,127 @@ fn session_regions_restore_names_and_geometry_with_undo_redo() {
                 .is_some()
         );
     }
+}
+
+#[test]
+fn deleting_a_consumed_pocket_rim_refuses_atomically_and_the_broken_file_can_be_repaired() {
+    if !native() {
+        return;
+    }
+    use ferritecad_eval::rebuild_cold;
+    use ferritecad_kernel::{NamingOperation, SubShapeKind};
+    use ferritecad_topology::generative::{cap_root, curve_root, generated};
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("pocket.fcad");
+    ferritecad_fixtures::write_plate(&source).expect("plate");
+    let mut document = Document::open(&source).expect("document");
+    let body = body(&document).expect("body");
+    let (base, _, profile) =
+        ferritecad_fixtures::feature_changes::base_profile(&document, body).expect("profile");
+    let cut = circular_tool(&document, body, [20., 20.], 5., blind(4.)).expect("pocket");
+    document
+        .write_changes(&cut.changes)
+        .expect("pocket fixture");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("build");
+    assert!(built.all_built());
+    let names = &built.topology().features[&cut.feature];
+    let wall = names
+        .resolve(generated(
+            cut.feature,
+            NamingOperation::Extrude,
+            curve_root(cut.feature, cut.curve, Some(profile.plane)),
+            SubShapeKind::Face,
+        ))
+        .expect("pocket wall");
+    let rim = |floor| {
+        let producer = if floor { cut.feature } else { base };
+        let cap = names
+            .resolve(generated(
+                producer,
+                NamingOperation::Extrude,
+                cap_root(producer, floor, Some(profile.plane)),
+                SubShapeKind::Face,
+            ))
+            .expect("named cap");
+        let matches: Vec<_> = names
+            .topology
+            .entities(SubShapeKind::Edge)
+            .filter(|edge| {
+                let faces = &names.topology.adjacent_faces[edge];
+                faces.contains(&wall) && faces.contains(&cap)
+            })
+            .collect();
+        assert_eq!(matches.len(), 1);
+        EntityReference::new(ReferenceMeaning {
+            producer: cut.feature,
+            kind: EntityKind::Edge,
+            digest: names.entities[&matches[0]].digest,
+            selection: Selection::One,
+        })
+    };
+    let floor = rim(true);
+    let opening = rim(false);
+    built.release_all(&mut kernel);
+    let fillet = ObjectId::new();
+    document
+        .write_changes(&[EditChange::AddFeature {
+            object: fillet,
+            body,
+            name: Some("Round pocket floor".into()),
+            feature: FeatureAddition::Fillet {
+                edges: vec![floor],
+                radius_mm: Expression::constant(0.5).expect("radius"),
+            },
+        }])
+        .expect("fillet fixture");
+    drop(document);
+    verify(&source);
+    let changes = vec![EditChange::SetEndCondition {
+        object: cut.feature,
+        end_condition: EndCondition::ThroughAll,
+    }];
+    let destination = root.path().join("refused.fcad");
+    let before = std::fs::read(&source).expect("bytes");
+    let error = edit_copy(
+        &request(&source, &destination, changes.clone()),
+        &mut kernel,
+        &OperationContext::default(),
+    )
+    .expect_err("cannot delete the consumed floor rim");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Topology);
+    for expected in [
+        fillet.to_string(),
+        floor.id.to_string(),
+        "edge deleted".into(),
+    ] {
+        assert!(error.to_string().contains(&expected), "{error}");
+    }
+    assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
+    assert!(!destination.exists());
+    let broken = root.path().join("broken.fcad");
+    std::fs::copy(&source, &broken).expect("copy");
+    let mut document = Document::open(&broken).expect("open for repair");
+    document
+        .write_changes(&changes)
+        .expect("represent an already broken model");
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("report");
+    assert!(built.shape(base).is_some() && built.shape(cut.feature).is_some());
+    assert!(built.shape(fillet).is_none());
+    let report = built.report();
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].id, fillet);
+    assert!(report.failed[0].message.contains("edge deleted"));
+    assert!(report.failed[0].message.contains(&floor.id.to_string()));
+    built.release_all(&mut kernel);
+    drop(document);
+    let repaired = root.path().join("repaired.fcad");
+    publish(&request(
+        &broken,
+        &repaired,
+        vec![EditChange::SetEdges {
+            object: fillet,
+            edges: vec![opening],
+        }],
+    ));
 }

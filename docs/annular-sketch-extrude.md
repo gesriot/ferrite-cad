@@ -87,9 +87,8 @@ their producing feature. No output-name rows are stored in the document.
 The CLI reports the kind, digest, entity count and complete derivation for
 each name. The window displays the same derivation and digest. See
 [ADR 0007](decisions/0007-generative-topological-naming.md) and the
-[current file format](file-format.md). Fillet and Chamfer still consume
-`SweptEdge { feature, joint }`; their corner policies and refusal messages
-are unchanged.
+[current file format](file-format.md). [Fillet and Chamfer](fillets-and-chamfers.md)
+consume generic edge references resolved in the predecessor result.
 
 ## C ABI
 

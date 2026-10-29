@@ -45,17 +45,17 @@ fn typed(e: &Editor) -> Typed {
 fn history(e: &Editor) -> History<Typed> {
     e.draft.as_ref().expect("draft").history.clone()
 }
-/// The corner of the open draft stored at `at`, and the label its radio shows.
-fn corner_at(e: &Editor, at: [f64; 2]) -> (usize, ChamferCorner, String) {
-    let draft = e.draft.as_ref().expect("draft");
-    let target = draft.choice.target.as_ref().expect("target");
-    let i = target
-        .corners
-        .iter()
-        .position(|c| c.corner_mm == at)
-        .unwrap_or_else(|| panic!("no corner at {at:?}"));
-    let corner = target.corners[i];
-    (i, corner, describe_candidate(&corner, target))
+// Supply the fixture's declared meaning as the scene selection, then exercise
+// the real Add selected edge button. Native viewport coverage lives separately.
+fn corner_at(e: &mut Editor, at: [f64; 2]) -> (usize, crate::feature_tests::FixtureCorner, String) {
+    let reading = crate::sketch_facts::read(&e.draft.as_ref().expect("draft").source)
+        .expect("fixture reading");
+    let corner = crate::feature_tests::fixture_corner(&reading, at);
+    e.set_selected(Ok(crate::feature_facts::PickedEdge {
+        reference: corner.reference,
+        description: "Fixture edge".into(),
+    }));
+    (0, corner, "Add selected edge".into())
 }
 
 /// The Add form's own widgets, as the window leaves them: a corner chosen by its
@@ -84,7 +84,7 @@ pub(crate) fn typed_add(
     distance(&ctx, e, distance_text);
     click(&ctx, e, "Add chamfer");
     let request = e.take_add_request().expect("valid widget Add request");
-    assert_eq!(request.chamfer().edge.joint, corner.joint);
+    assert_eq!(request.chamfer().edges[0].meaning, corner.reference.meaning);
     assert!(e.take_request().is_none(), "Add is not the copy");
     assert!(!history(e).can_undo(), "Add confirmed nothing");
     (c.sketch, request)
@@ -99,11 +99,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     let (_root, path, reading) = plate();
     let mut s = opened(&path);
     let body = reading.chamfer_bodies[0].body;
-    let base = reading.chamfer_bodies[0]
-        .target
-        .as_ref()
-        .expect("target")
-        .base_feature;
+    let base = crate::feature_tests::fixture_target(&reading).base_feature;
     let mut c = creates::Creates::default();
     assert!(!ready(&c, &s), "nothing to add before the form is open");
     assert!(c.sketch.chamfers.begin(&path, &reading, body));
@@ -130,7 +126,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
         "Confirm draft edge and distance",
         "Undo request",
         "Redo request",
-        "Chamfer one vertical edge",
+        "Chamfer selected edges",
         "This document changes with Add chamfer",
     ] {
         assert!(painted(&out, label), "{label}");
@@ -138,7 +134,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     assert!(!painted(&out, "Apply distance"), "no distance Apply here");
     assert!(!painted(&out, "Apply chamfer"), "renamed");
     assert!(!painted(&out, "new copy"), "the window title is not a copy");
-    let (i, corner, label) = corner_at(e, [-4.5, 15.5]);
+    let (_, corner, label) = corner_at(e, [-4.5, 15.5]);
     click(&ctx, e, &label);
     distance(&ctx, e, "1.06250");
     click(&ctx, e, "Add chamfer");
@@ -152,8 +148,8 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     assert_eq!(request.addition().1, body);
     assert_eq!(request.expected, reading.version);
     assert_eq!(request.source, path);
-    assert_eq!(request.chamfer().edge.feature, base);
-    assert_eq!(request.chamfer().edge.joint, corner.joint);
+    assert_eq!(request.chamfer().edges[0].meaning.producer, base);
+    assert_eq!(request.chamfer().edges[0].meaning, corner.reference.meaning);
     assert_eq!(request.chamfer().distance_mm, 1.0625);
     assert!(!history(e).can_undo(), "Add confirmed nothing");
     assert!(e.take_request().is_none() && e.take_apply_request().is_none());
@@ -162,6 +158,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     click(&ctx, e, "Confirm draft edge and distance");
     assert!(e.take_add_request().is_none() && e.take_request().is_none());
     assert_eq!(history(e).states.len(), 2);
+    click(&ctx, e, "Remove edge");
     let (_, _, other) = corner_at(e, [33., 3.25]);
     click(&ctx, e, &other);
     distance(&ctx, e, "2.5");
@@ -171,7 +168,7 @@ fn add_chamfer_reads_current_fields_request_history_stays_separate_and_copy_is_c
     // Undo/Redo request move the fields, never the model or the window.
     click(&ctx, e, "Undo request");
     assert_eq!(typed(e), first);
-    assert_eq!(typed(e).corner, Some(i));
+    assert_eq!(typed(e).edges.len(), 1);
     assert!(e.take_add_request().is_none());
     click(&ctx, e, "Redo request");
     assert_eq!(typed(e), second);
@@ -281,11 +278,7 @@ fn add_chamfer_busy_guard_proves_idle_request_then_excludes_other_work_and_forms
     press(&ctx, e, at, true);
     assert!(e.take_add_request().is_none(), "a running form asked");
     // Another editor's form, no session, a closed form: never Add.
-    let base = reading.chamfer_bodies[0]
-        .target
-        .as_ref()
-        .expect("target")
-        .profile;
+    let base = crate::feature_tests::fixture_target(&reading).profile;
     let mut c = creates::Creates::default();
     assert!(c.sketch.begin_edit(&path, &reading, base));
     assert!(!ready(&c, &s));
@@ -305,11 +298,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     let (_root, path, reading) = plate();
     let original = std::fs::read(&path).expect("source");
     let mut s = opened(&path);
-    let base = reading.chamfer_bodies[0]
-        .target
-        .as_ref()
-        .expect("target")
-        .base_feature;
+    let base = crate::feature_tests::fixture_target(&reading).base_feature;
     dirty(&mut s, base);
     let current = s.export_path().expect("current");
     let reading = crate::sketch_facts::read(&current).expect("reading");
@@ -381,7 +370,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     // 0.01 mm (12.25 − 0.01): the draft stays, nothing is clamped or asked.
     click(&ctx, e, "Add chamfer");
     assert!(e.take_add_request().is_none(), "no corner");
-    let (i, _, at) = corner_at(e, [-4.5, 3.25]);
+    let (_, _, at) = corner_at(e, [-4.5, 3.25]);
     click(&ctx, e, &at);
     {
         let (text, why) = ("banana", "finite");
@@ -390,7 +379,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
         click(&ctx, e, "Add chamfer");
         assert!(e.take_add_request().is_none(), "{text}");
         assert_eq!(typed(e).distance, text);
-        assert_eq!(typed(e).corner, Some(i));
+        assert_eq!(typed(e).edges.len(), 1);
         let shown = e
             .draft
             .as_ref()
@@ -456,11 +445,7 @@ fn add_chamfer_dirty_discovery_refusals_keep_draft_status_dismissal_and_closed_c
     ));
     // A constrained plate is not a creation target: the domain's reason, unchanged.
     let (_rootk, pathk, plain) = plate();
-    let profile = plain.chamfer_bodies[0]
-        .target
-        .as_ref()
-        .expect("target")
-        .profile;
+    let profile = crate::feature_tests::fixture_target(&plain).profile;
     let mut d = Document::open(&pathk).expect("document");
     let ferritecad_document::ObjectPayload::Sketch(sketch) =
         d.object(profile).expect("object").expect("sketch").payload

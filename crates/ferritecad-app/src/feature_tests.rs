@@ -32,20 +32,20 @@ impl RequestFacts for EditRequest {
             .expect("feature addition")
     }
     fn fillet(&self) -> EdgeFillet {
-        let FeatureAddition::Fillet { edge, radius_mm } = self.addition().2 else {
+        let FeatureAddition::Fillet { edges, radius_mm } = self.addition().2 else {
             panic!("Fillet request")
         };
         EdgeFillet {
-            edge: *edge,
+            edges: edges.clone(),
             radius_mm: radius_mm.value(),
         }
     }
     fn chamfer(&self) -> EdgeChamfer {
-        let FeatureAddition::Chamfer { edge, distance_mm } = self.addition().2 else {
+        let FeatureAddition::Chamfer { edges, distance_mm } = self.addition().2 else {
             panic!("Chamfer request")
         };
         EdgeChamfer {
-            edge: *edge,
+            edges: edges.clone(),
             distance_mm: distance_mm.value(),
         }
     }
@@ -113,6 +113,89 @@ impl RequestFacts for EditRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FixtureCorner {
+    pub reference: ferritecad_document::EntityReference,
+    pub joint: [ferritecad_types::StableEntityId; 2],
+    pub corner_mm: [f64; 2],
+    pub adjacent_lengths_mm: [f64; 2],
+}
+#[derive(Debug, Clone)]
+pub(crate) struct FixtureTarget {
+    pub target: crate::feature_facts::EdgeTarget,
+    pub base_feature: ObjectId,
+    pub profile: ObjectId,
+    pub constrained: bool,
+    pub corners: Vec<FixtureCorner>,
+}
+impl std::ops::Deref for FixtureTarget {
+    type Target = crate::feature_facts::EdgeTarget;
+    fn deref(&self) -> &Self::Target {
+        &self.target
+    }
+}
+// These are the declared inputs of the rectangular test fixtures, used by their
+// independent geometry oracle. The window gets its references from the scene.
+pub(crate) fn fixture_target(reading: &crate::sketch_facts::Source) -> FixtureTarget {
+    let target = reading.fillet_bodies[0].target.as_ref().expect("target");
+    let (base, profile) = reading
+        .objects
+        .iter()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Extrude(e) if e.previous.is_none() => Some((o.id, e.profile)),
+            _ => None,
+        })
+        .expect("fixture extrusion");
+    let ObjectPayload::Sketch(sketch) = &reading
+        .objects
+        .iter()
+        .find(|o| o.id == profile)
+        .expect("profile")
+        .payload
+    else {
+        panic!("Sketch")
+    };
+    let mut corners = Vec::new();
+    let count = sketch.curves.len();
+    for index in 0..count {
+        let before = &sketch.curves[(index + count - 1) % count];
+        let after = &sketch.curves[index];
+        let SketchGeometry::Line { start, end } = after.geometry else {
+            panic!("fixture line")
+        };
+        let SketchGeometry::Line { start: a, end: b } = before.geometry else {
+            panic!("fixture line")
+        };
+        corners.push(FixtureCorner {
+            reference: ferritecad_fixtures::feature_changes::extruded_fixture_edge(
+                base,
+                sketch.plane,
+                before.id,
+                after.id,
+            ),
+            joint: ferritecad_fixtures::ordered_labels(before.id, after.id),
+            corner_mm: [start.x, start.y],
+            adjacent_lengths_mm: [
+                (b.x - a.x).hypot(b.y - a.y),
+                (end.x - start.x).hypot(end.y - start.y),
+            ],
+        });
+    }
+    FixtureTarget {
+        target: target.clone(),
+        base_feature: base,
+        profile,
+        constrained: !sketch.constraints.is_empty(),
+        corners,
+    }
+}
+pub(crate) fn fixture_corner(reading: &crate::sketch_facts::Source, at: [f64; 2]) -> FixtureCorner {
+    fixture_target(reading)
+        .corners
+        .into_iter()
+        .find(|c| c.corner_mm == at)
+        .expect("declared fixture corner")
+}
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EdgeObservation {
     pub previous: ObjectId,
@@ -121,28 +204,31 @@ pub(crate) struct EdgeObservation {
     pub body: ObjectId,
     pub base_feature: ObjectId,
     pub profile: ObjectId,
-    pub edge: ferritecad_document::SweptEdge,
-    pub corner: crate::feature_facts::Corner,
+    pub edge: ferritecad_document::EntityReference,
+    pub joint: [ferritecad_types::StableEntityId; 2],
+    pub corner: FixtureCorner,
     pub radius_mm: f64,
     pub distance_mm: f64,
 }
 pub(crate) fn edge_history(path: &std::path::Path, chamfer: bool) -> Vec<EdgeObservation> {
     let reading = crate::sketch_facts::read(path).expect("reading");
-    let target = reading.fillet_bodies[0]
-        .target
-        .as_ref()
-        .expect("fixture edges");
+    let target = fixture_target(&reading);
     let mut result = Vec::new();
     let mut previous = target.base_feature;
     while let Some((id, edge, amount)) = reading.objects.iter().find_map(|o| match &o.payload {
         ObjectPayload::Fillet(f) if !chamfer && f.previous == previous => {
-            Some((o.id, f.edge, f.radius_mm.value()))
+            Some((o.id, f.edges[0], f.radius_mm.value()))
         }
         ObjectPayload::Chamfer(c) if chamfer && c.previous == previous => {
-            Some((o.id, c.edge, c.distance_mm.value()))
+            Some((o.id, c.edges[0], c.distance_mm.value()))
         }
         _ => None,
     }) {
+        let corner = *target
+            .corners
+            .iter()
+            .find(|c| c.reference.meaning == edge.meaning)
+            .expect("fixture reference");
         result.push(EdgeObservation {
             previous,
             constrained: target.constrained,
@@ -151,11 +237,8 @@ pub(crate) fn edge_history(path: &std::path::Path, chamfer: bool) -> Vec<EdgeObs
             base_feature: target.base_feature,
             profile: target.profile,
             edge,
-            corner: *target
-                .corners
-                .iter()
-                .find(|c| c.joint == edge.joint)
-                .expect("fixture corner"),
+            joint: corner.joint,
+            corner,
             radius_mm: amount,
             distance_mm: amount,
         });

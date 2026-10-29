@@ -58,11 +58,7 @@ fn chain(
         let before = std::fs::read(&source).expect("source bytes");
         let candidate = g.at(corners[at]).clone();
         let out = plate.root.path().join(format!("{tag}-{k}.fcad"));
-        g.ask_edge(
-            &json!({"feature_id": candidate["edge"]["feature_id"],
-                    "joint": [candidate["edge"]["joint"][1], candidate["edge"]["joint"][0]]}),
-            r,
-        );
+        g.ask_edge(&candidate["edges"][0], r);
         let v = reply(g.fillet(&out).output().expect("process"), OP, 0);
         assert_eq!(
             v["result"]["content_version"],
@@ -77,7 +73,7 @@ fn chain(
                 .last()
                 .expect("last")["previous_feature_id"],
             if k == 0 {
-                candidate["edge"]["feature_id"].clone()
+                candidate["edges"][0]["producer"].clone()
             } else {
                 json!(steps[k - 1].id)
             }
@@ -440,38 +436,26 @@ fn native_the_fourth_fillet_refusals_races_cancellation_and_report_loss_are_atom
     if !native() {
         return;
     }
-    let (plate, docs, steps) = chain(CCW, &[1, 3, 0], &[6.12, 3.0625, 1.5], "atomic");
+    let (plate, docs, _) = chain(CCW, &[1, 3, 0], &[6.12, 3.0625, 1.5], "atomic");
     let g = fixture_at(&docs[3]);
     let before = std::fs::read(&g.source).expect("bytes");
     let last = g.at(CCW[2]).clone();
-    g.ask_edge(&last["edge"], 2.0);
+    g.ask_edge(&last["edges"][0], 2.0);
     let names = entries(g.root.path());
     let never = g.root.path().join("never.fcad");
     let held = fixture_at(&docs[2]).at(CCW[0]);
-    g.ask_edge(&held["edge"], 1.0);
+    g.ask_edge(&held["edges"][0], 1.0);
     let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
-    assert_eq!(refused(&v), "input", "{v}");
-    assert!(v.to_string().contains("already rounded"), "{v}");
-    // Too large beside the *far* neighbour, not the first one found.
-    let bound = D - 6.12 - MIN_RADIUS;
-    for (r, ok) in [(bound.next_up(), false), (bound, true)] {
-        g.ask_edge(&last["edge"], r);
-        if ok {
-            continue;
-        }
-        let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
-        assert_eq!(refused(&v), "input", "{v}");
-        assert!(v.to_string().contains("flat"), "{v}");
-        assert!(
-            v.to_string().contains(&steps[0].id.to_string()),
-            "the first Fillet: {v}"
-        );
-    }
+    assert_eq!(refused(&v), "topology", "{v}");
+    assert!(v.to_string().contains("edge deleted"), "{v}");
+    g.ask_edge(&last["edges"][0], 100.);
+    let v = reply(g.fillet(&never).output().expect("process"), OP, 2);
+    assert_eq!(refused(&v), "kernel", "{v}");
     assert_eq!(entries(g.root.path()), names, "a refusal left something");
     assert_eq!(std::fs::read(&g.source).expect("bytes"), before);
 
     // Output paths and a stale version.
-    g.ask_edge(&last["edge"], 2.0);
+    g.ask_edge(&last["edges"][0], 2.0);
     let taken = g.root.path().join("taken.fcad");
     std::fs::write(&taken, b"another process owns this").expect("occupied");
     let alias = g.root.path().join("alias.fcad");
@@ -522,22 +506,7 @@ fn native_the_fourth_fillet_refusals_races_cancellation_and_report_loss_are_atom
         changes: vec![addition(
             uuid(&json!(g.body_id())),
             ferritecad_document::FeatureAddition::Fillet {
-                edge: ferritecad_document::SweptEdge {
-                    feature: uuid(&last["edge"]["feature_id"]),
-                    joint: ferritecad_types::ProfileJoint::new(
-                        last["edge"]["joint"][0]
-                            .as_str()
-                            .expect("a")
-                            .parse()
-                            .expect("UUID"),
-                        last["edge"]["joint"][1]
-                            .as_str()
-                            .expect("b")
-                            .parse()
-                            .expect("UUID"),
-                    )
-                    .expect("joint"),
-                },
+                edges: vec![entity(&last["edges"][0])],
                 radius_mm: ferritecad_document::Expression::constant(2.0).expect("number"),
             },
         )],
@@ -600,13 +569,9 @@ fn radius_edit(source: &Path, feature: ObjectId, r: f64, out: &Path) -> Output {
         .expect("process")
 }
 
-/// The early, the middle and the last radius of a history of four, each
-/// published by the shipped command: the named cylinder moves to its new
-/// radius on its own axis, every other name and UUID is kept, the SQL change
-/// is that Fillet's row alone, and the cache keeps exactly the unchanged
-/// prefix. The first Fillet's largest radius is bound by the **fourth**
-/// across the short Line — the far neighbour in the history — and is accepted
-/// to the float; the next float above it is refused naming that Fillet.
+/// Editing early, middle and last radii preserves names and UUIDs, changes only
+/// the selected row and invalidates exactly the dependent cache suffix.
+/// An excessive radius fails in the kernel and publishes nothing.
 #[test]
 fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     if !native() {
@@ -628,13 +593,12 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
     // Past the far neighbour: the first Fillet beside the fourth.
     let never = g.root.path().join("never.fcad");
     let names = entries(g.root.path());
-    let over = radius_edit(&source, steps[0].id, max(0).next_up(), &never);
+    let over = radius_edit(&source, steps[0].id, 100., &never);
     let v = reply(over, OP_RADIUS, 2);
-    assert_eq!(refused(&v), "input", "{v}");
-    assert!(v.to_string().contains("flat"), "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     assert!(
-        v.to_string().contains(&steps[3].id.to_string()),
-        "the fourth Fillet: {v}"
+        v.to_string().contains(&steps[0].id.to_string()),
+        "the changed Fillet: {v}"
     );
     assert!(!never.exists());
     assert_eq!(entries(g.root.path()), names);
@@ -691,10 +655,8 @@ fn native_early_middle_and_last_radii_answer_to_every_neighbour() {
 
 const OP_RADIUS: &str = "edit";
 
-/// The fourth Fillet cannot grow past the first, across the short Line the
-/// perimeter closes on, though two Fillets lie between them in the history:
-/// the largest radius is the first Fillet's remainder, accepted to the float,
-/// and the next float is refused naming the first Fillet and that Line.
+/// The last radius is measured beside the first; an excessive radius refuses
+/// atomically and identifies the consuming feature.
 #[test]
 fn native_the_last_radius_answers_to_the_first_across_the_closing_line() {
     if !native() {
@@ -708,15 +670,14 @@ fn native_the_last_radius_answers_to_the_first_across_the_closing_line() {
     let never = g.root.path().join("never.fcad");
     let names = entries(g.root.path());
     let v = reply(
-        radius_edit(&source, steps[3].id, bound.next_up(), &never),
+        radius_edit(&source, steps[3].id, 100., &never),
         OP_RADIUS,
         2,
     );
-    assert_eq!(refused(&v), "input", "{v}");
-    assert!(v.to_string().contains("flat"), "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     assert!(
-        v.to_string().contains(&steps[0].id.to_string()),
-        "the first Fillet: {v}"
+        v.to_string().contains(&steps[3].id.to_string()),
+        "the changed Fillet: {v}"
     );
     assert!(
         v["error"]["rebuild"]["failed"]
@@ -735,12 +696,8 @@ fn native_the_last_radius_answers_to_the_first_across_the_closing_line() {
     verify(&out, &edited, RECT, H, "closing-exact");
 }
 
-/// The base height, the base rectangle and the Line constraints under four
-/// Fillets: each is the existing command, reads every Fillet in history
-/// order, moves its own row alone, and the rebuilt plate is the plate its
-/// numbers describe with all four cylinders under their names. The
-/// rectangle's pair rule holds to the exact float between the first and the
-/// fourth Fillet, which are not neighbours in the history.
+/// Base height, coordinates and constraints move four rounds while retaining
+/// their names, measured cylinders and unaffected SQL rows.
 #[test]
 fn native_height_coordinates_and_constraints_keep_four_fillets() {
     if !native() {
@@ -803,10 +760,10 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     // Fillet (corner 1) and the fourth (corner 2), and one float below it.
     let exact = {
         let mut least = 4.01_f64;
-        while 2.0 <= ferritecad_document::pair_bound(least, 2.0) {
+        while 2.0 <= (least - 2.0 - 0.01) {
             least = least.next_down();
         }
-        while 2.0 > ferritecad_document::pair_bound(least, 2.0) {
+        while 2.0 > (least - 2.0 - 0.01) {
             least = least.next_up();
         }
         least
@@ -820,7 +777,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         "edit",
         0,
     );
-    h.ask_rect([X0, Y0, W, exact.next_down()]);
+    h.ask_rect([X0, Y0, W, 0.5]);
     let no = h.root.path().join("no.fcad");
     let names = entries(h.root.path());
     let v = reply(
@@ -830,8 +787,7 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
         "edit",
         2,
     );
-    assert_eq!(refused(&v), "input", "{v}");
-    assert!(v.to_string().contains("flat"), "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     assert!(
         steps
             .iter()
@@ -919,11 +875,8 @@ fn native_height_coordinates_and_constraints_keep_four_fillets() {
     verify(&freed, &steps, RECT, H, "edits-freed");
 }
 
-/// On a dimensioned plate the radii are the solved plate's: a depth that
-/// outgrew the stored bound takes a radius the stored rectangle could not,
-/// and a depth that shrank refuses a radius the stored rectangle still holds
-/// — each judged at every rebuild by the evaluator, not by a second check —
-/// and the solver's own conflict and redundancy keep their real UUIDs.
+/// Four rounds use solved geometry. Kernel and solver failures remain atomic
+/// and preserve the diagnostic feature and constraint identities.
 #[test]
 fn native_the_solved_plate_decides_every_radius_of_four() {
     if !solving() {
@@ -977,12 +930,12 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
         .clone();
     h.ask_constraints(
         std::slice::from_ref(&depth_rule),
-        &[super::constraints::length(&h.line(v_line), 12.0)],
+        &[super::constraints::length(&h.line(v_line), 1.0)],
     );
     let never = h.root.path().join("never.fcad");
     let names = entries(h.root.path());
     let v = reply(h.constrain(&never).output().expect("process"), "edit", 2);
-    assert_eq!(refused(&v), "input", "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     assert!(
         v.to_string().contains(&steps[0].id.to_string()) || v.to_string().contains("too large"),
         "{v}"
@@ -996,11 +949,16 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
     let shallow = c9.root.path().join("shallow.fcad");
     reply(c9.constrain(&shallow).output().expect("process"), "edit", 0);
     let v = reply(
-        radius_edit(&shallow, steps[1].id, 4.9, &c9.root.path().join("no.fcad")),
+        radius_edit(
+            &shallow,
+            steps[1].id,
+            100.0,
+            &c9.root.path().join("no.fcad"),
+        ),
         OP_RADIUS,
         2,
     );
-    assert_eq!(refused(&v), "input", "{v}");
+    assert_eq!(refused(&v), "kernel", "{v}");
     reply(
         radius_edit(&shallow, steps[1].id, 4.4, &c9.root.path().join("yes.fcad")),
         OP_RADIUS,
@@ -1067,14 +1025,11 @@ fn native_the_solved_plate_decides_every_radius_of_four() {
 fn round_without_kernel(f: &Fixture, corners: [[f64; 2]; 4], at: usize, r: f64) -> ObjectId {
     let mut d = Document::open(&f.source).expect("document");
     let e = f.at(corners[at]);
-    let edge = ferritecad_document::SweptEdge {
-        feature: uuid(&e["edge"]["feature_id"]),
-        joint: serde_json::from_value(e["edge"]["joint"].clone()).expect("joint"),
-    };
+    let edge = entity(&e["edges"][0]);
     let change = addition(
         f.body_id().parse().expect("body"),
         ferritecad_document::FeatureAddition::Fillet {
-            edge,
+            edges: vec![edge],
             radius_mm: ferritecad_document::Expression::constant(r).expect("radius"),
         },
     );
@@ -1124,7 +1079,7 @@ fn stored_history_exposes_each_predecessor_edge_and_radius() {
                     json!(ids[i - 1])
                 }
             );
-            assert_eq!(e["edge"]["feature_id"], *base);
+            assert_eq!(e["edges"][0]["producer"], *base);
             assert_eq!(e["expression"]["value"], radii[i]);
         }
     }
@@ -1135,7 +1090,7 @@ fn stored_history_exposes_each_predecessor_edge_and_radius() {
     let names = entries(g.root.path());
     let never = g.root.path().join("never.fcad");
     let tip = inspect(&f.source);
-    let held = tip["fillets"][0]["edge"].clone();
+    let held = tip["fillets"][0]["edges"][0].clone();
     g.ask_edge(&held, 1.0);
     let names_with_request = {
         let mut n = names;

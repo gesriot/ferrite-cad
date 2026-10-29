@@ -107,15 +107,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }));
                 }
             }
-            let mut swept = 0;
+            let mut references = 0;
             for object in document.objects()? {
-                let (previous, edge) = match object.payload {
-                    ObjectPayload::Fillet(f) => (f.previous, f.edge),
-                    ObjectPayload::Chamfer(c) => (c.previous, c.edge),
+                let (previous, edges) = match object.payload {
+                    ObjectPayload::Fillet(f) => (f.previous, f.edges),
+                    ObjectPayload::Chamfer(c) => (c.previous, c.edges),
                     _ => continue,
                 };
-                model.swept_edge(previous, edge)?;
-                swept += 1;
+                model.resolve_edges(object.id, previous, &edges)?;
+                references += edges.len();
             }
             report = json!({
                 "faces": counts[0],
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "vertices": counts[2],
                 "features": features,
                 "ambiguous": ambiguous,
-                "resolved_swept_edges": swept,
+                "resolved_references": references,
             });
             rebuild_samples.push(rebuild_ms);
             built.release_all(&mut kernel);

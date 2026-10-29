@@ -1,22 +1,16 @@
 // SPDX-License-Identifier: MIT
 //! Draft fields over stored geometry; the shared transaction judges Apply.
-use crate::feature_facts::{
-    Corner as FilletCorner, EdgeChoice as FilletChoice, EdgeFillet, EdgeTarget as SavedFilletTarget,
-};
+use crate::feature_facts::{EdgeChoice as FilletChoice, EdgeFillet, PickedEdge};
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_document::{DocumentVersion, ExpressionSlotValue, SweptEdge};
+use ferritecad_document::{DocumentVersion, ExpressionSlotValue};
 use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, ObjectId, Result};
 use std::path::{Path, PathBuf};
 
-/// What the form holds before any of it is a request: the chosen corner, by
-/// its position in the catalogue's list, and the radius as text.
-///
-/// The position never leaves the form. What is sent is the corner the
-/// catalogue listed at that position, by its producer and its two Lines.
+/// Selected viewport meanings and the typed amount, before transaction validation.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Typed {
-    corner: Option<usize>,
+    edges: Vec<PickedEdge>,
     radius: String,
 }
 
@@ -32,40 +26,24 @@ struct Draft {
 }
 
 impl Draft {
-    fn corners(&self) -> &[FilletCorner] {
-        self.choice
-            .target
-            .as_ref()
-            .map(|t| t.corners.as_slice())
-            .unwrap_or_default()
-    }
-
-    /// The typed state as one request, judged by the document's own rule.
-    fn fillet(&self, typed: &Typed) -> Result<(FilletCorner, EdgeFillet)> {
-        let corner = typed
-            .corner
-            .and_then(|i| self.corners().get(i))
-            .ok_or_else(|| CadError::input("choose one vertical edge to round"))?;
+    fn fillet(&self, typed: &Typed) -> Result<EdgeFillet> {
         let radius_mm = typed
             .radius
             .trim()
             .parse::<f64>()
             .map_err(|_| CadError::input("enter a finite fillet radius in mm"))?;
-        let fillet = EdgeFillet {
-            edge: SweptEdge {
-                feature: corner.feature,
-                joint: corner.joint,
-            },
+        let feature = EdgeFillet {
+            edges: typed.edges.iter().map(|edge| edge.reference).collect(),
             radius_mm,
         };
         let target = self.choice.target.as_ref().expect("form has target");
-        target.addition(fillet.feature()?, "Fillet")?;
-        Ok((*corner, fillet))
+        target.addition(feature.feature()?, "Fillet")?;
+        Ok(feature)
     }
 }
 
-/// §28B: a new radius for the saved Fillet, as typed. The edge is the saved
-/// one and is shown, never chosen: this form cannot retarget the Fillet.
+/// A new radius for the saved Fillet, as typed. This form shows the saved
+/// references and cannot retarget them.
 #[derive(Debug, Clone)]
 struct RadiusDraft {
     source: PathBuf,
@@ -79,7 +57,7 @@ struct RadiusDraft {
 
 impl RadiusDraft {
     /// The typed radius, judged by the document's own rule.
-    fn radius(&self, typed: &str) -> Result<f64> {
+    pub(crate) fn radius(&self, typed: &str) -> Result<f64> {
         let radius_mm = typed
             .trim()
             .parse::<f64>()
@@ -91,6 +69,7 @@ impl RadiusDraft {
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
+    selected: Option<std::result::Result<PickedEdge, String>>,
     draft: Option<Draft>,
     pending: Option<EditRequest>,
     radius: Option<RadiusDraft>,
@@ -107,6 +86,10 @@ pub(crate) struct Editor {
 }
 
 impl Editor {
+    pub(crate) fn set_selected(&mut self, selected: std::result::Result<PickedEdge, String>) {
+        self.selected = Some(selected);
+    }
+
     pub(crate) fn active(&self) -> bool {
         self.draft.is_some() || self.radius.is_some()
     }
@@ -386,52 +369,29 @@ impl Editor {
             return;
         };
         let mut cancel = false;
-        crate::form_window(ui, "Fillet one vertical edge")
+        crate::form_window(ui, "Fillet selected edges")
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
                 if !self.outcome.is_empty() {
                     ui.label(format!("Document: {}", self.outcome));
                 }
-                ui.label(
-                    "Rounds one vertical edge of the plate with a constant radius. The edge is \
-                     named by the base Extrude and the two Lines that meet at its corner.",
-                );
+                ui.label("Select an edge in the viewport, then add it to this list.");
                 ui.small(format!(
-                    "Body {} · base Extrude {} · profile {} · {} mm tall · {}",
+                    "Body {} · {}",
                     target.body,
-                    target.base_feature,
-                    target.profile,
-                    target.height_mm,
                     crate::sessions::shown_as(&draft.source)
                 ));
-                ui.small(format!(
-                    "Radius from {} mm to {} × the shorter adjacent side.",
-                    ferritecad_document::MIN_RADIUS_MM,
-                    ferritecad_document::MAX_RADIUS_FRACTION
-                ));
-                if target.constrained {
-                    ui.label(format!(
-                        "This plate's Sketch carries constraints. The corners and sides below \
-                         are the stored drawing, the solver's starting guess. Where the corner \
-                         is and the {} × shorter side limit are the solved plate's: the new copy \
-                         is saved only if the solved plate is still this rectangle with every \
-                         Line on its side and room for the radius at that corner.",
-                        ferritecad_document::MAX_RADIUS_FRACTION
-                    ));
-                }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel fillet draft").clicked() {
                         cancel = true;
                     }
-                    ui.label("Edge:");
-                    for (i, corner) in target.corners.iter().enumerate() {
-                        ui.radio_value(
-                            &mut draft.typed.corner,
-                            Some(i),
-                            describe_candidate(corner, &target),
-                        );
-                    }
+                    crate::edge_selection::draw(
+                        ui,
+                        &mut draft.typed.edges,
+                        self.selected.as_ref(),
+                        &mut draft.refusal,
+                    );
                     ui.horizontal(|ui| {
                         ui.label("Radius (mm):");
                         ui.add(
@@ -442,7 +402,7 @@ impl Editor {
                         );
                     });
                     // §30J: into the open document, no file name; the current
-                    // corner and valid radius, whether or not the draft was confirmed.
+                    // selected edges and valid radius, even before confirming the draft.
                     let valid = draft.fillet(&draft.typed);
                     if ui
                         .add_enabled(
@@ -451,7 +411,7 @@ impl Editor {
                         )
                         .clicked()
                     {
-                        let (_, fillet) = valid.as_ref().copied().expect("validated draft");
+                        let fillet = valid.as_ref().expect("validated draft");
                         self.pending_add = Some(EditRequest {
                             source: draft.source.clone(),
                             expected: draft.version,
@@ -487,20 +447,12 @@ impl Editor {
                         .filter(|applied| **applied == draft.typed)
                         .and_then(|applied| draft.fillet(applied).ok());
                     match confirmed {
-                        Some((corner, fillet)) => {
-                            ui.small(if target.constrained {
-                                let [a, b] = corner.joint.segments();
-                                format!(
-                                    "Ready: round the edge between Lines {a} | {b} with r{} mm; \
-                                     the radius is checked on the solved plate when saved",
-                                    fillet.radius_mm
-                                )
-                            } else {
-                                format!(
-                                    "Ready: round the edge at ({}, {}) with r{} mm",
-                                    corner.corner_mm[0], corner.corner_mm[1], fillet.radius_mm
-                                )
-                            });
+                        Some(fillet) => {
+                            ui.small(format!(
+                                "Ready: {} edge reference(s), {} mm",
+                                fillet.edges.len(),
+                                fillet.radius_mm
+                            ));
                             if ui
                                 .add_enabled(!self.unsaved, egui::Button::new("Save fillet copy…"))
                                 .clicked()
@@ -543,23 +495,6 @@ impl Editor {
             self.dismiss();
         }
     }
-}
-
-/// One candidate as the form lists it: where, which Lines, and the limit.
-/// For a constrained plate (§28F) the numbers are the stored drawing's and are
-/// labelled so; the limit is the solved plate's and is not shown as a number.
-fn describe(corner: &FilletCorner, _constrained: bool) -> String {
-    let [a, b] = corner.joint.segments();
-    format!(
-        "Corner ({}, {}) — Lines {a} | {b}; stored sides {} × {} mm",
-        corner.corner_mm[0],
-        corner.corner_mm[1],
-        corner.adjacent_lengths_mm[0],
-        corner.adjacent_lengths_mm[1]
-    )
-}
-fn describe_candidate(corner: &FilletCorner, target: &SavedFilletTarget) -> String {
-    describe(corner, target.constrained)
 }
 
 /// §28B's completion, through exactly the same two steps and retention as
@@ -621,7 +556,7 @@ pub(crate) mod tests {
         o.textures_delta.clear();
         o
     }
-    fn frame(ctx: &egui::Context, e: &mut Editor, running: bool) -> egui::FullOutput {
+    pub(crate) fn frame(ctx: &egui::Context, e: &mut Editor, running: bool) -> egui::FullOutput {
         run(ctx, e, Vec::new(), running)
     }
     fn press(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, running: bool) {
@@ -653,15 +588,15 @@ pub(crate) mod tests {
         let at = find(&out, label).unwrap_or_else(|| panic!("not painted: {label}"));
         press(ctx, e, at, running);
     }
-    fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
+    pub(crate) fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
         click_while(ctx, e, label, false);
     }
-    fn painted(out: &egui::FullOutput, label: &str) -> bool {
+    pub(crate) fn painted(out: &egui::FullOutput, label: &str) -> bool {
         out.shapes
             .iter()
             .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(label)))
     }
-    fn radius(ctx: &egui::Context, e: &mut Editor, value: &str) {
+    pub(crate) fn radius(ctx: &egui::Context, e: &mut Editor, value: &str) {
         enter(ctx, e, "Radius (mm):", value);
     }
     fn enter(ctx: &egui::Context, e: &mut Editor, field: &str, value: &str) {
@@ -962,7 +897,7 @@ pub(crate) mod tests {
 
     pub(crate) fn rounded(radius: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = plate();
-        let target = source.fillet_bodies[0].target.clone().expect("a target");
+        let target = crate::feature_tests::fixture_target(&source);
         let corner = target
             .corners
             .iter()
@@ -972,10 +907,7 @@ pub(crate) mod tests {
         let changes = target
             .addition(
                 (EdgeFillet {
-                    edge: SweptEdge {
-                        feature: target.base_feature,
-                        joint: corner.joint,
-                    },
+                    edges: vec![corner.reference],
                     radius_mm: radius,
                 })
                 .feature()
@@ -1083,10 +1015,7 @@ pub(crate) mod tests {
         r2: f64,
     ) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = rounded(r1);
-        let target = source.fillet_bodies[0]
-            .target
-            .clone()
-            .expect("a second target");
+        let target = crate::feature_tests::fixture_target(&source);
         let corner = *target
             .corners
             .iter()
@@ -1096,10 +1025,7 @@ pub(crate) mod tests {
         let changes = target
             .addition(
                 (EdgeFillet {
-                    edge: SweptEdge {
-                        feature: target.base_feature,
-                        joint: corner.joint,
-                    },
+                    edges: vec![corner.reference],
                     radius_mm: r2,
                 })
                 .feature()
@@ -1201,8 +1127,7 @@ pub(crate) mod tests {
     ) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, mut source) = plate();
         for (at, r) in spec {
-            let choice = source.fillet_bodies[0].clone();
-            let target = choice.target.clone().expect("a target");
+            let target = crate::feature_tests::fixture_target(&source);
             let corner = *target
                 .corners
                 .iter()
@@ -1212,10 +1137,7 @@ pub(crate) mod tests {
             let changes = target
                 .addition(
                     (EdgeFillet {
-                        edge: SweptEdge {
-                            feature: target.base_feature,
-                            joint: corner.joint,
-                        },
+                        edges: vec![corner.reference],
                         radius_mm: *r,
                     })
                     .feature()

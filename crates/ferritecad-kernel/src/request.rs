@@ -293,37 +293,34 @@ fn positive(value: f64, what: &str) -> Result<f64> {
     Ok(value)
 }
 
-/// What cutting one edge away at equal distances asks of a kernel (§29A).
-///
-/// The edge is a sub-shape handle of the target, obtained from the target's
-/// own names, as for [`FilletRequest`]. One edge and one constant distance,
-/// measured from the edge along **each** of the two adjacent faces (so the
-/// slanted flat is `distance_mm * sqrt(2)` wide). There is no reference face,
-/// no second distance and no angle: nothing in this request can depend on which
-/// of the edge's two faces a walk happens to meet first.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Chamfers a nonempty set of target edges at one equal distance along both faces.
+/// The builder decides whether that distance is valid for the supplied geometry.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChamferRequest {
     target: ShapeHandle,
-    edge: SubShapeHandle,
+    edges: Vec<SubShapeHandle>,
     distance_mm: f64,
 }
 
 impl ChamferRequest {
-    /// Refuses an edge that is not an edge of the target, and a distance that
-    /// is not a finite positive number. Whether the distance fits the part is
-    /// the caller's policy.
-    pub fn new(target: ShapeHandle, edge: SubShapeHandle, distance_mm: f64) -> Result<Self> {
-        if edge.kind() != crate::SubShapeKind::Edge {
-            return Err(CadError::input(format!(
-                "a chamfer cuts an edge, and {edge} is a {}",
-                edge.kind()
-            )));
+    /// Checks edge ownership and a finite positive distance; deduplicates the edge set.
+    pub fn new(target: ShapeHandle, edges: &[SubShapeHandle], distance_mm: f64) -> Result<Self> {
+        if edges.is_empty() {
+            return Err(CadError::input("an edge operation needs at least one edge"));
         }
-        if edge.shape() != target {
-            return Err(CadError::input(format!(
-                "a chamfer cuts an edge of the shape it modifies, and {edge} belongs to {}",
-                edge.shape()
-            )));
+        for edge in edges {
+            if edge.kind() != crate::SubShapeKind::Edge {
+                return Err(CadError::input(format!(
+                    "a chamfer cuts an edge, and {edge} is a {}",
+                    edge.kind()
+                )));
+            }
+            if edge.shape() != target {
+                return Err(CadError::input(format!(
+                    "a chamfer cuts an edge of the shape it modifies, and {edge} belongs to {}",
+                    edge.shape()
+                )));
+            }
         }
         if !distance_mm.is_finite() || distance_mm <= 0.0 {
             return Err(CadError::input(format!(
@@ -332,7 +329,12 @@ impl ChamferRequest {
         }
         Ok(Self {
             target,
-            edge,
+            edges: edges
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             distance_mm,
         })
     }
@@ -341,8 +343,8 @@ impl ChamferRequest {
         self.target
     }
 
-    pub fn edge(&self) -> SubShapeHandle {
-        self.edge
+    pub fn edges(&self) -> &[SubShapeHandle] {
+        &self.edges
     }
 
     pub fn distance_mm(&self) -> f64 {
@@ -354,53 +356,57 @@ impl ChamferRequest {
 mod tests {
     use super::*;
 
-    /// §28A: only an edge of the target, and only a finite positive radius.
+    /// Target edges are deduplicated; the radius must be finite and positive.
     #[test]
     fn a_fillet_request_names_an_edge_of_its_target_and_a_real_radius() {
         use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
         let target = ShapeHandle::new(SessionId::new(), 0);
         let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 3);
-        let request = FilletRequest::new(target, edge, 2.5).expect("valid");
+        let request = FilletRequest::new(target, &[edge, edge], 2.5).expect("valid");
         assert_eq!(
-            (request.target(), request.edge(), request.radius_mm()),
-            (target, edge, 2.5)
+            (request.target(), request.edges(), request.radius_mm()),
+            (target, [edge].as_slice(), 2.5)
         );
         let foreign =
             SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 0), SubShapeKind::Edge, 3);
-        assert!(FilletRequest::new(target, foreign, 2.5).is_err());
+        assert!(FilletRequest::new(target, &[edge, foreign], 2.5).is_err());
+        assert!(FilletRequest::new(target, &[], 2.5).is_err());
         for kind in [SubShapeKind::Face, SubShapeKind::Vertex] {
-            assert!(FilletRequest::new(target, SubShapeHandle::new(target, kind, 3), 2.5).is_err());
+            assert!(
+                FilletRequest::new(target, &[SubShapeHandle::new(target, kind, 3)], 2.5).is_err()
+            );
         }
         for radius in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(
-                FilletRequest::new(target, edge, radius).is_err(),
+                FilletRequest::new(target, &[edge], radius).is_err(),
                 "{radius}"
             );
         }
     }
 
-    /// §29A: only an edge of the target, and only a finite positive distance.
+    /// Target edges are deduplicated; the distance must be finite and positive.
     #[test]
     fn a_chamfer_request_names_an_edge_of_its_target_and_a_real_distance() {
         use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
         let target = ShapeHandle::new(SessionId::new(), 0);
         let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 3);
-        let request = ChamferRequest::new(target, edge, 2.5).expect("valid");
+        let request = ChamferRequest::new(target, &[edge, edge], 2.5).expect("valid");
         assert_eq!(
-            (request.target(), request.edge(), request.distance_mm()),
-            (target, edge, 2.5)
+            (request.target(), request.edges(), request.distance_mm()),
+            (target, [edge].as_slice(), 2.5)
         );
         let foreign =
             SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 0), SubShapeKind::Edge, 3);
-        assert!(ChamferRequest::new(target, foreign, 2.5).is_err());
+        assert!(ChamferRequest::new(target, &[edge, foreign], 2.5).is_err());
+        assert!(ChamferRequest::new(target, &[], 2.5).is_err());
         for kind in [SubShapeKind::Face, SubShapeKind::Vertex] {
             assert!(
-                ChamferRequest::new(target, SubShapeHandle::new(target, kind, 3), 2.5).is_err()
+                ChamferRequest::new(target, &[SubShapeHandle::new(target, kind, 3)], 2.5).is_err()
             );
         }
         for distance in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(
-                ChamferRequest::new(target, edge, distance).is_err(),
+                ChamferRequest::new(target, &[edge], distance).is_err(),
                 "{distance}"
             );
         }
@@ -512,35 +518,33 @@ impl BooleanRequest {
     }
 }
 
-/// What rounding one edge asks of a kernel (§28A).
-///
-/// The edge is a sub-shape handle of the target, obtained from the target's
-/// own names — never an index into a traversal and never a point the edge
-/// passes near. One edge and one constant radius: chains, variable radii and
-/// fillet-all are not what this request can say.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Rounds a nonempty set of named target edges at one constant radius.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FilletRequest {
     target: ShapeHandle,
-    edge: SubShapeHandle,
+    edges: Vec<SubShapeHandle>,
     radius_mm: f64,
 }
 
 impl FilletRequest {
-    /// Refuses an edge that is not an edge of the target, and a radius that is
-    /// not a finite positive number. Whether the radius fits the part is the
-    /// caller's policy; this is only what no kernel could mean.
-    pub fn new(target: ShapeHandle, edge: SubShapeHandle, radius_mm: f64) -> Result<Self> {
-        if edge.kind() != crate::SubShapeKind::Edge {
-            return Err(CadError::input(format!(
-                "a fillet rounds an edge, and {edge} is a {}",
-                edge.kind()
-            )));
+    /// Checks edge ownership and a finite positive radius; deduplicates the edge set.
+    pub fn new(target: ShapeHandle, edges: &[SubShapeHandle], radius_mm: f64) -> Result<Self> {
+        if edges.is_empty() {
+            return Err(CadError::input("an edge operation needs at least one edge"));
         }
-        if edge.shape() != target {
-            return Err(CadError::input(format!(
-                "a fillet rounds an edge of the shape it modifies, and {edge} belongs to {}",
-                edge.shape()
-            )));
+        for edge in edges {
+            if edge.kind() != crate::SubShapeKind::Edge {
+                return Err(CadError::input(format!(
+                    "a fillet rounds an edge, and {edge} is a {}",
+                    edge.kind()
+                )));
+            }
+            if edge.shape() != target {
+                return Err(CadError::input(format!(
+                    "a fillet rounds an edge of the shape it modifies, and {edge} belongs to {}",
+                    edge.shape()
+                )));
+            }
         }
         if !radius_mm.is_finite() || radius_mm <= 0.0 {
             return Err(CadError::input(format!(
@@ -549,7 +553,12 @@ impl FilletRequest {
         }
         Ok(Self {
             target,
-            edge,
+            edges: edges
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             radius_mm,
         })
     }
@@ -558,8 +567,8 @@ impl FilletRequest {
         self.target
     }
 
-    pub fn edge(&self) -> SubShapeHandle {
-        self.edge
+    pub fn edges(&self) -> &[SubShapeHandle] {
+        &self.edges
     }
 
     pub fn radius_mm(&self) -> f64 {

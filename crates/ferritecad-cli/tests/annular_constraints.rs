@@ -863,7 +863,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     assert!(text.contains("solid, 4 named faces"), "{text}");
     assert!(
         text.lines()
-            .filter(|line| line.starts_with("    face "))
+            .filter(|line| line.contains(" kind=face "))
             .count()
             == 4,
         "{text}"

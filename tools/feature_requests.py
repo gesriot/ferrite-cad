@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Build unitful edit requests from the stored facts used by GUI fixtures."""
 import os
+import re
+import subprocess
 import time
 import uuid
 
@@ -20,20 +22,35 @@ def base_profile(catalog):
     return base_id, sketch
 
 
-def edge_at(catalog, corner):
+def edge_at(catalog, corner, path):
     base, sketch = base_profile(catalog)
     joint = sorted(c["curve_id"] for c in sketch["curves"] if not c["construction"]
                    and c["geometry"]["kind"] == "line"
                    and corner in [c["geometry"]["start_mm"], c["geometry"]["end_mm"]])
     assert len(joint) == 2, (corner, joint)
-    return {"feature": base, "joint": joint}
+    # The declared fixture corner supplies exact curve identities. Resolve its
+    # named incidence from public topology; never search B-Rep coordinates.
+    result = subprocess.run([os.environ["FERRITECAD"], "print-topology", str(path)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    lines = result.stdout.splitlines()
+    candidates = []
+    for header, description in zip(lines, lines[1:]):
+        match = re.fullmatch(r"\s*producer=(\S+) kind=edge digest=(\w{64}) entities=1", header)
+        if match and match[1] == base:
+            curves = set(re.findall(r" = curve ([0-9a-f-]+),", description))
+            if curves == set(joint) and " cap," not in description:
+                candidates.append({"producer": base, "kind": "edge", "digest": match[2],
+                                   "selection": "one"})
+    assert len(candidates) == 1, (joint, candidates)
+    return candidates[0]
 
 
-def edge_addition(catalog, kind, corner, value):
+def edge_addition(catalog, kind, corner, value, path):
     field = "radius" if kind == "fillet" else "distance"
     return {"request_version": 1, "changes": [{"kind": "add_feature", "object": new_id(),
         "body": catalog["bodies"][0]["body_id"], "name": kind.title(),
-        "feature": {"kind": kind, "edge": edge_at(catalog, corner),
+        "feature": {"kind": kind, "edges": [edge_at(catalog, corner, path)],
                     field: {"value": value, "unit": "mm"}}}]}
 
 
@@ -48,5 +65,5 @@ def circular_cut(catalog, center, radius, depth=None):
                      "center": {"x": mm(center[0]), "y": mm(center[1])}, "radius": mm(radius)}}],
          "constraints": []},
         {"kind": "add_feature", "object": new_id(), "body": catalog["bodies"][0]["body_id"],
-         "name": "Cut", "feature": {"kind": "cut", "profile": sketch,
+         "name": "Cut", "feature": {"kind": "extrude", "operation": "cut", "profile": sketch,
           "end_condition": end, "reversed": False}}]}

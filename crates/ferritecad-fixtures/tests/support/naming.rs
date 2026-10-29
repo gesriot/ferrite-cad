@@ -142,7 +142,7 @@ pub fn signature(
 pub fn sweep_edges(
     kernel: &mut impl GeometryKernel,
     shape: ShapeHandle,
-) -> BTreeMap<ferritecad_types::ProfileJoint, SubShapeHandle> {
+) -> BTreeMap<[ferritecad_types::StableEntityId; 2], SubShapeHandle> {
     let trace = kernel.naming_history(shape).expect("history");
     let faces: BTreeMap<_, _> = trace
         .relations
@@ -164,8 +164,8 @@ pub fn sweep_edges(
             .filter_map(|f| faces.get(f))
             .collect();
         if adjacent.len() == 2 {
-            let joint = ferritecad_types::ProfileJoint::new(*adjacent[0], *adjacent[1])
-                .expect("two curves");
+            let mut joint = [*adjacent[0], *adjacent[1]];
+            joint.sort_unstable();
             joints.entry(joint).or_default().push(edge);
         }
     }
@@ -236,7 +236,7 @@ pub fn cap_vertices(
     kernel: &mut impl GeometryKernel,
     shape: ShapeHandle,
     end: bool,
-) -> BTreeMap<ferritecad_types::ProfileJoint, SubShapeHandle> {
+) -> BTreeMap<[ferritecad_types::StableEntityId; 2], SubShapeHandle> {
     let cap = cap(kernel, shape, end);
     let swept = sweep_edges(kernel, shape);
     let topology = kernel.shape_topology(shape).expect("topology");

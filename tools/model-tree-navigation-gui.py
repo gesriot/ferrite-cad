@@ -85,7 +85,7 @@ def main():
     for feature, corner, value in (("fillet", [33, 3.25], 2.375), ("chamfer", [-4.5, 3.25], 2.375)):
         catalog = run("inspect", corner_plate, "--json")
         body = catalog["bodies"][0]
-        req = request(feature, edge_addition(catalog, feature, corner, value))
+        req = request(feature, edge_addition(catalog, feature, corner, value, corner_plate))
         out = root / "inputs" / ("fillets.fcad" if feature == "fillet" else "chamfer.fcad")
         run("edit", corner_plate, "--expect-version",
             catalog["content_version"], "--request", req, "-o", out, "--json")

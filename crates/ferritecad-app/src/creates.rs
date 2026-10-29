@@ -2094,7 +2094,7 @@ pub(crate) mod tests {
             assert!(
                 report
                     .lines()
-                    .filter(|line| line.trim_start().starts_with("face "))
+                    .filter(|line| line.contains(" kind=face "))
                     .count()
                     == 6,
                 "{report}"

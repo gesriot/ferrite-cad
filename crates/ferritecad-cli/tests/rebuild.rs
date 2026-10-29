@@ -97,7 +97,7 @@ fn a_cold_rebuild_reports_what_the_document_produced() {
     assert!(
         report
             .lines()
-            .filter(|line| line.starts_with("    face "))
+            .filter(|line| line.contains(" kind=face "))
             .count()
             == 6,
         "{report}"

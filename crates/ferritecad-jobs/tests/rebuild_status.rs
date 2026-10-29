@@ -191,11 +191,11 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
             ),
             line(
                 0,
-                LineConstraintKind::Distance(LineLengthMm::new(4.0).expect("width")),
+                LineConstraintKind::Distance(LineLengthMm::new(1.0).expect("width")),
             ),
             line(
                 1,
-                LineConstraintKind::Distance(LineLengthMm::new(4.0).expect("height")),
+                LineConstraintKind::Distance(LineLengthMm::new(1.0).expect("height")),
             ),
         ],
     };

@@ -49,7 +49,7 @@ pub(crate) fn report(built: &RebuildResult, described: bool) -> Result<String> {
         for (name, entities) in &names.bindings {
             writeln!(
                 text,
-                "    {} {} entities={}",
+                "    producer={feature} kind={} digest={} entities={}",
                 name.kind,
                 name.digest,
                 entities.len()

@@ -36,6 +36,7 @@ mod dialogs;
 mod edits;
 mod entity_names;
 use entity_names::{TopologyWords, topology_name, topology_words};
+mod edge_selection;
 mod exports;
 mod feature_facts;
 mod fillets;
@@ -3819,18 +3820,14 @@ impl ApplicationHandler<AppEvent> for App {
                     self.sessions.dirty(),
                 );
                 self.creates.sketch.cuts.set_add(cut_add);
-                self.creates.sketch.fillets.set_session(
+                edge_selection::update(
+                    &mut self.creates.sketch,
+                    &live.scene,
+                    &self.sessions,
                     session_idle && !self.edits.busy(),
-                    radius_apply,
-                    self.sessions.dirty(),
+                    [radius_apply, distance_apply],
+                    [fillet_add, chamfer_add],
                 );
-                self.creates.sketch.fillets.set_add(fillet_add);
-                self.creates.sketch.chamfers.set_session(
-                    session_idle && !self.edits.busy(),
-                    distance_apply,
-                    self.sessions.dirty(),
-                );
-                self.creates.sketch.chamfers.set_add(chamfer_add);
                 self.creates.sketch.constraints.set_session(
                     session_idle && !self.edits.busy(),
                     constraints_apply,
@@ -8831,8 +8828,7 @@ mod tests {
     /// The committed plate through the real kernel, with an exact durable name
     /// for every corner where a profile joint reaches a cap.
     ///
-    /// The corners come from `ProfileLoop::joints`, the same adjacency the
-    /// kernel and the topology map already share.
+    /// Cap vertices carry names derived from their incident boundary faces.
     fn native_plate_with_named_cap_vertices() -> Option<(tempfile::TempDir, LoadedScene)> {
         native_plate_with_named_cap_vertices_beside(0)
     }
@@ -8903,9 +8899,7 @@ mod tests {
     /// A copy of the committed plate with an exact name for every edge that
     /// runs along the sweep.
     ///
-    /// The corners come from `ProfileLoop::joints`, which is the one piece of
-    /// adjacency arithmetic in the workspace. Pairing the sketch curves here
-    /// would be a second one, free to disagree with the first.
+    /// The scene receives edge meanings from the rebuilt model's incidence.
     fn native_plate_with_named_sweep_edges() -> Option<(tempfile::TempDir, LoadedScene)> {
         if !ferritecad_occt::is_available() {
             ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);

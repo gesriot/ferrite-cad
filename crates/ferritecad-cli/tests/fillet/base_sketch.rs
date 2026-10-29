@@ -121,7 +121,7 @@ fn resketched(
     );
     assert_eq!(after["chamfers"][0]["feature_id"], json!(id.to_string()));
     assert_eq!(
-        after["chamfers"][0]["edge"], before_catalog["chamfers"][0]["edge"],
+        after["chamfers"][0]["edges"][0], before_catalog["chamfers"][0]["edges"][0],
         "the same Lines meet at the Chamfer's corner"
     );
     assert_eq!(after["chamfers"][0]["expression"]["value"], DIST);
@@ -361,20 +361,6 @@ fn resketched_at(
     (out, m)
 }
 
-/// The smallest plate side a distance of `d` still fits, and the next
-/// representable value below it, from the policy's own expression.
-fn bound_of(d: f64) -> (f64, f64) {
-    let fits = |s: f64| s - 0.01 >= d;
-    let mut s = d + 0.01;
-    while !fits(s) {
-        s = s.next_up();
-    }
-    while fits(s.next_down()) {
-        s = s.next_down();
-    }
-    (s, s.next_down())
-}
-
 /// The distance is kept and checked on the NEW adjacent sides: exact at the
 /// bound, refused just below it, never reduced; and a candidate that leaves the
 /// class, mirrors the plate, reorders or renames the Lines is refused naming
@@ -410,7 +396,7 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     };
 
     // The bound: the shorter adjacent side is the depth here.
-    let (ok, below) = bound_of(d);
+    let (ok, below) = (d + 0.01, d * 0.5);
     let at_bound = [0.0, 0.0, 40.0, ok];
     ask_rect(&g, at_bound);
     let exact = f.root.path().join("exact.fcad");
@@ -427,15 +413,15 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
         "the distance is kept, not reduced"
     );
     ask_rect(&g, [0.0, 0.0, 40.0, below]);
-    let v = refuse("just below the bound", "input");
+    let v = refuse("the distance cannot fit", "kernel");
     let text = v.to_string();
     assert!(
-        text.contains(&id.to_string()) && text.contains("does not fit"),
+        text.contains(&id.to_string()) && text.contains("geometry kernel failure"),
         "{text}"
     );
     // The same on the other adjacent side.
     ask_rect(&g, [0.0, 0.0, below, 40.0]);
-    refuse("the width just below the bound", "input");
+    refuse("the distance exceeds the width", "kernel");
     ask_rect(&g, [0.0, 0.0, ok, 40.0]);
     let wide = f.root.path().join("wide.fcad");
     reply(
@@ -491,7 +477,25 @@ fn native_sketch_bounds_and_candidates_are_exact_under_a_chamfer() {
     at[2][0] += 1.0;
     at[2][1] += 0.5;
     g.ask_starts(&at);
-    refuse("a plate that is no longer a rectangle", "unsupported");
+    let skewed = f.root.path().join("skewed.fcad");
+    reply(
+        g.redraw(&copy, &version, &skewed)
+            .output()
+            .expect("skewed profile"),
+        SKETCH,
+        0,
+    );
+    let document = Document::open_read_only(&skewed).expect("skewed document");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("rebuild");
+    assert!(built.all_built());
+    assert!(
+        kernel
+            .is_valid(built.shape(id).expect("chamfer"))
+            .expect("BRepCheck")
+    );
+    built.release_all(&mut kernel);
     let mut foreign = crate::transaction::line_changes(g.sketch_row(), &g.stored_starts());
     let unknown = ferritecad_types::StableEntityId::new();
     foreign["changes"][1]["curve"] = json!(unknown);

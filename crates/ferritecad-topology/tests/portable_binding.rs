@@ -13,7 +13,6 @@ use std::collections::BTreeSet;
 mod naming;
 struct Plate {
     request: ExtrudeRequest,
-    segments: Vec<StableEntityId>,
     feature: ObjectId,
 }
 fn plate() -> Result<Plate> {
@@ -24,10 +23,8 @@ fn plate() -> Result<Plate> {
         .collect::<Result<_>>()?;
 
     let mut segments = Vec::new();
-    let mut labels = Vec::new();
     for (index, start) in points.iter().enumerate() {
         let label = StableEntityId::new();
-        labels.push(label);
         segments.push(ProfileSegment::new(
             label,
             SegmentGeometry::line(*start, points[(index + 1) % points.len()])?,
@@ -42,7 +39,6 @@ fn plate() -> Result<Plate> {
 
     Ok(Plate {
         request: ExtrudeRequest::new(profile, ExtrudeExtent::blind(10.0)?, false),
-        segments: labels,
         feature: ObjectId::new(),
     })
 }
@@ -327,26 +323,87 @@ fn exact_names_never_choose_among_ambiguous_or_absent_members() {
 }
 
 #[test]
-fn foreign_or_disconnected_profile_joints_keep_their_refusals() {
+fn references_report_all_failures_and_explicit_sets_never_choose_a_neighbour() {
+    use ferritecad_document::{EntityKind, EntityReference, ReferenceMeaning};
     let plate = plate().expect("plate");
     let mut kernel = MockKernel::new();
-    let map = build(&mut kernel, &plate);
-    for pair in [
-        [plate.segments[0], plate.segments[2]],
-        [plate.segments[0], StableEntityId::new()],
+    let mut map = build(&mut kernel, &plate);
+    let result = &map.features[&plate.feature];
+    let mut edges = result.topology.entities(SubShapeKind::Edge);
+    let first = edges.next().expect("edge");
+    let second = edges.next().expect("other edge");
+    drop(edges);
+    let name = result.entities[&first];
+    let face = result
+        .topology
+        .entities(SubShapeKind::Face)
+        .next()
+        .expect("face");
+    let face_name = result.entities[&face];
+    let reference = EntityReference::new(ReferenceMeaning {
+        producer: plate.feature,
+        kind: EntityKind::Edge,
+        digest: name.digest,
+        selection: Selection::One,
+    });
+    let consumer = ObjectId::new();
+    assert_eq!(
+        map.resolve_edges(consumer, plate.feature, &[reference])
+            .expect("one"),
+        vec![first]
+    );
+    map.features
+        .get_mut(&plate.feature)
+        .expect("result")
+        .ancestry
+        .get_mut(&name)
+        .expect("row")
+        .insert(second);
+    let split = map
+        .resolve_edges(consumer, plate.feature, &[reference])
+        .expect_err("split");
+    assert!(split.to_string().contains("split into 2 edges"));
+    let mut all = reference;
+    all.meaning.selection = Selection::AllDescendants;
+    assert_eq!(
+        map.resolve_edges(consumer, plate.feature, &[all])
+            .expect("set")
+            .len(),
+        2
+    );
+    map.features
+        .get_mut(&plate.feature)
+        .expect("result")
+        .ancestry
+        .remove(&name);
+    let unknown = EntityReference::new(ReferenceMeaning {
+        digest: ContentHash::of_bytes(b"unknown name"),
+        ..reference.meaning
+    });
+    let foreign = EntityReference::new(ReferenceMeaning {
+        producer: ObjectId::new(),
+        ..reference.meaning
+    });
+    let wrong_kind = EntityReference::new(ReferenceMeaning {
+        digest: face_name.digest,
+        ..reference.meaning
+    });
+    let references = [reference, unknown, foreign, wrong_kind];
+    let error = map
+        .resolve_edges(consumer, plate.feature, &references)
+        .expect_err("all failures");
+    assert_eq!(error.kind(), ErrorKind::Topology);
+    let text = error.to_string();
+    assert_eq!(text.matches(&consumer.to_string()).count(), 4);
+    for reference in references {
+        assert!(text.contains(&reference.id.to_string()));
+    }
+    for reason in [
+        "edge deleted",
+        "unknown name",
+        "not in the consumed result's history",
+        "wrong kind",
     ] {
-        let edge = ferritecad_document::SweptEdge {
-            feature: plate.feature,
-            joint: ferritecad_types::ProfileJoint::new(pair[0], pair[1]).expect("joint"),
-        };
-        let error = map
-            .swept_edge(plate.feature, edge)
-            .expect_err("no invented joint");
-        assert_eq!(error.kind(), ErrorKind::Topology);
-        assert!(
-            error
-                .to_string()
-                .contains("has 0 descendants; refusing to choose")
-        );
+        assert!(text.contains(reason), "{text}");
     }
 }

@@ -325,7 +325,7 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
 * **Model** was at x ≈ 260 pt wide; it is 230 pt by default, and **Actions** is a
   second panel on the right (300 pt) that older recipes do not know.
 * Older verification reports that record CUA screen-coordinate clicks
-  (`edit-chamfer-base-sketch-verification.md`, `edit-fillet-base-height-verification.md`,
+  (fillets-and-chamfers.md`, `fillets-and-chamfers.md`,
   `partial-angle-revolve-verification.md`, `sketch-session-apply-verification.md`)
   are historical operator notes and were not rewritten; the recipes that name
   buttons by their labels (`tools/*-gui.py`, which contain no coordinates) stay valid.

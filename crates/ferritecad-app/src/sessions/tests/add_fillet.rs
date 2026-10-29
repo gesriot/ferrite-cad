@@ -58,8 +58,7 @@ fn refuse(s: &mut Sessions, r: &EditRequest) -> String {
     assert_eq!(state(s), before);
     s.status.clone()
 }
-/// `edit` on `source`, naming the Body and the edge by UUID; the
-/// joint is written in the other order, as the CLI accepts.
+/// The same named edge and amount through `edit` on the current snapshot.
 fn peer_add(source: &Path, body: ObjectId, value: &EdgeFillet, out: &Path) {
     let d = Document::open_read_only(source).expect("source");
     let r = EditRequest {
@@ -133,6 +132,13 @@ fn pair_fillets(
     assert_eq!((a.len(), b.len()), (adds, adds), "one history chain");
     for (u, v) in a.into_iter().zip(b) {
         assert!(map.insert(u.to_bytes(), v.to_bytes()).is_none());
+        let ours = Document::open_read_only(ours).expect("ours");
+        let theirs = Document::open_read_only(theirs).expect("theirs");
+        super::add_cut::pair_edge_references(
+            map,
+            &ours.object(u).expect("row").expect("Fillet").payload,
+            &theirs.object(v).expect("row").expect("Fillet").payload,
+        );
     }
     check_added_identity_map(map, &earlier, before);
 }
@@ -173,7 +179,7 @@ fn assert_allowlist(before: &Path, after: &Path, body: ObjectId, r: &EdgeFillet)
         was.tip_feature,
         "its predecessor is the old tip"
     );
-    assert_eq!(f.edge, r.edge, "the requested edge");
+    assert_eq!(f.edges, r.edges, "the requested edge");
     assert_eq!(
         f.radius_mm,
         ferritecad_document::Expression::constant(r.radius_mm).expect("finite constant")
@@ -213,7 +219,7 @@ fn gate(name: &str) {
     }
     let (root, source, opened) = fixture(0);
     let original = std::fs::read(&source).expect("source");
-    let target = opened.fillet_bodies[0].target.clone().expect("target");
+    let target = crate::feature_tests::fixture_target(&opened);
     let (body, base) = (target.body, target.base_feature);
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
@@ -299,7 +305,7 @@ fn gate(name: &str) {
             r.source, current,
             "the accepted snapshot, not the user's file"
         );
-        assert_eq!(r.fillet().edge.feature, base);
+        assert_eq!(r.fillet().edges[0].meaning.producer, base);
         let independent = root.path().join(format!("peer-add-{step}.fcad"));
         peer_add(&peer_before, body, &r.fillet(), &independent);
         let exact = root.path().join(format!("exact-add-{step}.fcad"));
@@ -357,7 +363,7 @@ fn gate(name: &str) {
             body,
             name: Some("Fillet".into()),
             feature: (EdgeFillet {
-                edge: first.edge,
+                edges: vec![first.edge],
                 radius_mm: 1.,
             })
             .feature()
@@ -367,7 +373,7 @@ fn gate(name: &str) {
     };
     let reason = refuse(&mut s, &fifth);
     assert!(
-        reason.contains(&fifth.addition().0.to_string()) && reason.contains("at most 4"),
+        reason.contains(&fifth.addition().0.to_string()) && reason.contains("edge deleted"),
         "{reason}"
     );
 
@@ -475,17 +481,17 @@ fn gate(name: &str) {
     // The same corner again is the domain's refusal naming the Fillet there.
     r = fresh.clone();
     if let ferritecad_document::EditChange::AddFeature {
-        feature: ferritecad_document::FeatureAddition::Fillet { edge, .. },
+        feature: ferritecad_document::FeatureAddition::Fillet { edges, .. },
         ..
     } = &mut r.changes[0]
     {
-        *edge = history(&current)[0].edge;
+        *edges = vec![history(&current)[0].edge];
     } else {
         panic!("feature request")
     }
     let repeated = refuse(&mut s, &r);
     assert!(
-        repeated.contains("already rounded") && repeated.contains(&added[0].to_string()),
+        repeated.contains("edge deleted") && repeated.contains(&r.addition().0.to_string()),
         "{repeated}"
     );
     r = fresh.clone();
@@ -494,13 +500,13 @@ fn gate(name: &str) {
         ..
     } = &mut r.changes[0]
     {
-        *radius_mm = ferritecad_document::Expression::constant(6.2).expect("number");
+        *radius_mm = ferritecad_document::Expression::constant(100.).expect("number");
     } else {
         panic!("feature request")
     }
     assert!(
-        refuse(&mut s, &r).contains("too large"),
-        "half the shorter side"
+        refuse(&mut s, &r).contains("kernel"),
+        "the kernel rejects an impossible radius"
     );
     // 0 cancel after the answer, 1 stale answer, 2 failed scene, 3 failed GPU,
     // 4 cancel during binding, 5 cancel before the answer.
@@ -650,31 +656,22 @@ fn native_add_on_unsaved_constraints_is_measured_on_solved_lines() {
     }
     let (root, source, reading) = fixture(0);
     let original = std::fs::read(&source).expect("source");
-    let target = reading.fillet_bodies[0].target.clone().expect("target");
+    let target = crate::feature_tests::fixture_target(&reading);
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_constraints_native(&mut s, &solved_rectangle(&source, &reading, 10.));
     let current = s.export_path().expect("constraints");
     let reading = crate::sketch_facts::read(&current).expect("reading");
-    let tgt = reading.fillet_bodies[0]
-        .target
-        .as_ref()
-        .expect("constrained target");
+    let tgt = crate::feature_tests::fixture_target(&reading);
     assert!(tgt.constrained, "the Add form sees a constrained plate");
-    // Refused on the solved plate although the stored guess would allow it.
-    let (mut form, r) = typed_add(&current, &reading, &s, [33., 15.5], "5.5");
-    let corner = tgt
-        .corners
-        .iter()
-        .find(|c| c.corner_mm == [33., 15.5])
-        .expect("corner");
-    assert!(corner.adjacent_lengths_mm.into_iter().all(|v| v > 5.5));
+    // The kernel refuses an impossible radius on the solved geometry.
+    let (mut form, r) = typed_add(&current, &reading, &s, [33., 15.5], "100");
     let draft = add_draft_state(&form);
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
     let error = rx.recv().expect("answer").expect_err("solved refusal");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
-    assert!(error.to_string().contains("too large"), "{error}");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+    assert!(error.to_string().contains("kernel"), "{error}");
     assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
     visible_outcome(&mut form, &s.status);
     assert_eq!(add_draft_state(&form), draft);
@@ -720,7 +717,7 @@ fn solved_rectangle(
         AddLineConstraint, AddSketchConstraint, LineConstraintKind, LineEndpoint, LineLengthMm,
         SketchConstraintEdits, SketchCoordinateMm,
     };
-    let target = reading.fillet_bodies[0].target.as_ref().expect("target");
+    let target = crate::feature_tests::fixture_target(reading);
     let d = Document::open_read_only(source).expect("document");
     let ObjectPayload::Sketch(sketch) = d
         .object(target.profile)
@@ -848,17 +845,14 @@ const WINDOW_OUTPUTS: [&str; 8] = [
 
 fn fillet_of(at: [f64; 2], radius: &str, path: &Path) -> EdgeFillet {
     let reading = crate::sketch_facts::read(path).expect("reading");
-    let target = reading.fillet_bodies[0].target.clone().expect("target");
+    let target = crate::feature_tests::fixture_target(&reading);
     let corner = target
         .corners
         .iter()
         .find(|c| c.corner_mm == at)
         .expect("free corner");
     EdgeFillet {
-        edge: ferritecad_document::SweptEdge {
-            feature: target.base_feature,
-            joint: corner.joint,
-        },
+        edges: vec![corner.reference],
         radius_mm: radius.parse().expect("radius"),
     }
 }
@@ -891,7 +885,7 @@ fn compare_gui(root: &Path) {
     );
     let tmp = tempfile::tempdir().expect("peer root");
     let reading = crate::sketch_facts::read(&source).expect("reading");
-    let target = reading.fillet_bodies[0].target.clone().expect("target");
+    let target = crate::feature_tests::fixture_target(&reading);
     let body = target.body;
     let height = tmp.path().join("height.fcad");
     {
@@ -1079,13 +1073,13 @@ fn compare_with_controls(root: &Path) {
     control(
         root,
         "branch instead of Save",
-        "saved window file: every SQL cell",
+        "pair by the complete consumed meaning",
         &|r| as_saved(r, &file(r, "branch.fcad")),
     );
     control(
         root,
         "Save instead of branch",
-        "window branch: every SQL cell",
+        "pair by the complete consumed meaning",
         &|r| std::fs::write(r.join("branch.fcad"), file(r, "saved.fcad")).expect("write"),
     );
     control(
@@ -1116,7 +1110,7 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     let put = |name: &str, bytes: &[u8]| std::fs::write(layout.join(name), bytes).expect(name);
     let original = std::fs::read(&source).expect("source");
     put("source/plate.fcad", &original);
-    let target = opened.fillet_bodies[0].target.clone().expect("target");
+    let target = crate::feature_tests::fixture_target(&opened);
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
     apply_native(&mut s, target.base_feature, 9.25);
@@ -1220,4 +1214,181 @@ fn native_compare_real_add_fillet_gui_artifacts_with_negative_controls() {
     assert!(native());
     compare_with_controls(Path::new(&root));
     println!("FCAD_30J_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+}
+
+#[test]
+fn a_viewport_pixel_supplies_the_stored_edge_and_a_stale_scene_cannot_add_it() {
+    use crate::fillets::tests::{click, frame, painted, radius};
+    use ferritecad_kernel::{OperationContext, TessellationParams};
+    use ferritecad_ui::{PointerButton, ViewportEvent, ViewportInput};
+    use ferritecad_viewport::{EdgePickId, Hovered, Marked, VertexPickId, Visibility};
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let mut renderer = match crate::Renderer::new() {
+        Ok(renderer) => renderer,
+        Err(e) if e.kind() == ferritecad_types::ErrorKind::Unsupported => {
+            ferritecad_fixtures::native_dependencies(&[(false, "GPU")]);
+            return;
+        }
+        Err(e) => panic!("renderer: {e}"),
+    };
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("viewport.fcad");
+    ferritecad_fixtures::write_plate(&path).expect("plate");
+    let mut sessions = crate::cuts::tests::add_session::opened(&path);
+    let reading = crate::sketch_facts::read(&path).expect("reading");
+    let body = reading.fillet_bodies[0].body;
+    let document = Document::open_read_only(&path).expect("document");
+    let candidates: Vec<_> = (0..4)
+        .map(|corner| {
+            ferritecad_fixtures::feature_changes::plate_edge(&document, body, corner)
+                .expect("fixture meaning")
+                .meaning
+                .digest
+        })
+        .collect();
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let loaded = ferritecad_scene::snapshot_of(
+        &path,
+        &mut kernel,
+        |k, bytes| k.import_step(bytes),
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("scene");
+    let picture = std::sync::Arc::new(loaded.snapshot);
+    let prepared = renderer
+        .prepare(std::sync::Arc::clone(&picture))
+        .expect("upload");
+    let mut input = ViewportInput::new();
+    input.resize(480, 480);
+    input
+        .frame(picture.bounds().expect("bounds"))
+        .expect("frame");
+    input.handle(ViewportEvent::PointerMoved { x: 200., y: 200. }, false);
+    input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+    input.handle(ViewportEvent::PointerMoved { x: 260., y: 150. }, false);
+    input.handle(
+        ViewportEvent::PointerReleased(PointerButton::Primary),
+        false,
+    );
+    let visibility = Visibility::new(&picture);
+    let pixels = renderer
+        .render(
+            &prepared,
+            input.camera(),
+            Marked::Nothing,
+            Hovered::Nothing,
+            &visibility,
+        )
+        .expect("pixels");
+    let (hit, digest) = (0..pixels.height())
+        .flat_map(|y| (0..pixels.width()).map(move |x| (x, y)))
+        .find_map(|(x, y)| {
+            let hit = pixels.hit_at(x, y);
+            if hit.edge() == EdgePickId::NOTHING || hit.vertex() != VertexPickId::NOTHING {
+                return None;
+            }
+            let [meaning] = loaded.edges.of(hit.edge(), &picture) else {
+                return None;
+            };
+            candidates
+                .contains(&meaning.digest)
+                .then_some((hit, meaning.digest))
+        })
+        .expect("a visible named vertical edge");
+    let selection = crate::selection_at(
+        hit,
+        &picture,
+        &loaded.faces,
+        &loaded.edges,
+        &loaded.vertices,
+    );
+    assert!(matches!(selection.marked(), Marked::Edge(_)));
+    let mut scene = crate::LiveScene {
+        edit_source: Some(reading.clone()),
+        document: Some(path.clone()),
+        prepared,
+        catalogue: loaded.catalogue,
+        faces: loaded.faces,
+        edges: loaded.edges,
+        vertices: loaded.vertices,
+        visibility,
+        selection,
+        hovered: Hovered::Nothing,
+        sketch_solves: loaded.sketch_solves,
+        sketches: Default::default(),
+    };
+    let mut editor = crate::sketch::Editor::default();
+    assert!(editor.fillets.begin(&path, &reading, body));
+    let ctx = egui::Context::default();
+    // The stale picture cannot contribute a reference to the form.
+    scene.edit_source.as_mut().expect("source").version.content =
+        ferritecad_types::ContentHash::of_bytes(b"stale scene");
+    crate::edge_selection::update(&mut editor, &scene, &sessions, true, [false; 2], [true; 2]);
+    for _ in 0..3 {
+        frame(&ctx, &mut editor.fillets, false);
+    }
+    click(&ctx, &mut editor.fillets, "Add selected edge");
+    assert!(painted(
+        &frame(&ctx, &mut editor.fillets, false),
+        "older than the document"
+    ));
+    scene.edit_source = Some(reading);
+    crate::edge_selection::update(&mut editor, &scene, &sessions, true, [false; 2], [true; 2]);
+    click(&ctx, &mut editor.fillets, "Add selected edge");
+    radius(&ctx, &mut editor.fillets, "2.0");
+    click(&ctx, &mut editor.fillets, "Add fillet");
+    let request = editor
+        .fillets
+        .take_add_request()
+        .expect("one selected edge");
+    let wanted = request.fillet().edges;
+    assert_eq!(wanted.len(), 1);
+    assert_eq!(wanted[0].meaning.digest, digest);
+    assert!(matches!(add(&mut sessions, &request), Edited::Show(_)));
+    let current = sessions.export_path().expect("current");
+    let d = Document::open_read_only(&current).expect("published");
+    let fillet = d
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find_map(|o| match o.payload {
+            ObjectPayload::Fillet(f) => Some((o.id, f)),
+            _ => None,
+        })
+        .expect("stored feature");
+    assert_eq!(fillet.1.edges, wanted);
+    let edit = EditRequest {
+        source: current.clone(),
+        expected: crate::sketch_facts::read(&current)
+            .expect("reading")
+            .version,
+        changes: vec![
+            ferritecad_document::EditChange::constant(
+                fillet.0,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+                3.,
+            )
+            .expect("radius"),
+        ],
+        destination: PathBuf::new(),
+    };
+    assert!(matches!(
+        apply_radius(&mut sessions, &edit),
+        Edited::Show(_)
+    ));
+    let final_path = sessions.export_path().expect("current");
+    let final_document = Document::open_read_only(&final_path).expect("final");
+    let ObjectPayload::Fillet(final_fillet) = final_document
+        .object(fillet.0)
+        .expect("read")
+        .expect("fillet")
+        .payload
+    else {
+        panic!("Fillet")
+    };
+    assert_eq!(final_fillet.edges, wanted);
+    assert_eq!(final_fillet.radius_mm.value(), 3.);
 }

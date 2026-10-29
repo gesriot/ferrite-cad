@@ -35,17 +35,17 @@ fn settle(ctx: &egui::Context, e: &mut Editor) {
 fn typed(e: &Editor) -> Typed {
     e.draft.as_ref().expect("draft").typed.clone()
 }
-/// The corner of the open draft stored at `at`, and the label its radio shows.
-fn corner_at(e: &Editor, at: [f64; 2]) -> (usize, FilletCorner, String) {
-    let draft = e.draft.as_ref().expect("draft");
-    let target = draft.choice.target.as_ref().expect("target");
-    let i = target
-        .corners
-        .iter()
-        .position(|c| c.corner_mm == at)
-        .unwrap_or_else(|| panic!("no free corner at {at:?}"));
-    let corner = target.corners[i];
-    (i, corner, describe_candidate(&corner, target))
+// Supply the fixture's declared meaning as the scene selection, then exercise
+// the real Add selected edge button. Native viewport coverage lives separately.
+fn corner_at(e: &mut Editor, at: [f64; 2]) -> (usize, crate::feature_tests::FixtureCorner, String) {
+    let reading = crate::sketch_facts::read(&e.draft.as_ref().expect("draft").source)
+        .expect("fixture reading");
+    let corner = crate::feature_tests::fixture_corner(&reading, at);
+    e.set_selected(Ok(crate::feature_facts::PickedEdge {
+        reference: corner.reference,
+        description: "Fixture edge".into(),
+    }));
+    (0, corner, "Add selected edge".into())
 }
 
 /// The Add form's own widgets, as the window leaves them: a corner chosen by its
@@ -74,7 +74,7 @@ pub(crate) fn typed_add(
     radius(&ctx, e, radius_text);
     click(&ctx, e, "Add fillet");
     let request = e.take_add_request().expect("valid widget Add request");
-    assert_eq!(request.fillet().edge.joint, corner.joint);
+    assert_eq!(request.fillet().edges[0].meaning, corner.reference.meaning);
     assert!(e.take_request().is_none(), "Add is not the copy");
     (c.sketch, request)
 }
@@ -109,7 +109,7 @@ fn add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_on
     for label in [
         "Add fillet",
         "Confirm draft edge and radius",
-        "Fillet one vertical edge",
+        "Fillet selected edges",
         "This document changes with Add fillet",
     ] {
         assert!(painted(&out, label), "{label}");
@@ -119,7 +119,7 @@ fn add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_on
         "no radius Apply on the Add form"
     );
     assert!(!painted(&out, "new copy"), "the window title is not a copy");
-    let (i, corner, label) = corner_at(e, [-4.5, 15.5]);
+    let (_, corner, label) = corner_at(e, [-4.5, 15.5]);
     click(&ctx, e, &label);
     radius(&ctx, e, "3.06250");
     click(&ctx, e, "Add fillet");
@@ -133,15 +133,15 @@ fn add_fillet_reads_current_selection_confirm_is_draft_only_and_copy_is_clean_on
     assert_eq!(request.addition().1, body);
     assert_eq!(request.expected, reading.version);
     assert_eq!(request.source, path);
-    assert_eq!(request.fillet().edge.feature, base);
-    assert_eq!(request.fillet().edge.joint, corner.joint);
+    assert_eq!(request.fillet().edges[0].meaning.producer, base);
+    assert_eq!(request.fillet().edges[0].meaning, corner.reference.meaning);
     assert_eq!(request.fillet().radius_mm, 3.0625);
     assert!(
         e.draft.as_ref().expect("draft").applied.is_none(),
         "Add did not confirm the draft"
     );
     assert!(e.take_request().is_none() && e.take_apply_request().is_none());
-    assert_eq!(typed(e).corner, Some(i));
+    assert_eq!(typed(e).edges.len(), 1);
     assert_eq!(typed(e).radius, "3.06250");
     // Confirm records the draft for the copy workflow only: it asks the window
     // for nothing, and only then is the copy offered.
@@ -340,22 +340,15 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
     let ctx = egui::Context::default();
     let e = &mut c.sketch.fillets;
     settle(&ctx, e);
-    // The form presents stored edges, including a rounded corner.
-    let rounded = selected(&reading, 0).joint;
     assert!(
-        e.draft
-            .as_ref()
-            .expect("draft")
-            .corners()
-            .iter()
-            .any(|c| c.joint == rounded),
-        "Apply judges whether the stored edge can be rounded again"
+        typed(e).edges.is_empty(),
+        "the form waits for a viewport selection"
     );
     // No corner, not a number, below the minimum, above half the shorter side:
     // the draft stays and nothing is asked.
     click(&ctx, e, "Add fillet");
     assert!(e.take_add_request().is_none(), "no corner");
-    let (i, _, beside) = corner_at(e, [-4.5, 3.25]);
+    let (_, _, beside) = corner_at(e, [-4.5, 3.25]);
     click(&ctx, e, &beside);
     {
         let (text, why) = ("banana", "finite");
@@ -364,7 +357,7 @@ fn add_fillet_dirty_discovery_refusals_keep_draft_status_dismissal_and_full_plat
         click(&ctx, e, "Add fillet");
         assert!(e.take_add_request().is_none(), "{text}");
         assert_eq!(typed(e).radius, text);
-        assert_eq!(typed(e).corner, Some(i));
+        assert_eq!(typed(e).edges.len(), 1);
         let shown = e
             .draft
             .as_ref()

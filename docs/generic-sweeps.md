@@ -27,7 +27,8 @@ exact consumed selection.
 direction, axis or extent through the shared transaction. An edit is accepted only
 when no previously built feature becomes failed or skipped. Undo/Redo uses this same
 candidate and rebuild path. Unconsumed topology may disappear; references are never
-silently retargeted. Fillet, Chamfer and SweptEdge retain their current policies.
+silently retargeted. [Fillet and Chamfer](fillets-and-chamfers.md) consume these names without profile
+classification or corner policies.
 
 The existing create commands are convenience templates. `create-sketch-revolve` uses
 local SketchY; the generic `edit` request supports all axes. Existing window forms

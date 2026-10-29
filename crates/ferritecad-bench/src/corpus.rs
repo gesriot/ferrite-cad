@@ -128,13 +128,13 @@ pub fn generate(root: &Path, smoke: bool) -> Result<Vec<Case>> {
         let mut document = Document::open(&path)?;
         for corner in [1, 3] {
             let edge =
-                ferritecad_fixtures::feature_changes::swept_edge(&document, chain.body, corner)?;
+                ferritecad_fixtures::feature_changes::plate_edge(&document, chain.body, corner)?;
             document.write_changes(&[EditChange::AddFeature {
                 object: ObjectId::new(),
                 body: chain.body,
                 name: Some("Fillet".into()),
                 feature: FeatureAddition::Fillet {
-                    edge,
+                    edges: vec![edge],
                     radius_mm: Expression::constant(2.0)?,
                 },
             }])?;

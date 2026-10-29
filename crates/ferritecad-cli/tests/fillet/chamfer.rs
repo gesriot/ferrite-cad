@@ -28,12 +28,12 @@ fn at(f: &Fixture, corner: [f64; 2]) -> Value {
 /// The request, with the candidate's own edge and its pair in the other order:
 /// the same edge.
 fn ask(f: &Fixture, corner: [f64; 2], distance: f64) {
-    let edge = &at(f, corner)["edge"];
+    let edge = &at(f, corner)["edges"][0];
     write_addition(
         &f.request,
         f.body_id(),
         "chamfer",
-        &json!({"feature_id":edge["feature_id"],"joint":[edge["joint"][1],edge["joint"][0]]}),
+        edge,
         "distance",
         distance,
     );
@@ -83,16 +83,9 @@ fn chamfered_without_kernel(plate: Plate, corner: [f64; 2], distance: f64) -> Fi
     let f = Fixture::drawn(plate);
     let mut d = Document::open(&f.source).expect("writable");
     let body = uuid(&json!(f.body_id()));
-    let edge = &at(&f, corner)["edge"];
+    let edge = &at(&f, corner)["edges"][0];
     let chamfer = ferritecad_document::FeatureAddition::Chamfer {
-        edge: ferritecad_document::SweptEdge {
-            feature: uuid(&edge["feature_id"]),
-            joint: ferritecad_types::ProfileJoint::new(
-                uuid_stable(&edge["joint"][0]),
-                uuid_stable(&edge["joint"][1]),
-            )
-            .expect("joint"),
-        },
+        edges: vec![entity(edge)],
         distance_mm: ferritecad_document::Expression::constant(distance).expect("number"),
     };
     d.write_changes(&[addition(body, chamfer)])
@@ -102,9 +95,6 @@ fn chamfered_without_kernel(plate: Plate, corner: [f64; 2], distance: f64) -> Fi
         catalog: inspect(&f.source),
         ..f
     }
-}
-fn uuid_stable(v: &Value) -> ferritecad_types::StableEntityId {
-    v.as_str().expect("UUID").parse().expect("UUID")
 }
 
 /// What the real kernel says about the solid a document rebuilds into, read
@@ -490,7 +480,7 @@ fn chamfer_at(
         published["result"]["content_version"],
         inspect(&copy)["content_version"]
     );
-    let base = candidate["edge"]["feature_id"].clone();
+    let base = candidate["edges"][0]["producer"].clone();
     assert_eq!(
         std::fs::read(source).expect("source bytes"),
         before,
@@ -507,7 +497,7 @@ fn chamfer_at(
         panic!("not a Chamfer: {saved:?}");
     };
     assert_eq!(stored.previous, uuid(&base));
-    assert_eq!(stored.edge.feature, uuid(&base));
+    assert_eq!(stored.edges[0].meaning.producer, uuid(&base));
     assert_eq!(
         stored.distance_mm,
         ferritecad_document::Expression::constant(d).expect("finite constant")
@@ -633,10 +623,8 @@ fn native_the_corner_and_the_volume_are_measured_apart() {
     );
 }
 
-/// The policy is exact at its bounds through the whole route: the offered
-/// maximum publishes and measures, the next representable value above it is
-/// refused with nothing written; so are the smallest and a below-minimum
-/// distance; a corner never changes another.
+/// Nonpositive distances are input errors; impossible distances are kernel errors.
+/// Positive distances preserve geometry, identity and exact cache invalidation.
 #[test]
 fn native_the_distance_bounds_are_exact_and_the_cache_follows_the_distance() {
     if !native() {
@@ -649,17 +637,10 @@ fn native_the_distance_bounds_are_exact_and_the_cache_follows_the_distance() {
     let never = f.root.path().join("never.fcad");
     ask(&f, corner, max);
     let names = entries(f.root.path());
-    for (why, d) in [
-        ("the next float above the maximum", max.next_up()),
-        ("below the minimum", 0.001f64.next_down()),
-        ("the whole side", D),
-        ("past the side", D + 1.0),
-    ] {
+    for (d, kind) in [(0., "input"), (-1., "input"), (100., "kernel")] {
         ask(&f, corner, d);
         let v = reply(chamfer(&f, &never).output().expect("process"), OPC, 2);
-        assert_eq!(refused(&v), "input", "{why}: {v}");
-        let message = v["error"]["message"].as_str().expect("message");
-        assert!(message.contains("mm"), "{why}: {message}");
+        assert_eq!(refused(&v), kind, "{d}: {v}");
     }
     assert_eq!(entries(f.root.path()), names, "a refusal left something");
     for (why, d) in [("the maximum", max), ("the minimum", 0.001)] {
@@ -897,7 +878,7 @@ fn native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic() {
     let _ = &published;
     let copy = f.root.path().join("published.fcad");
     let names = entries(f.root.path());
-    let edge = &at(&f, corner)["edge"];
+    let edge = &at(&f, corner)["edges"][0];
     for at_fraction in [0.0, 0.95] {
         let destination = f.root.path().join(format!("cancelled-{at_fraction}.fcad"));
         let token = ferritecad_kernel::CancelToken::new();
@@ -925,14 +906,7 @@ fn native_chamfer_refusals_races_cancellation_and_report_loss_are_atomic() {
             changes: vec![addition(
                 uuid(&json!(f.body_id())),
                 ferritecad_document::FeatureAddition::Chamfer {
-                    edge: ferritecad_document::SweptEdge {
-                        feature: uuid(&edge["feature_id"]),
-                        joint: ferritecad_types::ProfileJoint::new(
-                            uuid_stable(&edge["joint"][0]),
-                            uuid_stable(&edge["joint"][1]),
-                        )
-                        .expect("joint"),
-                    },
+                    edges: vec![entity(edge)],
                     distance_mm: ferritecad_document::Expression::constant(2.0).expect("number"),
                 },
             )],
@@ -1110,34 +1084,6 @@ fn native_every_other_editor_refuses_a_chamfered_plate_by_name() {
         2,
     );
     named("edit", &v);
-    // A Fillet on another corner, a second Chamfer and a Fillet radius edit of
-    // the Chamfer's own UUID.
-    let g = Fixture {
-        root: tempfile::tempdir().expect("directory"),
-        request: request.clone(),
-        source: copy.clone(),
-        catalog: catalog.clone(),
-    };
-    let body = g.body_id().to_owned();
-    let any = f.at([X0, Y0])["edge"].clone();
-    g.ask_edge(&any, 1.);
-    let v = reply(
-        g.fillet_from(&copy, &body, &version, &out)
-            .output()
-            .expect("process"),
-        "edit",
-        2,
-    );
-    named("edit", &v);
-    write_addition(&request, &body, "chamfer", &any, "distance", 1.);
-    let v = reply(
-        chamfer_from(&g, &copy, &body, &version, &out)
-            .output()
-            .expect("process"),
-        OPC,
-        2,
-    );
-    named("a second chamfer", &v);
     write(
         &request,
         &json!({"request_version":1,"changes":[{"kind":"set_expression","object":"00000000-0000-0000-0000-000000000000","slot":{"kind":"fillet_radius"},"value":1.0,"unit":"mm"}]}),
@@ -1251,21 +1197,10 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
     refused_everywhere("a distance past the bound", &wide, 6);
-    // A distance below the minimum.
-    let thin = forge("thin", &|d, id| {
-        let mut c = chamfer_of(d, id);
-        c.distance_mm = ferritecad_document::Expression::constant(1e-9).expect("finite constant");
-        rewrite(d, id, ObjectPayload::Chamfer(c));
-    });
-    refused_everywhere("a distance below the minimum", &thin, 6);
     // A joint that is not a corner of this plate.
     let alien = forge("alien", &|d, id| {
         let mut c = chamfer_of(d, id);
-        c.edge.joint = ferritecad_types::ProfileJoint::new(
-            ferritecad_types::StableEntityId::new(),
-            ferritecad_types::StableEntityId::new(),
-        )
-        .expect("joint");
+        c.edges[0].meaning.digest = ferritecad_types::ContentHash::of_bytes(b"unknown edge");
         rewrite(d, id, ObjectPayload::Chamfer(c));
     });
     refused_everywhere("a joint of no corner", &alien, 6);
@@ -1335,7 +1270,6 @@ fn native_the_evaluator_refuses_a_saved_chamfer_outside_the_class() {
     // its newly reconciled name, and a forked history fails validation.
     for (path, repairable) in [
         (&wide, true),
-        (&thin, true),
         (&narrow, true),
         (&alien, false),
         (&branch, false),

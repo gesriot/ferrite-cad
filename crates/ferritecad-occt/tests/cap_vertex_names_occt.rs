@@ -27,7 +27,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_topology::{ModelNaming, archive_feature, restore_feature};
-use ferritecad_types::{ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform};
+use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId, Transform};
 
 macro_rules! kernel_or_skip {
     () => {
@@ -221,11 +221,10 @@ fn vertex_name(
     map: &ModelNaming,
     feature: ObjectId,
     end: bool,
-    joint: ProfileJoint,
+    joint: [StableEntityId; 2],
 ) -> Result<ferritecad_topology::generative::Name> {
     let plane = naming::plane_id();
     let mut faces = joint
-        .segments()
         .map(|curve| naming::side_name(feature, plane, curve))
         .to_vec();
     faces.push(naming::cap_name(feature, plane, end));
@@ -244,7 +243,7 @@ fn a_corner_name_survives_closing_the_document_and_a_cold_rebuild() {
         10.,
     )
     .expect("plate");
-    let joint = ProfileJoint::new(plate.segments[0], plate.segments[1]).expect("joint");
+    let joint = ferritecad_fixtures::ordered_labels(plate.segments[0], plate.segments[1]);
     let mut kernel = OcctKernel::new().expect("kernel");
     let before =
         rebuild_cold(&document, &mut kernel, &OperationContext::default()).expect("first rebuild");
@@ -383,16 +382,15 @@ fn build(request: &ExtrudeRequest) -> Built {
 }
 
 /// The corner where the segment before `index` meets the segment at `index`.
-fn joint_at(labels: &[StableEntityId], index: usize) -> ProfileJoint {
-    ProfileJoint::new(
+fn joint_at(labels: &[StableEntityId], index: usize) -> [StableEntityId; 2] {
+    ferritecad_fixtures::ordered_labels(
         labels[(index + labels.len() - 1) % labels.len()],
         labels[index],
     )
-    .expect("two different segments")
 }
 
 /// The one vertex a corner and a cap resolve to.
-fn cap_vertex_of(built: &Built, side: bool, joint: ProfileJoint) -> Result<SubShapeHandle> {
+fn cap_vertex_of(built: &Built, side: bool, joint: [StableEntityId; 2]) -> Result<SubShapeHandle> {
     let name = vertex_name(&built.map, built.feature, side, joint)?;
     built
         .map
@@ -431,9 +429,12 @@ fn a_plate_names_four_corners_on_each_cap_and_each_names_one_vertex() {
         let joint = joint_at(&labels, index);
         for side in [false, true] {
             let vertex = cap_vertex_of(&built, side, joint).expect("a corner names one vertex");
-            assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side:?} {joint}");
-            assert_eq!(vertex.shape(), built.shape, "{side:?} {joint}");
-            assert!(seen.insert(vertex), "{side:?} {joint} names a vertex twice");
+            assert_eq!(vertex.kind(), SubShapeKind::Vertex, "{side:?} {joint:?}");
+            assert_eq!(vertex.shape(), built.shape, "{side:?} {joint:?}");
+            assert!(
+                seen.insert(vertex),
+                "{side:?} {joint:?} names a vertex twice"
+            );
         }
     }
     assert_eq!(seen.len(), 8, "a plate has eight corner vertices");
@@ -445,7 +446,7 @@ fn a_plate_names_four_corners_on_each_cap_and_each_names_one_vertex() {
         assert_ne!(
             cap_vertex_of(&built, false, joint).expect("resolves"),
             cap_vertex_of(&built, true, joint).expect("resolves"),
-            "{joint} named one vertex on both caps"
+            "{joint:?} named one vertex on both caps"
         );
     }
 
@@ -521,11 +522,18 @@ fn side_name(feature: ObjectId, curve: StableEntityId) -> ferritecad_topology::g
     naming::side_name(feature, naming::plane_id(), curve)
 }
 
-fn sweep(map: &ModelNaming, feature: ObjectId, joint: ProfileJoint) -> Result<Vec<SubShapeHandle>> {
-    Ok(vec![map.swept_edge(
+fn sweep(
+    map: &ModelNaming,
+    feature: ObjectId,
+    joint: [StableEntityId; 2],
+) -> Result<Vec<SubShapeHandle>> {
+    let name = naming::name_at_incidence(
+        map,
         feature,
-        ferritecad_document::SweptEdge { feature, joint },
-    )?])
+        SubShapeKind::Edge,
+        joint.map(|curve| side_name(feature, curve)),
+    )?;
+    naming::resolve(map, feature, &name)
 }
 
 #[test]
@@ -560,7 +568,7 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
 
             assert!(
                 mine.iter().any(|at| on_cap.contains(at)),
-                "{side:?} {joint} names a vertex that is not on the {side:?} cap"
+                "{side:?} {joint:?} names a vertex that is not on the {side:?} cap"
             );
 
             // And it is an end of the edge swept from its own corner, not of a
@@ -574,7 +582,7 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
                 .expect("the sweep edge is drawn");
             assert!(
                 mine.iter().any(|at| along.contains(at)),
-                "{side:?} {joint} names a vertex that does not end the edge swept from {joint}"
+                "{side:?} {joint:?} names a vertex that does not end the edge swept from {joint:?}"
             );
 
             // The same vertex must not be an end of a different corner's swept
@@ -595,7 +603,7 @@ fn every_named_vertex_lies_on_the_cap_it_claims_and_ends_its_own_sweep_edge() {
                     .clone();
                 assert!(
                     !mine.iter().any(|at| along.contains(at)),
-                    "{side:?} {joint} names a vertex that ends {neighbour}'s swept edge instead"
+                    "{side:?} {joint:?} names a vertex that ends {neighbour:?}'s swept edge instead"
                 );
             }
         }
@@ -666,10 +674,10 @@ fn a_corner_keeps_its_meaning_when_the_sweep_is_blind_reversed_or_symmetric() {
             let joint = joint_at(&labels, index);
             for side in [false, true] {
                 let vertex = cap_vertex_of(&built, side, joint)
-                    .unwrap_or_else(|e| panic!("{what}: {side:?} {joint} should resolve: {e}"));
+                    .unwrap_or_else(|e| panic!("{what}: {side:?} {joint:?} should resolve: {e}"));
                 assert!(
                     seen.insert(vertex),
-                    "{what}: {side:?} {joint} is not its own"
+                    "{what}: {side:?} {joint:?} is not its own"
                 );
             }
         }
@@ -717,7 +725,7 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
 
     // What each corner means, by the faces it touches, so two rebuilds can be
     // compared without comparing handles from different sessions.
-    let meanings = |start: usize| -> BTreeMap<(String, ProfileJoint), BTreeSet<u32>> {
+    let meanings = |start: usize| -> BTreeMap<(String, [StableEntityId; 2]), BTreeSet<u32>> {
         let request = rotated(start);
         let mut built = build(&request);
         let picture = drawn(&mut built);
@@ -816,7 +824,7 @@ fn a_triangle_names_three_corners_a_side_and_an_arc_profile_names_its_own_three(
         for side in [false, true] {
             assert!(
                 seen.insert(cap_vertex_of(&built, side, joint).expect("an arc corner resolves")),
-                "{side:?} {joint} is not its own vertex"
+                "{side:?} {joint:?} is not its own vertex"
             );
         }
     }
@@ -829,7 +837,7 @@ fn two_vertices_with_the_same_face_incidence_are_not_chosen_by_position() {
     kernel_or_skip!();
     let (request, labels) = lens().expect("lens");
     let mut built = build(&request);
-    let joint = ProfileJoint::new(labels[0], labels[1]).expect("joint");
+    let joint = ferritecad_fixtures::ordered_labels(labels[0], labels[1]);
     for end in [false, true] {
         let error = vertex_name(&built.map, built.feature, end, joint)
             .expect_err("two corners share the same faces");

@@ -116,100 +116,14 @@ dimensions. Its axis Line stays the saved one and still raises no face; the
 request keeps it on the axis by pinning one of its ends at X = 0 and making it
 vertical, and nothing is snapped. A solution that leaves the axis is refused.
 [Solid Revolve constraint contract and recipe](docs/axis-closed-revolve-constraints.md).
-A saved rectangular plate — one XY rectangle of four Lines with a forward
-Blind extrusion, unconstrained or already dimensioned with the constraint
-editor's Line constraints — can have one of its four vertical edges rounded
-with **Fillet edge of …** or `edit`. The edge is chosen from a list
-by the two Lines that meet there, and the radius is from 0.01 mm to half the
-shorter adjacent side; on a dimensioned plate the sides are the solved ones,
-checked when the copy is built, and the stored drawing only names the
-corners. The copy's Body ends in a named Fillet whose rounded
-face is a real cylinder. Its radius can then be changed with **Edit Fillet radius** / **Apply radius**
-inside the open document, including after unsaved base changes. Document Undo/Redo,
-unsaved exports and Save/Save As share the existing session. **Confirm draft number**
-serves only the clean-copy workflow. [Session contract](docs/fillet-radius-session-apply.md).
-**Add fillet** adds a new Fillet inside the open document in the same way, including after
-unsaved base changes; **Confirm draft edge and radius** only prepares the clean Fillet copy.
-[Add Fillet session contract](docs/add-fillet-session.md).
-`edit` with `fillet_radius` publishes a new copy: the same Fillet on the same
-edge, with every name kept. The plate's height can be changed under it with
-the ordinary **Edit extrusion** form or `edit`; the Fillet keeps its
-edge and radius. Its rectangle can be moved or resized with the ordinary
-**Edit Sketch** form (typed coordinates or dragged vertices) or
-`edit`, when the rebuilt rectangle and radius satisfy the Fillet policy; the Fillet rounds the same corner, now where it moved. Its
-rectangle's Lines can also be dimensioned with the ordinary **Edit
-constraints** form or `edit` (H/V, lengths, one fixed
-point, equal length, Parallel/Perpendicular): the part is built from the
-solved sketch, and the new copy is saved only if the solved plate still has
-room for the radius at the same corner. The same **Fillet edge of …** form or
-`edit` can then round a second, a third and a fourth, different
-vertical corner as its own Fillet: the history is Extrude → Fillet 1 → … →
-Fillet *n* → Body tip, *n* from 0 to 4, each Fillet a real fillet of its
-predecessor's result and each corner rounded once. Adjacent corners must leave
-at least 0.01 mm flat between their arcs, **whatever Fillets lie between them
-in the history** (the fourth closes the pair with the first); a radius is
-bounded by every neighbour, and on a dimensioned plate this is checked on the
-solved sides. Each earlier Fillet's cylinder keeps its origin in the final
-Body. The same **Edit Fillet radius** form or `edit` then changes
-the radius of any of the Fillets, named by its exact UUID, under the same pair
-rule, and the existing **Edit extrusion** form or `edit` changes the
-plate's height under all of them, keeping each one's radius, corner and
-names, and the existing **Edit Sketch** form or `edit` moves or
-resizes the plate's free rectangle, keeping the Fillets on the same named
-corners and judging every radius and every flat between adjacent arcs on the
-new sides, and the existing **Edit constraints** form or
-`edit` adds, replaces or removes its Line constraints,
-the solved rectangle being the new plate with every radius and every flat
-judged on the solved Lines at every rebuild. A fifth Fillet, touching arcs, cap edges, Cut with Fillet and arbitrary
-edges are not supported yet.
+Fillet and Chamfer consume named edges of any body's current result, including
+edges after Cut, Revolve and earlier edge features. Select an edge in the viewport
+and use **Add selected edge** in the form, or supply one or more references through
+`edit`. The kernel decides whether the requested radius or distance can produce one
+valid solid. The existing numeric editors, Undo/Redo, exports and Save/Save As use
+the shared transaction. A deleted or split exact reference refuses with its identity;
+it never chooses another edge. [Fillet and Chamfer](docs/fillets-and-chamfers.md).
 
-A plate with nothing else on it can instead have one vertical edge cut away by
-a **Chamfer** with **Chamfer edge of …** or `edit`: one equal
-distance in millimetres from the edge along each of its two faces (the slanted
-flat is that × √2 wide), from 0.001 mm to the shorter adjacent side less
-0.01 mm. The copy's Body ends in a real, named `feature.chamfer` whose face is
-a plane, measured on the B-Rep (volume `(W·D − d²/2)·h`, area `d·√2·h`, the
-normal of the chosen corner). Its distance changes with **Edit Chamfer distance** /
-**Apply distance** inside the open document, including after unsaved base changes;
-document Undo/Redo, unsaved exports and Save/Save As share the existing session.
-**Confirm draft number** serves only the clean-copy workflow.
-[Session contract](docs/chamfer-distance-session-apply.md).
-**Add chamfer** adds the plate's one Chamfer inside the open document in the same way,
-including after unsaved base changes;
-**Confirm draft edge and distance** only records the form's request for the clean
-Chamfer copy. [Add Chamfer session contract](docs/add-chamfer-session.md).
-`edit` with `chamfer_distance` publishes a new copy, every name kept. The
-plate's height changes under the Chamfer through the existing **Edit extrusion**
-or `edit` (the Chamfer's corner and distance and all names are kept;
-OCCT refuses a plate thinner than about 1e-5 mm). The four vertices of its base
-Sketch move in a new copy through the existing **Edit saved Sketch** or
-`edit`: the plate may be made larger, smaller or moved, the Chamfer
-stays on the same vertex (by its two Line UUIDs) with the same distance, which
-must still fit the new adjacent sides (exact at the bound, never reduced). The
-plate under one Chamfer can also be dimensioned with the existing constraint
-editor (**Edit constraints** / `edit`): PlaneGCS decides
-the rectangle, the Chamfer stays on the same corner with the same distance, and the
-distance must fit the SOLVED adjacent sides (checked at every rebuild; the stored
-coordinates stay the solver's starting guess). Every
-other editor refuses a chamfered Body by the Chamfer's UUID, a second Chamfer or
-a Fillet after one is not supported, and a build from before the Chamfer opens such a document
-read-only and refuses to rebuild it.
-[One Chamfer: contract and recipe](docs/rectangular-corner-chamfer.md).
-[A chamfered plate's height: contract and recipe](docs/edit-chamfer-base-height.md).
-[A chamfered plate's base Sketch: contract and recipe](docs/edit-chamfer-base-sketch.md).
-[A chamfered plate's constraints: contract and recipe](docs/edit-chamfer-base-constraints.md).
-[All four corners: contract and recipe](docs/rectangular-fillet-history.md).
-[Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
-[Numeric Fillet recipe](docs/numeric-fillet-radius.md).
-[Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).
-[Rounded-plate Sketch contract and recipe](docs/edit-fillet-base-sketch.md).
-[Rounded-plate constraints contract and recipe](docs/fillet-base-constraints.md).
-[Rounding a dimensioned plate: contract and recipe](docs/fillet-constrained-plate.md).
-[Second sequential Fillet: contract and recipe](docs/sequential-edge-fillets.md).
-[Either sequential Fillet radius: contract and recipe](docs/edit-sequential-fillet-radii.md).
-[Height under two Fillets: contract and recipe](docs/edit-two-fillet-base-height.md).
-[Sketch under two Fillets: contract and recipe](docs/edit-two-fillet-base-sketch.md).
-[Constraints under two Fillets: contract and recipe](docs/edit-two-fillet-base-constraints.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

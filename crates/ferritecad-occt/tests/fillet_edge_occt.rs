@@ -20,7 +20,7 @@ use ferritecad_kernel::{
     ProfileSegment, SegmentGeometry, SketchPlane, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_types::{ProfileJoint, Result, StableEntityId};
+use ferritecad_types::{Result, StableEntityId};
 
 macro_rules! kernel_or_skip {
     () => {{
@@ -64,8 +64,12 @@ fn plate(corners: &[[f64; 2]; 4]) -> Result<(ExtrudeRequest, Vec<StableEntityId>
     ))
 }
 
-fn corner_of(corners: &[[f64; 2]; 4], labels: &[StableEntityId], joint: ProfileJoint) -> [f64; 2] {
-    let [a, b] = joint.segments();
+fn corner_of(
+    corners: &[[f64; 2]; 4],
+    labels: &[StableEntityId],
+    joint: [StableEntityId; 2],
+) -> [f64; 2] {
+    let [a, b] = joint;
     let ia = labels.iter().position(|l| *l == a).expect("a");
     let ib = labels.iter().position(|l| *l == b).expect("b");
     let ends = |i: usize| [corners[i], corners[(i + 1) % 4]];
@@ -95,11 +99,11 @@ fn one_selected_vertical_edge_is_rounded_and_every_tracked_face_is_accounted_for
 
         for (joint, edge) in naming::sweep_edges(&mut kernel, built.shape).clone() {
             let r = 3.0625;
-            let fillet = FilletRequest::new(built.shape, edge, r).expect("request");
+            let fillet = FilletRequest::new(built.shape, &[edge], r).expect("request");
             let mut track = faces.clone();
             track.push(edge);
             let result = kernel
-                .fillet_edge(&fillet, &context)
+                .fillet_edges(&fillet, &context)
                 .expect("a real fillet");
             let trace = kernel
                 .naming_history(result.shape)
@@ -158,7 +162,7 @@ fn one_selected_vertical_edge_is_rounded_and_every_tracked_face_is_accounted_for
             // The rounded edge is gone. The two sides meeting there and both
             // caps are trimmed; the two sides away from it are what they were.
             assert_eq!(naming::survival(&trace, edge), NamingRelation::Deleted);
-            let [a, b] = joint.segments();
+            let [a, b] = joint;
             for (label, side) in labels.iter().zip(&faces) {
                 let touched = *label == a || *label == b;
                 let outputs: Vec<_> = naming::surviving(&trace, *side).collect();
@@ -215,30 +219,30 @@ fn a_fillet_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing() {
 
     // The request itself: a face is not an edge, an edge of another shape is
     // not this shape's, and a radius must be finite and positive.
-    assert!(FilletRequest::new(built.shape, faces[0], 1.0).is_err());
-    assert!(FilletRequest::new(built.shape, foreign_edge, 1.0).is_err());
+    assert!(FilletRequest::new(built.shape, &[faces[0]], 1.0).is_err());
+    assert!(FilletRequest::new(built.shape, &[foreign_edge], 1.0).is_err());
     for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(FilletRequest::new(built.shape, edge, radius).is_err());
+        assert!(FilletRequest::new(built.shape, &[edge], radius).is_err());
     }
     // An edge index the shape does not have.
     let missing = SubShapeHandle::new(built.shape, SubShapeKind::Edge, u64::MAX);
-    let r = FilletRequest::new(built.shape, missing, 1.0).expect("well formed");
-    assert!(kernel.fillet_edge(&r, &context).is_err());
+    let r = FilletRequest::new(built.shape, &[missing], 1.0).expect("well formed");
+    assert!(kernel.fillet_edges(&r, &context).is_err());
     // The kernel's own limit, never clamped to something it can build.
-    let wide = FilletRequest::new(built.shape, edge, D).expect("request");
-    assert!(kernel.fillet_edge(&wide, &context).is_err());
-    let good = FilletRequest::new(built.shape, edge, 1.0).expect("request");
+    let wide = FilletRequest::new(built.shape, &[edge], D).expect("request");
+    assert!(kernel.fillet_edges(&wide, &context).is_err());
+    let good = FilletRequest::new(built.shape, &[edge], 1.0).expect("request");
     // A cancelled run.
     let cancel = CancelToken::new();
     cancel.cancel();
     let cancelled = OperationContext::default().with_cancel(cancel);
-    assert!(kernel.fillet_edge(&good, &cancelled).is_err());
+    assert!(kernel.fillet_edges(&good, &cancelled).is_err());
     assert_eq!(kernel.live_shape_count(), live, "a refusal kept a shape");
 
     // A released target is not a target.
     kernel.release(other.shape);
-    let gone = FilletRequest::new(other.shape, foreign_edge, 1.0).expect("request");
-    assert!(kernel.fillet_edge(&gone, &context).is_err());
+    let gone = FilletRequest::new(other.shape, &[foreign_edge], 1.0).expect("request");
+    assert!(kernel.fillet_edges(&gone, &context).is_err());
     kernel.release(built.shape);
     assert_eq!(kernel.live_shape_count(), 0);
 }

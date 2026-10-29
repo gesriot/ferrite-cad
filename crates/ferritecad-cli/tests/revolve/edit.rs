@@ -373,7 +373,7 @@ fn native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports() {
         assert!(
             listed
                 .lines()
-                .filter(|line| line.starts_with("    face "))
+                .filter(|line| line.contains(" kind=face "))
                 .count()
                 == n
         );

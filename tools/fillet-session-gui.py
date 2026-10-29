@@ -49,7 +49,8 @@ def main():
             catalog = inspect(current)
             body = catalog["bodies"][0]
             request = root / f"fillet-{i}.json"
-            request.write_text(json.dumps(edge_addition(catalog, "fillet", corner, radius)))
+            request.write_text(json.dumps(
+                edge_addition(catalog, "fillet", corner, radius, current)))
             out = root / "source" / ("fillets.fcad" if i == 3 else f"fillets-{i}.fcad")
             run("edit", current, "--expect-version",
                 catalog["content_version"], "--request", request, "-o", out, "--json")
@@ -107,7 +108,7 @@ def main():
         catalog = inspect(source)
         first = ordered_fillets(catalog)[0]
         # Every selection uses the saved UUID; duplicate names/ordinals are irrelevant.
-        base = first["edge"]["feature_id"]
+        base = first["edges"][0]["producer"]
         current = peer_root / "height.fcad"
         request = peer_root / "height.json"
         request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))

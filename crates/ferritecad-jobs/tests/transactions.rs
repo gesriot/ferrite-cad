@@ -27,7 +27,7 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
         source: source.clone(),
         expected: reading.version,
         changes: vec![
-            EditChange::constant(dimension.object, dimension.slot, 10.0).expect("dimension"),
+            EditChange::constant(dimension.object, dimension.slot, 4.0).expect("dimension"),
         ],
         destination: root.path().join("edited.fcad"),
     };

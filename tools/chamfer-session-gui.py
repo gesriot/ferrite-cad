@@ -41,9 +41,10 @@ def main():
             fields = line.split()
             if len(fields) == 2 and fields[0] == "feature":
                 feature = fields[1]
-            elif len(fields) == 3 and fields[0] in ("face", "edge", "vertex"):
-                assert feature is not None and fields[2] == "entities=1", line
-                names.append((feature, fields[0], fields[1]))
+            elif len(fields) == 4 and fields[0].startswith("producer="):
+                row = dict(field.split("=", 1) for field in fields)
+                assert row["producer"] == feature and row["entities"] == "1", line
+                names.append((feature, row["kind"], row["digest"]))
         assert names, "the built Chamfer has named output"
         return sorted(names)
 
@@ -67,7 +68,7 @@ def main():
         catalog = inspect(plate)
         body = catalog["bodies"][0]
         request = root / "chamfer.json"
-        request.write_text(json.dumps(edge_addition(catalog, "chamfer", CORNER, 2.375)))
+        request.write_text(json.dumps(edge_addition(catalog, "chamfer", CORNER, 2.375, plate)))
         current = root / "source/chamfer.fcad"
         run("edit", plate, "--expect-version",
             catalog["content_version"], "--request", request, "-o", current, "--json")
@@ -79,7 +80,10 @@ def main():
                              "INSERT INTO extra_data VALUES(91,x'010203');")
         assert output_names(current) == names_before
         saved = inspect(current)["chamfers"][0]
-        assert saved["edge"]["joint"] == edge_at(catalog, CORNER)["joint"] and saved["expression"]["value"] == 2.375
+        meaning = {k: saved["edges"][0][k]
+                   for k in ("producer", "kind", "digest", "selection")}
+        assert meaning == edge_at(catalog, CORNER, plate)
+        assert saved["expression"]["value"] == 2.375
         shutil.copyfile(current, root / "work/chamfer.fcad")
         (root / "facts.json").write_text(json.dumps({"sha256": hashlib.sha256(current.read_bytes()).hexdigest(),
                                                     "chamfer_uuid": saved["feature_id"],
@@ -123,7 +127,7 @@ def main():
         chamfer = catalog["chamfers"][0]
         # Every selection uses the saved UUID; duplicate names/ordinals are irrelevant.
         assert chamfer["feature_id"] == facts["chamfer_uuid"]
-        base = chamfer["edge"]["feature_id"]
+        base = chamfer["edges"][0]["producer"]
         current = peer_root / "height.fcad"
         request = peer_root / "height.json"
         request.write_text(json.dumps({"request_version": 1, "changes": [{"kind": "set_expression", "object": base, "slot": {"kind": "extrude_distance"}, "value": 9.25, "unit": "mm"}]}))

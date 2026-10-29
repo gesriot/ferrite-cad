@@ -1881,14 +1881,10 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
   });
 }
 
-/// §29A: the fillet and the chamfer of one edge share everything after the
-/// builder is chosen: the checks of the argument, the cancellation boundaries,
-/// the validation of the result and the account of every sub-shape of the
-/// target, asked while the builder is alive. `chamfer` selects the builder and
-/// the words of the refusals; the fillet's behaviour and messages are
-/// unchanged.
+// Collect history while the single builder for the complete edge set is alive.
 static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
-                                   uint64_t target, uint64_t edge,
+                                   uint64_t target, const uint64_t *edges,
+                                   size_t edge_count,
                                    double amount, FcOcctCancelFn cancel,
                                    void *cancel_context, uint64_t *out_shape,
                                    double *out_removed_volume,
@@ -1896,9 +1892,9 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
   return guarded(out_error, [&]() -> FcOcctStatus {
     const std::string what = chamfer ? "chamfer" : "fillet";
     const std::string entry =
-        chamfer ? "fc_occt_chamfer_edge" : "fc_occt_fillet_edge";
+        chamfer ? "fc_occt_chamfer_edges" : "fc_occt_fillet_edges";
     if (session == nullptr || out_shape == nullptr ||
-        out_removed_volume == nullptr) {
+        out_removed_volume == nullptr || edges == nullptr || edge_count == 0) {
       write_error(out_error, entry + " was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -1916,18 +1912,23 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     }
     naming_inventory(found->second);
     const ShapeRecord &source = found->second;
-    if (edge >= source.sub_shapes.size()) {
-      write_error(out_error, "sub-shape " + std::to_string(edge) +
-                                 " was never handed out for shape " +
-                                 std::to_string(target));
-      return FC_OCCT_INVALID_INPUT;
-    }
-    const TopoDS_Shape &selected = source.sub_shapes[edge];
-    if (selected.IsNull() || selected.ShapeType() != TopAbs_EDGE) {
-      write_error(out_error, "sub-shape " + std::to_string(edge) +
-                                 " of shape " + std::to_string(target) +
-                                 " is not an edge");
-      return FC_OCCT_INVALID_INPUT;
+    std::vector<TopoDS_Edge> selected_edges;
+    for (size_t i = 0; i < edge_count; ++i) {
+      const uint64_t edge = edges[i];
+      if (edge >= source.sub_shapes.size()) {
+        write_error(out_error, "sub-shape " + std::to_string(edge) +
+                                   " was never handed out for shape " +
+                                   std::to_string(target));
+        return FC_OCCT_INVALID_INPUT;
+      }
+      const TopoDS_Shape &selected = source.sub_shapes[edge];
+      if (selected.IsNull() || selected.ShapeType() != TopAbs_EDGE) {
+        write_error(out_error, "sub-shape " + std::to_string(edge) +
+                                   " of shape " + std::to_string(target) +
+                                   " is not an edge");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      selected_edges.push_back(TopoDS::Edge(selected));
     }
     if (cancelled(cancel, cancel_context)) {
       write_error(out_error, "the " + what + " was cancelled before it began");
@@ -1943,11 +1944,11 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     std::unique_ptr<BRepFilletAPI_LocalOperation> builder;
     if (chamfer) {
       auto made = std::make_unique<BRepFilletAPI_MakeChamfer>(source.shape);
-      made->Add(amount, TopoDS::Edge(selected));
+      for (const auto &selected : selected_edges) made->Add(amount, selected);
       builder = std::move(made);
     } else {
       auto made = std::make_unique<BRepFilletAPI_MakeFillet>(source.shape);
-      made->Add(amount, TopoDS::Edge(selected));
+      for (const auto &selected : selected_edges) made->Add(amount, selected);
       builder = std::move(made);
     }
     BRepFilletAPI_LocalOperation &fillet = *builder;
@@ -1960,9 +1961,10 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     }
     if (!fillet.IsDone()) {
       write_error(out_error, chamfer
-                                 ? "Open CASCADE could not chamfer this edge at distance " +
+                                 ? "Open CASCADE could not chamfer the selected edges "
+                                   "at distance " +
                                        std::to_string(amount)
-                                 : "Open CASCADE could not round this edge at radius " +
+                                 : "Open CASCADE could not round the selected edges at radius " +
                                        std::to_string(amount));
       return FC_OCCT_KERNEL;
     }
@@ -1982,8 +1984,8 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     // history speaks about `produced`, and that is the shape kept.
     if (!well_formed(produced)) {
       write_error(out_error,
-                  std::string(chamfer ? "chamfering this edge at distance "
-                                      : "rounding this edge at radius ") +
+                  std::string(chamfer ? "chamfering the selected edges at distance "
+                                      : "rounding the selected edges at radius ") +
                       std::to_string(amount) +
                       " produced a shape Open CASCADE reports as invalid; it "
                       "is refused rather than returned");
@@ -1992,45 +1994,14 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     GProp_GProps after;
     BRepGProp::VolumeProperties(produced, after);
     const double removed = before.Mass() - after.Mass();
-    if (!std::isfinite(removed) || removed <= 0.0) {
-      write_error(out_error, "the " + what + " removed no material, so it " +
-                                 (chamfer ? "cut" : "rounded") + " nothing");
+    if (!std::isfinite(removed)) {
+      write_error(out_error, "the " + what + " produced a non-finite volume change");
       return FC_OCCT_KERNEL;
     }
 
     ShapeRecord record;
     record.shape = produced;
     record.decoded = true;
-
-    TopTools_IndexedMapOfShape result_faces;
-    TopExp::MapShapes(produced, TopAbs_FACE, result_faces);
-    TopTools_IndexedMapOfShape result_edges;
-    TopExp::MapShapes(produced, TopAbs_EDGE, result_edges);
-    TopTools_IndexedMapOfShape result_vertices;
-    TopExp::MapShapes(produced, TopAbs_VERTEX, result_vertices);
-    const auto in_result = [&](const TopoDS_Shape &candidate) {
-      switch (candidate.ShapeType()) {
-      case TopAbs_FACE:
-        return result_faces.FindIndex(candidate) != 0;
-      case TopAbs_EDGE:
-        return result_edges.FindIndex(candidate) != 0;
-      case TopAbs_VERTEX:
-        return result_vertices.FindIndex(candidate) != 0;
-      default:
-        return false;
-      }
-    };
-
-    size_t generated_faces = 0;
-    const TopTools_ListOfShape &generated = fillet.Generated(selected);
-    for (TopTools_ListOfShape::Iterator it(generated); it.More(); it.Next()) {
-      if (it.Value().ShapeType() == TopAbs_FACE && in_result(it.Value())) ++generated_faces;
-    }
-    if (generated_faces != 1) {
-      write_error(out_error, "the " + what +
-                                 " must generate exactly one face from its selected edge");
-      return FC_OCCT_KERNEL;
-    }
 
     naming_inventory(record);
     naming_operation(record, fillet, target, source);
@@ -2043,23 +2014,23 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
   });
 }
 
-FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
-                                 uint64_t edge, double radius,
+FcOcctStatus fc_occt_fillet_edges(FcOcctSession *session, uint64_t target,
+                                 const uint64_t *edges, size_t edge_count, double radius,
                                  FcOcctCancelFn cancel, void *cancel_context,
                                  uint64_t *out_shape, double *out_removed_volume,
                                  FcOcctError *out_error) noexcept {
-  return edge_operation(false, session, target, edge, radius, cancel,
+  return edge_operation(false, session, target, edges, edge_count, radius, cancel,
                         cancel_context, out_shape, out_removed_volume,
                         out_error);
 }
 
-FcOcctStatus fc_occt_chamfer_edge(FcOcctSession *session, uint64_t target,
-                                  uint64_t edge, double distance,
+FcOcctStatus fc_occt_chamfer_edges(FcOcctSession *session, uint64_t target,
+                                  const uint64_t *edges, size_t edge_count, double distance,
                                   FcOcctCancelFn cancel, void *cancel_context,
                                   uint64_t *out_shape,
                                   double *out_removed_volume,
                                   FcOcctError *out_error) noexcept {
-  return edge_operation(true, session, target, edge, distance, cancel,
+  return edge_operation(true, session, target, edges, edge_count, distance, cancel,
                         cancel_context, out_shape, out_removed_volume,
                         out_error);
 }

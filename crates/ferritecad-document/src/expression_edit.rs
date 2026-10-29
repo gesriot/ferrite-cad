@@ -94,6 +94,10 @@ pub enum EditChange {
         name: Option<String>,
         feature: FeatureAddition,
     },
+    SetEdges {
+        object: ObjectId,
+        edges: Vec<crate::EntityReference>,
+    },
     SetEndCondition {
         object: ObjectId,
         end_condition: EndCondition,
@@ -136,11 +140,11 @@ pub enum FeatureAddition {
         operation: crate::SolidOperation,
     },
     Fillet {
-        edge: crate::SweptEdge,
+        edges: Vec<crate::EntityReference>,
         radius_mm: Expression,
     },
     Chamfer {
-        edge: crate::SweptEdge,
+        edges: Vec<crate::EntityReference>,
         distance_mm: Expression,
     },
 }
@@ -176,16 +180,16 @@ impl FeatureAddition {
                 operation: *operation,
                 previous,
             }),
-            Self::Fillet { edge, radius_mm } => ObjectPayload::Fillet(crate::Fillet {
+            Self::Fillet { edges, radius_mm } => ObjectPayload::Fillet(crate::Fillet {
                 previous: previous
                     .ok_or_else(|| CadError::input("edge feature needs a predecessor"))?,
-                edge: *edge,
+                edges: edges.clone(),
                 radius_mm: radius_mm.clone(),
             }),
-            Self::Chamfer { edge, distance_mm } => ObjectPayload::Chamfer(crate::Chamfer {
+            Self::Chamfer { edges, distance_mm } => ObjectPayload::Chamfer(crate::Chamfer {
                 previous: previous
                     .ok_or_else(|| CadError::input("edge feature needs a predecessor"))?,
-                edge: *edge,
+                edges: edges.clone(),
                 distance_mm: distance_mm.clone(),
             }),
         })
@@ -210,6 +214,7 @@ impl EditChange {
     pub fn object(&self) -> ObjectId {
         match self {
             Self::AddBody { object, .. }
+            | Self::SetEdges { object, .. }
             | Self::SetRegions { object, .. }
             | Self::SetOperation { object, .. }
             | Self::SetReversed { object, .. }
@@ -243,6 +248,15 @@ impl EditChange {
             return set_expression(payload, *slot, expression.clone());
         }
         match self {
+            Self::SetEdges { edges, .. } => {
+                crate::entity_reference::validate_edges(edges)?;
+                match payload {
+                    ObjectPayload::Fillet(feature) => feature.edges = edges.clone(),
+                    ObjectPayload::Chamfer(feature) => feature.edges = edges.clone(),
+                    _ => return Err(CadError::input("edges belong to a Fillet or Chamfer")),
+                }
+                return Ok(());
+            }
             Self::SetRegions { regions, .. } => {
                 match payload {
                     ObjectPayload::Extrude(e) => e.regions = regions.clone(),
@@ -332,7 +346,8 @@ impl EditChange {
                     "an object addition must be applied to the document",
                 ));
             }
-            Self::SetRegions { .. }
+            Self::SetEdges { .. }
+            | Self::SetRegions { .. }
             | Self::SetOperation { .. }
             | Self::SetReversed { .. }
             | Self::SetRevolveAxis { .. }
@@ -669,14 +684,6 @@ fn insert_candidate(
                 dependency.role.as_str()
             )));
         }
-    }
-    let edge = match &payload {
-        ObjectPayload::Fillet(f) => Some(f.edge),
-        ObjectPayload::Chamfer(c) => Some(c.edge),
-        _ => None,
-    };
-    if let Some(edge) = edge {
-        get(edge.feature)?;
     }
     *ordinal = ordinal
         .checked_add(1)

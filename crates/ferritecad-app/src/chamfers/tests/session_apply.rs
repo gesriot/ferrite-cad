@@ -14,7 +14,7 @@ pub(crate) const CORNER: [f64; 2] = [-4.5, 3.25];
 /// and an optional capability and an unrelated table ride along.
 pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let (root, path, source) = crate::fillets::tests::plate();
-    let target = source.chamfer_bodies[0].target.clone().expect("a target");
+    let target = crate::feature_tests::fixture_target(&source);
     let corner = target
         .corners
         .iter()
@@ -24,10 +24,7 @@ pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let changes = target
         .addition(
             (EdgeChamfer {
-                edge: SweptEdge {
-                    feature: corner.feature,
-                    joint: corner.joint,
-                },
+                edges: vec![corner.reference],
                 distance_mm: 2.375,
             })
             .feature()

@@ -270,153 +270,22 @@ fn check_semantic_references(
                 report,
             );
         }
-        // §29A: a Chamfer consumes an earlier feature's result exactly as a
-        // Fillet does, and cuts an edge of that very feature.
-        ObjectPayload::Chamfer(chamfer) => {
-            let previous = chamfer.previous;
-            if previous == object.id {
-                report.error(
-                    "feature.self-predecessor",
-                    Some(object.id),
-                    format!(
-                        "feature {} names itself as the result it modifies",
-                        object.id
-                    ),
-                );
-            } else {
-                match by_id.get(&previous) {
-                    None => report.error(
-                        "reference.missing-target",
-                        Some(object.id),
-                        format!("feature {} modifies missing feature {previous}", object.id),
-                    ),
-                    Some(found) if !found.payload.kind().is_some_and(ObjectKind::is_feature) => {
-                        report.error(
-                            "reference.wrong-kind",
-                            Some(object.id),
-                            format!(
-                                "feature {} expects {previous} to be a feature, found {}",
-                                object.id,
-                                found.payload.type_name()
-                            ),
-                        );
-                    }
-                    Some(_) => {}
-                }
-                if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
-                    report.error(
-                        "reference.missing-edge",
-                        Some(object.id),
-                        format!(
-                            "feature {} modifies {previous} but no predecessor dependency records it",
-                            object.id
-                        ),
-                    );
-                }
-            }
-            if chamfer.edge.feature != previous {
-                report.error(
-                    "chamfer.edge-outside-history",
-                    Some(object.id),
-                    format!(
-                        "chamfer {} cuts an edge of {}, and this build cuts an edge of the \
-                         feature it consumes, {previous}",
-                        object.id, chamfer.edge.feature
-                    ),
-                );
-            }
-        }
-        // A Fillet consumes an earlier feature's result, stated once and
-        // recorded by the same Predecessor edge a Cut's is (ADR 0004).
-        ObjectPayload::Fillet(fillet) => {
-            let previous = fillet.previous;
-            if previous == object.id {
-                report.error(
-                    "feature.self-predecessor",
-                    Some(object.id),
-                    format!(
-                        "feature {} names itself as the result it modifies",
-                        object.id
-                    ),
-                );
-            } else {
-                match by_id.get(&previous) {
-                    None => report.error(
-                        "reference.missing-target",
-                        Some(object.id),
-                        format!("feature {} modifies missing feature {previous}", object.id),
-                    ),
-                    Some(found) if !found.payload.kind().is_some_and(ObjectKind::is_feature) => {
-                        report.error(
-                            "reference.wrong-kind",
-                            Some(object.id),
-                            format!(
-                                "feature {} expects {previous} to be a feature, found {}",
-                                object.id,
-                                found.payload.type_name()
-                            ),
-                        );
-                    }
-                    Some(_) => {}
-                }
-                if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
-                    report.error(
-                        "reference.missing-edge",
-                        Some(object.id),
-                        format!(
-                            "feature {} modifies {previous} but no predecessor dependency records it",
-                            object.id
-                        ),
-                    );
-                }
-            }
-            if !by_id
-                .get(&fillet.edge.feature)
-                .is_some_and(|found| found.payload.kind().is_some_and(ObjectKind::is_feature))
-            {
-                report.error(
-                    "reference.missing-target",
-                    Some(object.id),
-                    format!(
-                        "fillet {} rounds an edge of {}, which is not a feature of this document",
-                        object.id, fillet.edge.feature
-                    ),
-                );
-            } else {
-                // §28G: the edge must come from the result the Fillet
-                // rounds — its predecessor or one of that one's own
-                // predecessors — never from a feature outside its history.
-                // Bounded by the object count, so a cycle (reported by the
-                // graph check) cannot loop here.
-                let mut current = Some(previous);
-                let mut steps = 0usize;
-                let mut inside = false;
-                while let Some(id) = current {
-                    if id == fillet.edge.feature {
-                        inside = true;
-                        break;
-                    }
-                    steps += 1;
-                    if steps > by_id.len() {
-                        break;
-                    }
-                    current = by_id
-                        .get(&id)
-                        .and_then(|found| found.payload.previous_feature());
-                }
-                if !inside {
-                    report.error(
-                        "fillet.edge-outside-history",
-                        Some(object.id),
-                        format!(
-                            "fillet {} rounds an edge of {}, which is neither the result it \
-                             rounds ({previous}) nor one of that result's predecessors",
-                            object.id, fillet.edge.feature
-                        ),
-                    );
-                }
-            }
-        }
+        ObjectPayload::Fillet(fillet) => check_sweep_predecessor(
+            object,
+            crate::SolidOperation::Cut,
+            Some(fillet.previous),
+            by_id,
+            edges,
+            report,
+        ),
+        ObjectPayload::Chamfer(chamfer) => check_sweep_predecessor(
+            object,
+            crate::SolidOperation::Cut,
+            Some(chamfer.previous),
+            by_id,
+            edges,
+            report,
+        ),
         ObjectPayload::Revolve(revolve) => {
             check_sweep_predecessor(
                 object,

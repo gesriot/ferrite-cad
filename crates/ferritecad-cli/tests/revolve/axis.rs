@@ -377,7 +377,7 @@ fn native_solid_revolutions_create_measure_name_cache_and_export() {
             assert!(
                 listed
                     .lines()
-                    .filter(|line| line.starts_with("    face "))
+                    .filter(|line| line.contains(" kind=face "))
                     .count()
                     == n - 1
             );

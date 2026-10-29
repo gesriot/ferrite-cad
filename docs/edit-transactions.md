@@ -35,9 +35,9 @@ value. Constraint additions preserve the supplied UUID.
 
 The result contains `destination`, `document_id`, `content_version` and `rebuild`.
 Curve, constraint and expression edits can be mixed: for example, shrink a plate's
-side and reduce its Fillet radius together. The evaluator still requires the
-Fillet's rectangular profile. Moving only one corner therefore refuses that Fillet;
-a plain extrusion can accept the same nonrectangular profile.
+side and reduce its Fillet radius together. The kernel decides whether the
+changed geometry can support that radius. The transaction refuses if the consumed
+edge disappears, becomes ambiguous under `one`, or the kernel cannot build the result.
 
 Sweep additions and edits use this path for every supported operation and axis.
 The kernel decides contact and validity. Every rebuilt feature has complete generative
@@ -46,8 +46,8 @@ whose reference no longer resolves refuses the candidate with its UUID and reaso
 
 `inspect --json` includes each Body's `history` from its first feature to its tip.
 Extrude rows include `profile_sketch_id`, `previous_feature_id`, `operation`,
-`reversed` and a unitful `end_condition`. Fillet/Chamfer rows include their edge's
-feature and pair of segment UUIDs, previous feature, expression, `display_value`
+`reversed` and a unitful `end_condition`. Fillet/Chamfer rows include `edges`, each reference's producer, kind, digest,
+selection and diagnostic UUID, plus previous feature, expression, `display_value`
 and `display_unit`. These are saved facts; they do not declare eligibility.
 
 New objects and curves have caller-supplied UUIDv7 identities. Changes apply in
@@ -71,12 +71,21 @@ For example, add a circular tool and a Cut (replace every UUID placeholder):
 ]}
 ```
 
-A Fillet feature payload is `{"kind":"fillet","edge":{"feature":"<base UUID>",
-"joint":["<Line UUID>","<Line UUID>"]},"radius":{"value":2,"unit":"mm"}}`.
+A Fillet feature payload is:
+
+```json
+{"kind":"fillet","edges":[{"producer":"<producer UUID>","kind":"edge",
+ "digest":"<64 hex digits>","selection":"one"}],"radius":{"value":2,"unit":"mm"}}
+```
+
 A Chamfer uses `"kind":"chamfer"` and `"distance"` instead of `"radius"`.
-Both use `add_feature` with an explicit new object and Body. The edge pair may be
-supplied in either order. The evaluator's existing rectangle, radius, distance
-and adjacent-Fillet policies still decide the result.
+Both use `add_feature` with an explicit new object and Body. `print-topology`
+prints the producer and digest; use `selection: "all_descendants"` only when all
+surviving descendants are intended. Diagnostic reference UUIDs are assigned by the
+request parser and do not affect the meaning or cache key. Replace the set with
+`{"kind":"set_edges","object":"<feature UUID>","edges":[<references>]}`.
+An empty set, duplicate meanings or a non-edge kind is invalid input. The kernel
+decides geometric validity; see [Fillet and Chamfer](fillets-and-chamfers.md).
 
 `{"kind":"set_end_condition","object":"<Extrude or Cut UUID>",
 "end_condition":{"kind":"through_all"}}` changes the end condition; Blind uses

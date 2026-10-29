@@ -164,7 +164,7 @@ fn edit_and_inspect_cover_sketch_cut_end_fillet_and_chamfer() {
                 "chamfers"
             }][0];
             assert_eq!(edge["feature_id"], json!(feature));
-            assert_eq!(edge["edge"]["joint"].as_array().expect("segments").len(), 2);
+            assert_eq!(edge["edges"].as_array().expect("references").len(), 1);
             assert_eq!(edge["display_value"], 2.);
             assert_eq!(edge["display_unit"], "mm");
         }
@@ -307,4 +307,143 @@ fn rebuild_counts_the_holes_of_every_region() {
         row.ends_with("3 segments, 2 regions, 1 hole(s)"),
         "{report}"
     );
+}
+
+#[test]
+fn named_edge_sets_add_replace_round_trip_and_refuse_atomically() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("plate.fcad");
+    ferritecad_fixtures::write_plate(&source).expect("plate");
+    let d = Document::open_read_only(&source).expect("source");
+    let b = body(&d).expect("body");
+    let references: Vec<_> = (0..4)
+        .map(|corner| {
+            ferritecad_fixtures::feature_changes::plate_edge(&d, b, corner).expect("fixture edge")
+        })
+        .collect();
+    let topology = cli()
+        .arg("print-topology")
+        .arg(&source)
+        .output()
+        .expect("topology");
+    assert!(topology.status.success(), "{topology:?}");
+    let printed = String::from_utf8(topology.stdout).expect("text");
+    for reference in &references {
+        assert!(printed.contains(&format!("producer={}", reference.meaning.producer)));
+        assert!(printed.contains(&format!("digest={}", reference.meaning.digest)));
+    }
+    for chamfer in [false, true] {
+        let feature = ferritecad_types::ObjectId::new();
+        let added = root.path().join(format!("added-{chamfer}.fcad"));
+        let amount = Expression::constant(1.).expect("amount");
+        let change = EditChange::AddFeature {
+            object: feature,
+            body: b,
+            name: None,
+            feature: if chamfer {
+                FeatureAddition::Chamfer {
+                    edges: references[..1].to_vec(),
+                    distance_mm: amount,
+                }
+            } else {
+                FeatureAddition::Fillet {
+                    edges: references[..1].to_vec(),
+                    radius_mm: amount,
+                }
+            },
+        };
+        run(
+            &source,
+            &added,
+            ferritecad_fixtures::edit_request_json(&[change]),
+            0,
+        );
+        let replaced = root.path().join(format!("set-{chamfer}.fcad"));
+        run(
+            &added,
+            &replaced,
+            ferritecad_fixtures::edit_request_json(&[EditChange::SetEdges {
+                object: feature,
+                edges: references.clone(),
+            }]),
+            0,
+        );
+        let reopened = Document::open_read_only(&replaced).expect("reopen");
+        let payload = reopened
+            .object(feature)
+            .expect("object")
+            .expect("row")
+            .payload;
+        assert_eq!(
+            ObjectPayload::from_storage_bytes(&payload.to_storage_bytes().expect("CBOR"))
+                .expect("decode"),
+            payload
+        );
+        let edges = match &payload {
+            ObjectPayload::Fillet(f) => &f.edges,
+            ObjectPayload::Chamfer(c) => &c.edges,
+            _ => panic!("edge feature"),
+        };
+        assert_eq!(
+            edges.iter().map(|r| r.meaning).collect::<Vec<_>>(),
+            references.iter().map(|r| r.meaning).collect::<Vec<_>>()
+        );
+        let shown = inspect(&replaced);
+        let row = &shown[if chamfer { "chamfers" } else { "fillets" }][0];
+        assert_eq!(row["edges"].as_array().expect("references").len(), 4);
+        let rebuild = cli()
+            .arg("rebuild")
+            .arg(&replaced)
+            .arg("--cold")
+            .output()
+            .expect("rebuild");
+        assert!(rebuild.status.success(), "{rebuild:?}");
+        let text = String::from_utf8(rebuild.stdout).expect("text");
+        assert!(
+            text.contains("on 4 edge(s) from 4 edge reference(s)"),
+            "{text}"
+        );
+        drop(reopened);
+        let original = std::fs::read(&replaced).expect("source bytes");
+        let mut foreign = references[0];
+        foreign.meaning.producer = ferritecad_types::ObjectId::new();
+        let mut unknown = references[1];
+        unknown.meaning.digest = ferritecad_types::ContentHash::of_bytes(b"missing edge");
+        for (index, bad, reasons) in [
+            (
+                0,
+                vec![references[0], references[0]],
+                vec!["repeats an edge meaning"],
+            ),
+            (1, Vec::new(), vec!["at least one reference"]),
+            (
+                2,
+                vec![foreign, unknown],
+                vec!["not in the consumed result's history", "unknown name"],
+            ),
+        ] {
+            let refused = root.path().join(format!("refused-{chamfer}-{index}.fcad"));
+            let result = run(
+                &replaced,
+                &refused,
+                ferritecad_fixtures::edit_request_json(&[EditChange::SetEdges {
+                    object: feature,
+                    edges: bad,
+                }]),
+                2,
+            );
+            let message = result.to_string();
+            for reason in reasons {
+                assert!(message.contains(reason), "{message}");
+            }
+            if index == 2 {
+                assert!(message.contains(&feature.to_string()));
+            }
+            assert!(!refused.exists());
+            assert_eq!(std::fs::read(&replaced).expect("unchanged"), original);
+        }
+    }
 }

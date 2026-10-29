@@ -439,12 +439,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .objects()?
             .into_iter()
             .filter_map(|o| {
-                let (previous, edge, value) = match o.payload {
+                let (previous, edges, value) = match o.payload {
                     ferritecad_document::ObjectPayload::Fillet(f) if fillet => {
-                        (f.previous, f.edge, f.radius_mm)
+                        (f.previous, f.edges, f.radius_mm)
                     }
                     ferritecad_document::ObjectPayload::Chamfer(c) if !fillet => {
-                        (c.previous, c.edge, c.distance_mm)
+                        (c.previous, c.edges, c.distance_mm)
                     }
                     _ => return None,
                 };
@@ -453,7 +453,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                     "feature_id": o.id,
                     "name": o.name,
                     "previous_feature_id": previous,
-                    "edge": {"feature_id": edge.feature, "joint": edge.joint.segments()},
+                    "edges": edges.iter().map(|edge| serde_json::json!({
+                        "id": edge.id, "producer": edge.meaning.producer,
+                        "kind": edge.meaning.kind, "digest": edge.meaning.digest.to_string(),
+                        "selection": edge.meaning.selection,
+                    })).collect::<Vec<_>>(),
                     "display_value": value.value() * unit.per_base_unit(),
                     "display_unit": unit.symbol(),
                     "expression": value,

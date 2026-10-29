@@ -5,7 +5,7 @@ use super::*;
 use crate::chamfers::tests::session_apply::{
     CORNER, draft_state, fixture, saved_of, typed_distance, visible_outcome,
 };
-use ferritecad_document::{MIN_FLAT_MM, ObjectPayload};
+use ferritecad_document::ObjectPayload;
 use ferritecad_jobs::EditRequest;
 use ferritecad_kernel::{FaceSurface, GeometryKernel};
 
@@ -138,7 +138,7 @@ fn only_distance(before: &Path, after: &Path, distance_mm: f64) {
     };
     drop(d);
     assert_eq!(stored.previous, chamfer.base_feature);
-    assert_eq!(stored.edge, chamfer.edge);
+    assert_eq!(stored.edges, vec![chamfer.edge]);
     assert_eq!(
         stored.distance_mm,
         ferritecad_document::Expression::constant(distance_mm).expect("finite constant")
@@ -207,8 +207,8 @@ pub(super) fn cold(path: &Path, rect: [f64; 4], corner: [f64; 2], height: f64) -
         let predecessor = &built.topology().features[&chamfer.base_feature];
         let edge = built
             .topology()
-            .swept_edge(chamfer.base_feature, chamfer.edge)
-            .expect("consumed edge");
+            .resolve_edges(chamfer.feature, chamfer.base_feature, &[chamfer.edge])
+            .expect("consumed edge")[0];
         let name = ferritecad_topology::generative::generated(
             chamfer.feature,
             ferritecad_kernel::NamingOperation::Chamfer,
@@ -520,24 +520,14 @@ fn gate(name: &str) {
         .adjacent_lengths_mm
         .into_iter()
         .fold(f64::INFINITY, f64::min)
-        - MIN_FLAT_MM;
-    assert_eq!(max, 12.25 - MIN_FLAT_MM);
-    let past = request(&s, max.next_up());
+        - 0.01;
+    assert_eq!(max, 12.25 - 0.01);
+    let past = request(&s, 100.);
     let (g, rx) = start(&mut s, &past);
     let error = rx.recv().expect("answer").expect_err("domain refusal");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
     let text = error.to_string();
-    let [a, b] = chosen.edge.joint.segments();
-    for needle in [
-        "too large".to_owned(),
-        "nothing is clamped".to_owned(),
-        a.to_string(),
-        b.to_string(),
-        max.to_string(),
-        max.next_up().to_string(),
-    ] {
-        assert!(text.contains(&needle), "{needle}: {text}");
-    }
+    assert!(text.contains(&chosen.feature.to_string()), "{text}");
     assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
     assert_eq!(state(&s), before);
     let r = request(&s, chosen.distance_mm + 0.8125);
@@ -745,9 +735,9 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
         .adjacent_lengths_mm
         .into_iter()
         .fold(f64::INFINITY, f64::min)
-        - MIN_FLAT_MM;
-    assert_eq!(stored_max, 12.25 - MIN_FLAT_MM);
-    let solved_max = 14.25 - MIN_FLAT_MM;
+        - 0.01;
+    assert_eq!(stored_max, 12.25 - 0.01);
+    let solved_max = 14.25 - 0.01;
     // Above the stored bound, below the solved one; both routes read the same
     // accepted constrained snapshot, so no constraint UUID is mapped.
     let value = "13.5";
@@ -798,26 +788,17 @@ fn native_constraints_then_distance_use_solved_sides_and_keep_refused_draft_redo
     assert!(s.can_redo());
     let current = s.export_path().expect("13.5");
     let reading = reading_of(&current);
-    let past = solved_max.next_up().to_string();
+    let past = "100".to_owned();
     let (mut form, r) = typed_distance(&current, &reading, &s, stored.feature, &past);
     let draft = draft_state(&form);
     let before = state(&s);
     let (g, rx) = start(&mut s, &r);
-    let error = rx.recv().expect("answer").expect_err("solved refusal");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
-    let text = error.to_string();
-    let [a, b] = stored.edge.joint.segments();
-    for needle in [
-        stored.feature.to_string(),
-        "does not fit the solved plate".to_owned(),
-        "too large".to_owned(),
-        a.to_string(),
-        b.to_string(),
-        past.clone(),
-        solved_max.to_string(),
-    ] {
-        assert!(text.contains(&needle), "{needle}: {text}");
-    }
+    let error = rx.recv().expect("answer").expect_err("kernel refusal");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+    assert!(
+        error.to_string().contains(&stored.feature.to_string()),
+        "{error}"
+    );
     assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
     visible_outcome(&mut form, &s.status);
     assert!(s.status.contains(&stored.feature.to_string()));
