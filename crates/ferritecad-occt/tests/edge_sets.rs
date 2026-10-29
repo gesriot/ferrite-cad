@@ -411,7 +411,11 @@ fn pocket_rims_and_edges_modified_by_fillet_are_consumable_without_corner_polici
         NamingRelation::Modified,
         Some(changed)
     )));
-    let edge = reference(fillet, names.entities[&changed]);
+    // A one-to-one modification keeps the name, so the Extrude that minted it
+    // stays the producer of the edge the Fillet changed.
+    assert_eq!(names.entities[&changed], original);
+    assert_eq!(built.topology().producer(&original.digest), Some(base));
+    let edge = reference(base, original);
     built.release_all(&mut kernel);
     append_edge_feature(&mut document, b, vec![edge], true, 0.25);
     check_cold_and_cache(&document, &mut kernel);
@@ -507,6 +511,19 @@ fn an_intervening_cut_preserves_or_splits_the_consumed_edge_without_retargeting(
                         && output.is_some_and(|e| e.kind() == SubShapeKind::Face)
                 }));
             }
+            built.release_all(&mut k);
+        } else {
+            // The Cut holds the kept edge in its result but did not mint its
+            // name, so it is not the reference's producer.
+            let built = rebuild_cold(&d, &mut k, &OperationContext::default()).expect("kept");
+            let mut observed = edge;
+            observed.meaning.producer = cut.feature;
+            let error = built
+                .topology()
+                .resolve_edges(fillet, cut.feature, &[observed])
+                .expect_err("only the minting feature is the producer")
+                .to_string();
+            assert!(error.contains("unknown name"), "{error}");
             built.release_all(&mut k);
         }
         check_cold_and_cache(&d, &mut k);

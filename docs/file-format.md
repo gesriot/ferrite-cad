@@ -51,8 +51,9 @@ regenerated when this payload changes; there is no format migration.
 
 The `brep.generative.v2` cache stores a feature's own derivation nodes, bindings,
 ancestry and incidence with its B-Rep; model lineage shares predecessor derivations.
-Scene entities carry the producer, kind and name digest. A name with several
-entities has no exact scene selection binding.
+Scene entities carry the feature whose result holds them, the producer that
+minted the name, the kind and the name digest. A name with several entities has
+no exact scene selection binding.
 
 Fillet stores `previous`, a nonempty `edges` vector and `radius_mm: Expression`;
 Chamfer stores `previous`, `edges` and `distance_mm: Expression`. Each

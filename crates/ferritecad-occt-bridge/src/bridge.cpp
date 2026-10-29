@@ -1998,6 +1998,24 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
       write_error(out_error, "the " + what + " produced a non-finite volume change");
       return FC_OCCT_KERNEL;
     }
+    // IsDone() alone is not trusted: every selected edge must have generated
+    // at least one face that lies in the result.
+    TopTools_IndexedMapOfShape result_faces;
+    TopExp::MapShapes(produced, TopAbs_FACE, result_faces);
+    for (const auto &selected : selected_edges) {
+      bool generated_face = false;
+      const TopTools_ListOfShape &generated = fillet.Generated(selected);
+      for (TopTools_ListOfShape::Iterator it(generated); it.More(); it.Next()) {
+        generated_face = generated_face ||
+                         (it.Value().ShapeType() == TopAbs_FACE &&
+                          result_faces.FindIndex(it.Value()) != 0);
+      }
+      if (!generated_face) {
+        write_error(out_error, "the " + what +
+                                   " generated no face from a selected edge");
+        return FC_OCCT_KERNEL;
+      }
+    }
 
     ShapeRecord record;
     record.shape = produced;

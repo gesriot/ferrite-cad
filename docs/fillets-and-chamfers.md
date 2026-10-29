@@ -9,10 +9,12 @@ how many edge features a history may contain.
 
 References work on edges of any body, including pocket rims, Revolve results and
 edges modified by earlier Fillets. Each stores a producer UUID, kind, name digest
-and selection. `one` requires exactly one surviving edge in the consumed result;
-`all_descendants` explicitly selects every surviving descendant. A diagnostic UUID
-identifies this particular use of the reference. It does not change its meaning
-or the cache key. See the [stored representation](file-format.md) and
+and selection. The producer is the feature that minted the name, not a later
+feature whose result still holds the edge. `one` requires exactly one surviving
+edge in the consumed result; `all_descendants` explicitly selects every surviving
+descendant. A diagnostic UUID identifies this particular use of the reference. It
+does not change its meaning or the cache key. See the
+[stored representation](file-format.md) and
 [edit transaction format](edit-transactions.md).
 
 Use `ferritecad print-topology model.fcad` to obtain copyable producer, kind and
@@ -37,7 +39,7 @@ Resolution checks every reference before building. Its topology error names the
 consuming feature and every unresolved reference, with one of these reasons:
 
 - producer UUID is not in the consumed result's history;
-- unknown name in the producer's history;
+- unknown name: the producer minted no name with this digest;
 - edge deleted from the consumed result;
 - edge split into a stated number of edges; selection one refuses to choose;
 - reference does not name an edge.

@@ -500,7 +500,8 @@ FcOcctStatus fc_occt_import_step(
  * Rounds a nonempty set of target edges in one builder at one finite positive
  * radius. Every edge must belong to the target. The kernel decides whether
  * the operation fits and must return exactly one valid solid with a finite
- * volume change. A concave round may add volume.
+ * volume change, in which every selected edge generated at least one face.
+ * `IsDone()` alone is not trusted. A concave round may add volume.
  *
  * The retained history covers every registered target sub-shape, including
  * generated faces and vertex junctions. Read it with fc_occt_naming_data.

@@ -329,7 +329,7 @@ fn run<K: GeometryKernel + ?Sized>(
     state: &mut RebuildResult,
     events: &mut Vec<CacheEvent>,
 ) -> Result<()> {
-    let validation_failures = ensure_rebuildable(document)?;
+    ensure_rebuildable(document)?;
 
     let graph = DocumentGraph::read(document)?;
     let plan = graph.plan_full()?;
@@ -417,15 +417,6 @@ fn run<K: GeometryKernel + ?Sized>(
                     cause,
                 });
             }
-            continue;
-        }
-        if let Some(messages) = validation_failures.get(id) {
-            state.statuses.insert(
-                *id,
-                RebuildStatus::Failed {
-                    error: CadError::input(messages.join("; ")),
-                },
-            );
             continue;
         }
         let owned_before = state.owned.len();
@@ -883,9 +874,8 @@ fn within(context: &OperationContext, done: usize, total: usize) -> OperationCon
         }))
 }
 
-fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<String>>> {
+fn ensure_rebuildable(document: &Document) -> Result<()> {
     let report = document.validate()?;
-    let local = BTreeMap::new();
     let structural: Vec<_> = report
         .errors()
         .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
@@ -912,7 +902,7 @@ fn ensure_rebuildable(document: &Document) -> Result<BTreeMap<ObjectId, Vec<Stri
             }
         }
     }
-    Ok(local)
+    Ok(())
 }
 
 fn boolean_kind(

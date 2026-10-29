@@ -34,16 +34,17 @@ def edge_at(catalog, corner, path):
                             capture_output=True, text=True)
     assert result.returncode == 0, (result.stdout, result.stderr)
     lines = result.stdout.splitlines()
-    candidates = []
+    # A kept name is printed under every feature whose result holds it, with
+    # the producer that minted it, so the same digest may appear several times.
+    digests = set()
     for header, description in zip(lines, lines[1:]):
         match = re.fullmatch(r"\s*producer=(\S+) kind=edge digest=(\w{64}) entities=1", header)
         if match and match[1] == base:
             curves = set(re.findall(r" = curve ([0-9a-f-]+),", description))
             if curves == set(joint) and " cap," not in description:
-                candidates.append({"producer": base, "kind": "edge", "digest": match[2],
-                                   "selection": "one"})
-    assert len(candidates) == 1, (joint, candidates)
-    return candidates[0]
+                digests.add(match[2])
+    assert len(digests) == 1, (joint, digests)
+    return {"producer": base, "kind": "edge", "digest": digests.pop(), "selection": "one"}
 
 
 def edge_addition(catalog, kind, corner, value, path):

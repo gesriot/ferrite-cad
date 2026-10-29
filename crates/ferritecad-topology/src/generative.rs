@@ -91,6 +91,11 @@ impl ModelNaming {
         Self::default()
     }
 
+    /// The published feature that minted `digest`: a reference's producer (ADR 0007 §4).
+    pub fn producer(&self, digest: &ContentHash) -> Option<ObjectId> {
+        self.owners.get(digest).copied()
+    }
+
     pub fn resolve_edges(
         &self,
         consumer: ObjectId,
@@ -115,12 +120,8 @@ impl ModelNaming {
                     "producer {} is not in the consumed result's history",
                     meaning.producer
                 ))
-            } else if !self
-                .owners
-                .get(&meaning.digest)
-                .is_some_and(|owner| self.in_lineage(meaning.producer, *owner))
-            {
-                Some("unknown name in the producer's history".to_owned())
+            } else if self.producer(&meaning.digest) != Some(meaning.producer) {
+                Some("unknown name: the producer minted no name with this digest".to_owned())
             } else if self.derivations[&meaning.digest].kind() != SubShapeKind::Edge {
                 Some("wrong kind: the name is not an edge".to_owned())
             } else if count == 0 {

@@ -29,7 +29,7 @@ pub(crate) fn update(
         };
         Ok(PickedEdge {
             reference: EntityReference::new(ReferenceMeaning {
-                producer: meaning.feature,
+                producer: meaning.producer,
                 kind: EntityKind::Edge,
                 digest: meaning.digest,
                 selection: Selection::One,

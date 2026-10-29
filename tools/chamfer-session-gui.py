@@ -43,7 +43,7 @@ def main():
                 feature = fields[1]
             elif len(fields) == 4 and fields[0].startswith("producer="):
                 row = dict(field.split("=", 1) for field in fields)
-                assert row["producer"] == feature and row["entities"] == "1", line
+                assert feature is not None and row["entities"] == "1", line
                 names.append((feature, row["kind"], row["digest"]))
         assert names, "the built Chamfer has named output"
         return sorted(names)
