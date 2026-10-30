@@ -27,6 +27,8 @@ pub enum DependencyRole {
     Predecessor,
     /// The feature whose result a body exposes as its current tip.
     BodyTip,
+    /// The feature result supplying a datum face.
+    Support,
     /// A named value an expression reads.
     Parameter,
 }
@@ -38,6 +40,7 @@ impl DependencyRole {
             Self::Plane => "plane",
             Self::Predecessor => "predecessor",
             Self::BodyTip => "body_tip",
+            Self::Support => "support",
             Self::Parameter => "parameter",
         }
     }
@@ -48,6 +51,7 @@ impl DependencyRole {
             "plane" => Ok(Self::Plane),
             "predecessor" => Ok(Self::Predecessor),
             "body_tip" => Ok(Self::BodyTip),
+            "support" => Ok(Self::Support),
             "parameter" => Ok(Self::Parameter),
             other => Err(CadError::input(format!(
                 "unknown dependency role {other:?}"

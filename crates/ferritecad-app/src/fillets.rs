@@ -641,7 +641,7 @@ pub(crate) mod tests {
                 None,
                 0,
                 Some("XY"),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             )?;

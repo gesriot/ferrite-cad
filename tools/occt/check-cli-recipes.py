@@ -9,7 +9,11 @@ import subprocess
 import sys
 import tempfile
 
-RECIPES = [('docs/fillets-and-chamfers.md',
+RECIPES = [('docs/datum-planes.md',
+  'DATUM_PLANES_RECIPE',
+  {'no-solver': 'DATUM_PLANES_OK ', 'solver': 'DATUM_PLANES_OK ',
+   'stub': 'DATUM_PLANES_NO_KERNEL '}),
+ ('docs/fillets-and-chamfers.md',
   'NAMED_EDGES_RECIPE',
   {'no-solver': 'NAMED_EDGES_OK ', 'solver': 'NAMED_EDGES_OK ',
    'stub': 'NAMED_EDGES_NO_KERNEL '}),

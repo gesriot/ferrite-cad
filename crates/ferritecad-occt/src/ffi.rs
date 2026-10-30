@@ -152,6 +152,16 @@ impl Segment {
 type CancelFn = extern "C" fn(*mut c_void) -> i32;
 
 unsafe extern "C" {
+    fn fc_occt_support_plane(
+        session: *mut RawSession,
+        shape: u64,
+        faces: *const u64,
+        count: usize,
+        linear: f64,
+        angular: f64,
+        out_plane: *mut f64,
+        error: *mut RawError,
+    ) -> i32;
     fn fc_occt_projected_bounds(
         session: *mut RawSession,
         shape: u64,
@@ -777,6 +787,35 @@ impl Session {
         };
         interpret(status, &error, "cutting one shape out of another")?;
         Ok((shape, removed))
+    }
+
+    pub(crate) fn support_plane(
+        &mut self,
+        shape: u64,
+        faces: &[u64],
+        tolerance: ferritecad_types::Tolerance,
+    ) -> Result<[f64; 6]> {
+        let mut plane = [0.; 6];
+        let mut error = RawError::empty();
+        // SAFETY: the face slice and six output doubles remain live throughout the call.
+        let status = unsafe {
+            fc_occt_support_plane(
+                self.raw,
+                shape,
+                faces.as_ptr(),
+                faces.len(),
+                tolerance.linear(),
+                tolerance.angular(),
+                plane.as_mut_ptr(),
+                &mut error,
+            )
+        };
+        interpret(
+            status,
+            &error,
+            "reading the outward plane of the selected faces",
+        )?;
+        Ok(plane)
     }
 
     pub(crate) fn projected_bounds(&mut self, shape: u64, direction: [f64; 3]) -> Result<[f64; 2]> {

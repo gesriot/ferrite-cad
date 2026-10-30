@@ -109,7 +109,7 @@ fn write(path: &Path, placement: Transform, curves: Vec<SketchCurve>, extruded: 
                 None,
                 0,
                 Some("Datum"),
-                &ObjectPayload::DatumPlane(DatumPlane { placement }),
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed { placement }),
             )?;
             w.put_object(
                 sketch,

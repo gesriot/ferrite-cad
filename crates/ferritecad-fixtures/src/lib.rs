@@ -33,6 +33,7 @@
 mod edit_request;
 pub use edit_request::edit_request_json;
 
+pub mod datum_planes;
 pub mod feature_changes;
 
 use std::collections::BTreeSet;
@@ -270,7 +271,7 @@ pub fn write_plate(path: &Path) -> Result<()> {
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

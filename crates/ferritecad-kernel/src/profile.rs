@@ -30,6 +30,50 @@ impl PlanarPoint {
     }
 }
 
+/// A kernel-checked plane with an outward unit normal in model coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FacePlane {
+    point: Point3,
+    normal: Vec3,
+}
+
+impl FacePlane {
+    pub fn new(point: Point3, normal: Vec3) -> Result<Self> {
+        let point = Point3::new(point.x, point.y, point.z)
+            .map_err(|e| CadError::kernel_because("face plane point is not finite", e))?;
+        let normal = Vec3::new(normal.x, normal.y, normal.z)
+            .map_err(|e| CadError::kernel_because("face plane normal is not finite", e))?;
+        if (normal.length() - 1.0).abs() > 1e-10 {
+            return Err(CadError::kernel(
+                "face plane has no finite unit outward normal",
+            ));
+        }
+        let normal = normal.normalized()?;
+        Ok(Self { point, normal })
+    }
+
+    pub fn point(self) -> Point3 {
+        self.point
+    }
+    pub fn normal(self) -> Vec3 {
+        self.normal
+    }
+
+    /// Fixes the frame by projecting the model origin and X (or Y) axis.
+    pub fn sketch_plane(self, tolerance: ferritecad_types::Tolerance) -> Result<SketchPlane> {
+        let n = self.normal;
+        let distance = self.point.x * n.x + self.point.y * n.y + self.point.z * n.z;
+        let origin = Point3::new(n.x * distance, n.y * distance, n.z * distance)?;
+        let angle = n.cross(Vec3::X)?.length().atan2(n.dot(Vec3::X).abs());
+        let axis = if angle <= tolerance.angular() {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
+        SketchPlane::new(origin, axis, n)
+    }
+}
+
 /// Where a profile's plane sits in model space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SketchPlane {
@@ -540,6 +584,55 @@ mod tests {
             ));
         }
         ProfileLoop::new(segments)
+    }
+
+    #[test]
+    fn face_frame_checks_response_and_switches_axis_at_angular_tolerance() {
+        use ferritecad_types::{ErrorKind, Tolerance};
+        let tolerance = Tolerance::new(1e-7, 1e-6).expect("tolerance");
+        for angle in [0., 0.5e-6, 2e-6_f64] {
+            let n = Vec3::new(angle.cos(), angle.sin(), 0.).expect("unit normal");
+            let frame = FacePlane::new(Point3::new(3., 4., 5.).expect("point"), n)
+                .expect("checked plane")
+                .sketch_plane(tolerance)
+                .expect("frame");
+            assert!(frame.normal().dot(frame.x_axis()).abs() < 1e-9);
+            assert_eq!(frame.x_axis().y > 0., angle <= tolerance.angular());
+            assert!(frame.origin().z.abs() < 1e-12);
+        }
+        for normal in [
+            Vec3::new(0., 0., 0.).expect("zero"),
+            Vec3 {
+                x: f64::NAN,
+                y: 0.,
+                z: 1.,
+            },
+            Vec3 {
+                x: 0.,
+                y: 0.,
+                z: 2.,
+            },
+        ] {
+            assert_eq!(
+                FacePlane::new(Point3::ORIGIN, normal)
+                    .expect_err("bad reply")
+                    .kind(),
+                ErrorKind::Kernel
+            );
+        }
+        assert_eq!(
+            FacePlane::new(
+                Point3 {
+                    x: f64::INFINITY,
+                    y: 0.,
+                    z: 0.
+                },
+                Vec3::Z
+            )
+            .expect_err("bad point")
+            .kind(),
+            ErrorKind::Kernel
+        );
     }
 
     #[test]

@@ -163,7 +163,12 @@ fn resolve_intersection_in_plane(
             digest: name.digest,
             selection: ferritecad_document::Selection::One,
         });
-    map.resolve_edges(*feature, *feature, &[reference])
+    map.resolve(
+        ferritecad_document::EntityKind::Edge,
+        *feature,
+        *feature,
+        &[reference],
+    )
 }
 
 fn cap_edge_name(

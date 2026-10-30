@@ -28,6 +28,13 @@ resolve in the consumed result, with every failed reference reported by identity
 There are no rectangle, corner, minimum-flat or history-length policies.
 See [Fillet and Chamfer](fillets-and-chamfers.md) for the current contract and recipe.
 
+Datum planes lie on a named planar face of a feature result or at a signed offset
+from another datum. Only CLI `edit` creates them (`add_datum_plane`, `set_datum_face`,
+slot `datum_offset`); `inspect --json` reports definitions and computed frames. The
+window draws sketches and bodies at the evaluated frames and its existing forms keep
+working; creating a plane from a viewport face is separate work.
+See [datum planes](datum-planes.md).
+
 §30A: CLI не меняется. Окно получает рабочую сессию открытого документа
 ([контракт](document-session.md)): на маршруте высоты Extrude Apply, Undo/Redo и
 явные Save/Save As работают без новых имён файлов, а `edit-extrude` приводит к тому

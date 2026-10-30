@@ -146,7 +146,7 @@ fn setup() -> (tempfile::TempDir, Document, ObjectId) {
     let mut d = Document::create(temp.path().join("model.fcad")).expect("document");
     let plane = put(
         &mut d,
-        ObjectPayload::DatumPlane(DatumPlane {
+        ObjectPayload::DatumPlane(DatumPlane::Fixed {
             placement: Transform::IDENTITY,
         }),
     );

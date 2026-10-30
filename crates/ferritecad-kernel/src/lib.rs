@@ -51,7 +51,8 @@ pub use kernel::{
     GeometryKernel, boolean_cache_key, extrude_cache_key, revolve_cache_key, tessellation_cache_key,
 };
 pub use profile::{
-    PlanarPoint, Profile, ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchPlane,
+    FacePlane, PlanarPoint, Profile, ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry,
+    SketchPlane,
 };
 pub use refusal::TessellationRefusal;
 pub use request::{

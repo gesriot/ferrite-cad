@@ -307,7 +307,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
             None,
             0,
             None,
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

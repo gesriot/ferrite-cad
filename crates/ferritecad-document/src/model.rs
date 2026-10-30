@@ -138,9 +138,29 @@ pub struct Parameter {
 
 /// A plane features and sketches can be built on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DatumPlane {
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DatumPlane {
     /// Maps the plane's local XY frame into model space.
-    pub placement: Transform,
+    Fixed { placement: Transform },
+    Offset {
+        from: ObjectId,
+        distance_mm: Expression,
+    },
+    Face {
+        result: ObjectId,
+        face: crate::EntityReference,
+        offset_mm: Expression,
+    },
+}
+
+impl DatumPlane {
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Fixed { .. } => "fixed",
+            Self::Offset { .. } => "offset",
+            Self::Face { .. } => "face",
+        }
+    }
 }
 
 /// A point in a sketch's own plane, in millimetres.
@@ -1199,6 +1219,12 @@ impl ObjectPayload {
         use crate::DependencyRole as R;
         let mut references = Vec::new();
         match self {
+            Self::DatumPlane(DatumPlane::Offset { from, .. }) => {
+                references.push((*from, R::Plane));
+            }
+            Self::DatumPlane(DatumPlane::Face { result, .. }) => {
+                references.push((*result, R::Support));
+            }
             Self::Sketch(s) => references.push((s.plane, R::Plane)),
             Self::Extrude(e) => references.push((e.profile, R::Profile)),
             Self::Revolve(r) => references.push((r.profile, R::Profile)),
@@ -1284,14 +1310,23 @@ impl ObjectPayload {
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
             Self::Parameter(parameter) => parameter.expression.validate(),
-            Self::DatumPlane(plane) => {
-                for row in plane.placement.rows() {
-                    for value in row {
-                        normalize_f64(*value)?;
+            Self::DatumPlane(plane) => match plane {
+                DatumPlane::Fixed { placement } => {
+                    for row in placement.rows() {
+                        for value in row {
+                            normalize_f64(*value)?;
+                        }
                     }
+                    Ok(())
                 }
-                Ok(())
-            }
+                DatumPlane::Offset { distance_mm, .. } => distance_mm.validate(),
+                DatumPlane::Face {
+                    face, offset_mm, ..
+                } => {
+                    crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
+                    offset_mm.validate()
+                }
+            },
             Self::Sketch(sketch) => sketch.validate(),
             Self::Body(_) => Ok(()),
             Self::Extrude(extrude) => {
@@ -1594,7 +1629,7 @@ mod tests {
                 dimension: Dimension::Length,
                 expression: Expression::new("2 * 25", 50.0).expect("finite"),
             }),
-            ObjectPayload::DatumPlane(DatumPlane {
+            ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
             ObjectPayload::Sketch(Sketch {

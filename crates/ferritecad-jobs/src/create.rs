@@ -490,7 +490,7 @@ fn populate_profile(
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;
@@ -582,7 +582,7 @@ fn populate_revolve(
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;
@@ -673,7 +673,7 @@ fn populate_circle(
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;
@@ -787,7 +787,7 @@ fn populate_annulus(
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

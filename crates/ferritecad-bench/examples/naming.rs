@@ -114,7 +114,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ObjectPayload::Chamfer(c) => (c.previous, c.edges),
                     _ => continue,
                 };
-                model.resolve_edges(object.id, previous, &edges)?;
+                model.resolve(
+                    ferritecad_document::EntityKind::Edge,
+                    object.id,
+                    previous,
+                    &edges,
+                )?;
                 references += edges.len();
             }
             report = json!({

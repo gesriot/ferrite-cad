@@ -228,7 +228,7 @@ fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
                 None,
                 0,
                 Some("Datum"),
-                &ObjectPayload::DatumPlane(DatumPlane { placement }),
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed { placement }),
             )?;
             let mut order = 1i64;
             for spec in sketches {

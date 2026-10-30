@@ -1119,6 +1119,38 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
   });
 }
 
+FcOcctStatus fc_occt_support_plane(FcOcctSession *session, uint64_t shape,
+    const uint64_t *faces, size_t count, double linear, double angular,
+    double *out_plane, FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (!session || !faces || !count || !out_plane ||
+        !std::isfinite(linear) || !std::isfinite(angular) || linear <= 0 || angular <= 0)
+      return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    naming_inventory(found->second);
+    gp_Pln common;
+    gp_Dir outward;
+    for (size_t i = 0; i < count; ++i) {
+      double p[3], n[3], area;
+      // The exact occurrence in the solid supplies orientation, including indirect U/V frames.
+      const auto status = fc_occt_face_plane(session, shape, faces[i], p, n, &area, out_error);
+      if (status != FC_OCCT_OK) return status;
+      const gp_Pnt point(p[0], p[1], p[2]);
+      const gp_Dir normal(n[0], n[1], n[2]);
+      if (i == 0) { common = gp_Pln(point, normal); outward = normal; }
+      else if (!outward.IsEqual(normal, angular) || common.Distance(point) > linear) {
+        write_error(out_error, "face descendants do not lie in one plane with one outward normal");
+        return FC_OCCT_INVALID_INPUT;
+      }
+    }
+    const gp_Pnt point = common.Location();
+    out_plane[0] = point.X(); out_plane[1] = point.Y(); out_plane[2] = point.Z();
+    out_plane[3] = outward.X(); out_plane[4] = outward.Y(); out_plane[5] = outward.Z();
+    return FC_OCCT_OK;
+  });
+}
+
 FcOcctStatus fc_occt_projected_bounds(FcOcctSession *session, uint64_t shape,
     const double *direction, double *out_bounds, FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {

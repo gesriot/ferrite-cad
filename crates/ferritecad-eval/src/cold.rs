@@ -42,9 +42,7 @@ use crate::cache::{
     boolean_archive_key, edge_archive_key, extrude_archive_key, load_feature_archive,
     revolve_archive_key, store_feature_archive, through_all_profile_key,
 };
-use crate::convert::{
-    extrude_request, plane_from_datum, profile_from_sketch, revolve_request, through_all_request,
-};
+use crate::convert::{extrude_request, profile_from_sketch, revolve_request, through_all_request};
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
@@ -93,6 +91,7 @@ pub struct RebuildResult {
     degraded_bodies: Vec<DegradedBody>,
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
+    planes: BTreeMap<ObjectId, SketchPlane>,
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
     presentations: BTreeMap<ObjectId, SketchPresentation>,
     topology: ModelNaming,
@@ -180,6 +179,11 @@ impl RebuildResult {
     /// The shape a feature or body resolved to.
     pub fn shape(&self, object: ObjectId) -> Option<ShapeHandle> {
         self.shapes.get(&object).copied()
+    }
+
+    /// The computed frame of a successfully evaluated datum.
+    pub fn plane(&self, object: ObjectId) -> Option<SketchPlane> {
+        self.planes.get(&object).copied()
     }
 
     /// The profile a sketch converted to.
@@ -341,7 +345,6 @@ fn run<K: GeometryKernel + ?Sized>(
         .collect();
 
     state.topology.prepare(&objects)?;
-    let mut planes: BTreeMap<ObjectId, SketchPlane> = BTreeMap::new();
     let total = plan.order().len();
     for (position, id) in plan.order().iter().enumerate() {
         // Checked between features rather than only inside the kernel: a
@@ -423,11 +426,19 @@ fn run<K: GeometryKernel + ?Sized>(
         let outcome = (|| -> Result<()> {
             match &object.payload {
                 ObjectPayload::DatumPlane(datum) => {
-                    planes.insert(*id, plane_from_datum(datum)?);
+                    let plane = crate::datum::evaluate(
+                        *id,
+                        datum,
+                        &state.planes,
+                        &state.topology,
+                        kernel,
+                        &scoped,
+                    )?;
+                    state.planes.insert(*id, plane);
                 }
 
                 ObjectPayload::Sketch(sketch) => {
-                    let plane = planes.get(&sketch.plane).copied().ok_or_else(|| {
+                    let plane = state.planes.get(&sketch.plane).copied().ok_or_else(|| {
                         CadError::input(format!(
                             "sketch {id} is placed on {}, which is not a datum plane",
                             sketch.plane
@@ -627,7 +638,12 @@ fn run<K: GeometryKernel + ?Sized>(
                             "feature {id} consumes an unavailable result {previous}"
                         ))
                     })?;
-                    let edges = state.topology.resolve_edges(*id, previous, references)?;
+                    let edges = state.topology.resolve(
+                        ferritecad_document::EntityKind::Edge,
+                        *id,
+                        previous,
+                        references,
+                    )?;
                     let key = edge_archive_key(kernel.identity(), target_key, payload_key);
                     let key = state.topology.cache_key(*id, key);
                     let restored = match cache.as_deref_mut() {

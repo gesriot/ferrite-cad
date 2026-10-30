@@ -1499,3 +1499,13 @@ boundary, feature and operation, and all inputs down to saved curves, curve
 ends and cap roots. An entity count above one exposes ambiguity. Cold and
 cached rebuilds produce the same text. These descriptions are not persisted
 rows or editable output UUIDs; consumers keep their existing payloads.
+
+### Datum plane inspection
+
+`inspect.result.datum_planes` lists each saved datum as `object`, `name`,
+`definition` and `computed`. A definition has `kind` (`fixed`, `offset`, `face`)
+and its stored fields: `placement`; `from`/`distance_mm`; or
+`result`/`face`/`offset_mm`. Expressions have `source` and `value`. Face references
+have `id`, `producer`, `kind`, `digest` and `selection`. A successfully evaluated
+plane has `computed: {origin, x_axis, normal}`, each an `{x,y,z}` vector;
+otherwise `computed` is null. See [datum planes](datum-planes.md) for edit requests.

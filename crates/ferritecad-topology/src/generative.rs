@@ -96,25 +96,40 @@ impl ModelNaming {
         self.owners.get(digest).copied()
     }
 
-    pub fn resolve_edges(
+    pub fn resolve(
         &self,
+        kind: ferritecad_document::EntityKind,
         consumer: ObjectId,
         at: ObjectId,
         references: &[ferritecad_document::EntityReference],
     ) -> Result<Vec<SubShapeHandle>> {
         use ferritecad_document::EntityKind;
-        let mut edges = BTreeSet::new();
+        let shape_kind = match kind {
+            EntityKind::Face => SubShapeKind::Face,
+            EntityKind::Edge => SubShapeKind::Edge,
+            EntityKind::Vertex => SubShapeKind::Vertex,
+        };
+        let label = kind.as_str();
+        let plural = match kind {
+            EntityKind::Face => "faces",
+            EntityKind::Edge => "edges",
+            EntityKind::Vertex => "vertices",
+        };
+        let article = if kind == EntityKind::Edge { "an" } else { "a" };
+        let mut entities = BTreeSet::new();
         let mut refusals = Vec::new();
         for reference in references {
             let meaning = reference.meaning;
             let name = Name {
-                kind: SubShapeKind::Edge,
+                kind: shape_kind,
                 digest: meaning.digest,
             };
             let members = self.features.get(&at).and_then(|f| f.ancestry.get(&name));
             let count = members.map_or(0, BTreeSet::len);
-            let reason = if meaning.kind != EntityKind::Edge {
-                Some("wrong kind: the reference must name an edge".to_owned())
+            let reason = if meaning.kind != kind {
+                Some(format!(
+                    "wrong kind: the reference must name {article} {label}"
+                ))
             } else if !self.in_lineage(at, meaning.producer) {
                 Some(format!(
                     "producer {} is not in the consumed result's history",
@@ -122,13 +137,13 @@ impl ModelNaming {
                 ))
             } else if self.producer(&meaning.digest) != Some(meaning.producer) {
                 Some("unknown name: the producer minted no name with this digest".to_owned())
-            } else if self.derivations[&meaning.digest].kind() != SubShapeKind::Edge {
-                Some("wrong kind: the name is not an edge".to_owned())
+            } else if self.derivations[&meaning.digest].kind() != shape_kind {
+                Some(format!("wrong kind: the name is not {article} {label}"))
             } else if count == 0 {
-                Some("edge deleted from the consumed result".to_owned())
+                Some(format!("{label} deleted from the consumed result"))
             } else if meaning.selection == Selection::One && count != 1 {
                 Some(format!(
-                    "edge split into {count} edges; selection one refuses to choose"
+                    "{label} split into {count} {plural}; selection one refuses to choose"
                 ))
             } else {
                 None
@@ -139,18 +154,18 @@ impl ModelNaming {
                     reference.id
                 ));
             } else if let Some(members) = members {
-                edges.extend(members);
+                entities.extend(members);
             }
         }
         if !refusals.is_empty() {
             return Err(CadError::topology(refusals.join("; ")));
         }
-        if edges.is_empty() {
-            return Err(CadError::input(
-                "an edge feature needs at least one reference",
-            ));
+        if entities.is_empty() {
+            return Err(CadError::input(format!(
+                "{article} {label} feature needs at least one reference"
+            )));
         }
-        Ok(edges.into_iter().collect())
+        Ok(entities.into_iter().collect())
     }
 
     pub fn prepare(&mut self, objects: &BTreeMap<ObjectId, ObjectRecord>) -> Result<()> {

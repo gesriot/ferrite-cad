@@ -200,7 +200,7 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;

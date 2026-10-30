@@ -306,6 +306,12 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
                          uint64_t *out_shape, double *out_removed_volume,
                          FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/* All faces must be planar, coplanar and equally oriented within tolerance.
+ * The six output doubles are a model-space point followed by the outward normal. */
+FcOcctStatus fc_occt_support_plane(FcOcctSession *session, uint64_t shape,
+    const uint64_t *faces, size_t count, double linear, double angular,
+    double *out_plane, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /* Tight extrema along direction; both arrays have three and two doubles respectively. */
 FcOcctStatus fc_occt_projected_bounds(FcOcctSession *session, uint64_t shape,
     const double *direction, double *out_bounds, FcOcctError *out_error) FC_OCCT_NOEXCEPT;

@@ -68,7 +68,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             None,
             0,
             Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane {
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
             }),
         )?;
@@ -496,7 +496,7 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
                 None,
                 0,
                 Some("XY"),
-                &ObjectPayload::DatumPlane(DatumPlane {
+                &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                     placement: Transform::IDENTITY,
                 }),
             )?;

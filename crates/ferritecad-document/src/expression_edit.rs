@@ -14,6 +14,7 @@ use crate::{
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExpressionSlot {
     ExtrudeDistance,
+    DatumOffset,
     FilletRadius,
     ChamferDistance,
     RevolveAngle,
@@ -36,6 +37,7 @@ impl ExpressionSlot {
 impl std::fmt::Display for ExpressionSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (kind, constraint) = match self {
+            Self::DatumOffset => ("datum_offset", None),
             Self::ExtrudeDistance => ("extrude_distance", None),
             Self::FilletRadius => ("fillet_radius", None),
             Self::ChamferDistance => ("chamfer_distance", None),
@@ -56,6 +58,15 @@ impl std::fmt::Display for ExpressionSlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditChange {
+    AddDatumPlane {
+        object: ObjectId,
+        name: Option<String>,
+        plane: crate::DatumPlane,
+    },
+    SetDatumFace {
+        object: ObjectId,
+        face: crate::EntityReference,
+    },
     AddBody {
         object: ObjectId,
         name: Option<String>,
@@ -213,7 +224,9 @@ impl EditChange {
 
     pub fn object(&self) -> ObjectId {
         match self {
-            Self::AddBody { object, .. }
+            Self::AddDatumPlane { object, .. }
+            | Self::SetDatumFace { object, .. }
+            | Self::AddBody { object, .. }
             | Self::SetEdges { object, .. }
             | Self::SetRegions { object, .. }
             | Self::SetOperation { object, .. }
@@ -248,6 +261,16 @@ impl EditChange {
             return set_expression(payload, *slot, expression.clone());
         }
         match self {
+            Self::SetDatumFace { face, .. } => {
+                let ObjectPayload::DatumPlane(crate::DatumPlane::Face { face: saved, .. }) =
+                    payload
+                else {
+                    return Err(CadError::input("face belongs to a face datum plane"));
+                };
+                crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
+                *saved = *face;
+                return Ok(());
+            }
             Self::SetEdges { edges, .. } => {
                 crate::entity_reference::validate_edges(edges)?;
                 match payload {
@@ -341,12 +364,16 @@ impl EditChange {
                     })?;
                 sketch.constraints.remove(index);
             }
-            Self::AddBody { .. } | Self::AddSketch { .. } | Self::AddFeature { .. } => {
+            Self::AddDatumPlane { .. }
+            | Self::AddBody { .. }
+            | Self::AddSketch { .. }
+            | Self::AddFeature { .. } => {
                 return Err(CadError::input(
                     "an object addition must be applied to the document",
                 ));
             }
-            Self::SetEdges { .. }
+            Self::SetDatumFace { .. }
+            | Self::SetEdges { .. }
             | Self::SetRegions { .. }
             | Self::SetOperation { .. }
             | Self::SetReversed { .. }
@@ -390,6 +417,12 @@ fn expressions(
 ) {
     use ExpressionSlot as S;
     match payload {
+        ObjectPayload::DatumPlane(crate::DatumPlane::Offset { distance_mm, .. }) => {
+            visit(S::DatumOffset, distance_mm);
+        }
+        ObjectPayload::DatumPlane(crate::DatumPlane::Face { offset_mm, .. }) => {
+            visit(S::DatumOffset, offset_mm);
+        }
         ObjectPayload::Extrude(extrude) => match &mut extrude.end_condition {
             EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
                 visit(S::ExtrudeDistance, distance)
@@ -525,6 +558,16 @@ impl Document {
                             }),
                         )?;
                     }
+                    EditChange::AddDatumPlane { name, plane, .. } => {
+                        insert_candidate(
+                            document,
+                            &mut changed,
+                            &mut ordinal,
+                            id,
+                            name,
+                            ObjectPayload::DatumPlane(plane.clone()),
+                        )?;
+                    }
                     EditChange::AddSketch { name, sketch, .. } => {
                         insert_candidate(
                             document,
@@ -575,6 +618,11 @@ impl Document {
             }
             for object in changed.values() {
                 object.payload.validate()?;
+            }
+            for (id, object) in &changed {
+                if object.original.is_none() {
+                    validate_candidate_dependencies(document, &changed, *id, &object.payload)?;
+                }
             }
             // New rows follow request order, independently of their caller-supplied UUIDs.
             let mut ordered: Vec<_> = changed.iter().collect();
@@ -658,6 +706,27 @@ fn insert_candidate(
     if changed.contains_key(&id) || document.object(id)?.is_some() {
         return Err(CadError::input(format!("object {id} already exists")));
     }
+    *ordinal = ordinal
+        .checked_add(1)
+        .ok_or_else(|| CadError::input("new object ordinal overflows"))?;
+    changed.insert(
+        id,
+        CandidateObject {
+            original: None,
+            payload,
+            name: name.clone(),
+            ordinal: *ordinal,
+        },
+    );
+    Ok(())
+}
+
+fn validate_candidate_dependencies(
+    document: &Document,
+    changed: &BTreeMap<ObjectId, CandidateObject>,
+    id: ObjectId,
+    payload: &ObjectPayload,
+) -> Result<()> {
     let get = |id| -> Result<ObjectPayload> {
         if let Some(object) = changed.get(&id) {
             return Ok(object.payload.clone());
@@ -672,7 +741,7 @@ fn insert_candidate(
         let valid = match dependency.role {
             DependencyRole::Plane => matches!(target, ObjectPayload::DatumPlane(_)),
             DependencyRole::Profile => matches!(target, ObjectPayload::Sketch(_)),
-            DependencyRole::Predecessor | DependencyRole::BodyTip => {
+            DependencyRole::Predecessor | DependencyRole::BodyTip | DependencyRole::Support => {
                 target.kind().is_some_and(crate::ObjectKind::is_feature)
             }
             _ => true,
@@ -685,17 +754,5 @@ fn insert_candidate(
             )));
         }
     }
-    *ordinal = ordinal
-        .checked_add(1)
-        .ok_or_else(|| CadError::input("new object ordinal overflows"))?;
-    changed.insert(
-        id,
-        CandidateObject {
-            original: None,
-            payload,
-            name: name.clone(),
-            ordinal: *ordinal,
-        },
-    );
     Ok(())
 }

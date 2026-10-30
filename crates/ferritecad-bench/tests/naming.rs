@@ -24,7 +24,12 @@ fn names(document: &Document) -> ModelNaming {
             _ => continue,
         };
         let selected = names
-            .resolve_edges(object.id, previous, &edges)
+            .resolve(
+                ferritecad_document::EntityKind::Edge,
+                object.id,
+                previous,
+                &edges,
+            )
             .expect("generative edges");
         for selected in selected {
             assert_eq!(selected.kind(), SubShapeKind::Edge);

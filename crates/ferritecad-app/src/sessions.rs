@@ -1330,6 +1330,7 @@ mod tests {
     mod chamfer;
     mod checkpoints;
     mod cut;
+    mod datum_planes;
     mod fillet;
     mod new_document;
     mod recovery;

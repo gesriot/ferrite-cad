@@ -149,7 +149,7 @@ impl Plate {
                     None,
                     i64::from(copy) * 4,
                     Some("XY"),
-                    &ObjectPayload::DatumPlane(DatumPlane {
+                    &ObjectPayload::DatumPlane(DatumPlane::Fixed {
                         placement: if self.placement {
                             Transform::from_translation(ferritecad_types::Vec3::new(0., 0., 5.)?)?
                         } else {
