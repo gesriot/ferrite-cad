@@ -1520,9 +1520,7 @@ pub(crate) mod tests {
             .iter()
             .map(|object| {
                 let payload = match &object.payload {
-                    ObjectPayload::DatumPlane(plane) => {
-                        format!("{} datum plane", plane.kind_name())
-                    }
+                    ObjectPayload::DatumPlane(plane) => format!("datum plane {plane:?}"),
                     ObjectPayload::Sketch(sketch) => {
                         let geometry: Vec<String> = sketch
                             .curves

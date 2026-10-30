@@ -123,6 +123,11 @@ and use **Add selected edge** in the form, or supply one or more references thro
 valid solid. The existing numeric editors, Undo/Redo, exports and Save/Save As use
 the shared transaction. A deleted or split exact reference refuses with its identity;
 it never chooses another edge. [Fillet and Chamfer](docs/fillets-and-chamfers.md).
+A sketch plane can lie on a named planar face of any feature result or at a signed
+offset from another plane; sketches and bodies on it move with their support.
+A deleted, split or curved support refuses with its identity instead of choosing
+another face. Planes are added through `edit`; the window draws and edits documents
+that contain them. [Datum planes](docs/datum-planes.md).
 
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.

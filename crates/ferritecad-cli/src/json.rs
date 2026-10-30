@@ -103,7 +103,6 @@ impl From<&CadError> for Failure {
 
 #[derive(Serialize)]
 pub struct Inspection {
-    datum_planes: Vec<serde_json::Value>,
     rebuild: Option<ferritecad_eval::RebuildReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rebuild_error: Option<Failure>,
@@ -123,6 +122,16 @@ pub struct Inspection {
     fillets: Vec<serde_json::Value>,
     /// Saved Chamfer identity, edge and expression facts.
     chamfers: Vec<serde_json::Value>,
+    /// Saved datum definitions with their computed frames, when built.
+    datum_planes: Vec<serde_json::Value>,
+}
+
+fn reference_json(reference: &ferritecad_document::EntityReference) -> serde_json::Value {
+    serde_json::json!({
+        "id": reference.id, "producer": reference.meaning.producer,
+        "kind": reference.meaning.kind, "digest": reference.meaning.digest.to_string(),
+        "selection": reference.meaning.selection,
+    })
 }
 
 #[derive(Serialize)]
@@ -460,11 +469,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                     "feature_id": o.id,
                     "name": o.name,
                     "previous_feature_id": previous,
-                    "edges": edges.iter().map(|edge| serde_json::json!({
-                        "id": edge.id, "producer": edge.meaning.producer,
-                        "kind": edge.meaning.kind, "digest": edge.meaning.digest.to_string(),
-                        "selection": edge.meaning.selection,
-                    })).collect::<Vec<_>>(),
+                    "edges": edges.iter().map(reference_json).collect::<Vec<_>>(),
                     "display_value": value.value() * unit.per_base_unit(),
                     "display_unit": unit.symbol(),
                     "expression": value,
@@ -474,42 +479,42 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     };
     let fillets = edge_features(true)?;
     let chamfers = edge_features(false)?;
-    let datum_planes =
-        document
-            .objects()?
-            .into_iter()
-            .filter_map(|object| {
-                use ferritecad_document::DatumPlane as D;
-                let ferritecad_document::ObjectPayload::DatumPlane(datum) = object.payload else {
-                    return None;
-                };
-                let definition = match datum {
-                    D::Fixed { placement } => {
-                        serde_json::json!({"kind": "fixed", "placement": placement})
-                    }
-                    D::Offset { from, distance_mm } => serde_json::json!({
-                        "kind": "offset", "from": from, "distance_mm": distance_mm,
-                    }),
-                    D::Face {
-                        result,
-                        face,
-                        offset_mm,
-                    } => serde_json::json!({
-                        "kind": "face", "result": result, "offset_mm": offset_mm,
-                        "face": {"id": face.id, "producer": face.meaning.producer,
-                            "kind": face.meaning.kind, "digest": face.meaning.digest.to_string(),
-                            "selection": face.meaning.selection},
-                    }),
-                };
-                let computed = planes.get(&object.id).map(|plane| serde_json::json!({
-            "origin": plane.origin(), "x_axis": plane.x_axis(), "normal": plane.normal(),
-        }));
-                Some(serde_json::json!({"object": object.id, "name": object.name,
-            "definition": definition, "computed": computed}))
-            })
-            .collect();
+    let datum_planes = document
+        .objects()?
+        .into_iter()
+        .filter_map(|object| {
+            use ferritecad_document::DatumPlane as D;
+            let ferritecad_document::ObjectPayload::DatumPlane(datum) = object.payload else {
+                return None;
+            };
+            let definition = match datum {
+                D::Fixed { placement } => {
+                    serde_json::json!({"kind": "fixed", "placement": placement})
+                }
+                D::Offset { from, distance_mm } => serde_json::json!({
+                    "kind": "offset", "from": from, "distance_mm": distance_mm,
+                }),
+                D::Face {
+                    result,
+                    face,
+                    offset_mm,
+                } => serde_json::json!({
+                    "kind": "face", "result": result, "face": reference_json(&face),
+                    "offset_mm": offset_mm,
+                }),
+            };
+            let computed = planes.get(&object.id).map(|plane| {
+                serde_json::json!({
+                    "origin": plane.origin(), "x_axis": plane.x_axis(), "normal": plane.normal(),
+                })
+            });
+            Some(serde_json::json!({
+                "object": object.id, "name": object.name,
+                "definition": definition, "computed": computed,
+            }))
+        })
+        .collect();
     let result = Inspection {
-        datum_planes,
         rebuild,
         rebuild_error,
         document_id: source.version.document_id,
@@ -622,6 +627,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         revolves,
         fillets,
         chamfers,
+        datum_planes,
     };
     document.close()?;
     Ok(result)

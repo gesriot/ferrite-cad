@@ -157,6 +157,30 @@ fn supported_boss_moves_with_the_plate_without_changing_names_and_offsets_make_a
             .1,
         24000. + std::f64::consts::PI * 9. * 4.,
     );
+    // Parallel faces with one outward normal still lie in different planes.
+    use ferritecad_topology::generative::{cap_root, generated};
+    let boss_top = EntityReference::new(ReferenceMeaning {
+        producer: f.feature,
+        kind: EntityKind::Face,
+        digest: generated(
+            f.feature,
+            ferritecad_kernel::NamingOperation::Extrude,
+            cap_root(f.feature, true, Some(f.plane)),
+            SubShapeKind::Face,
+        )
+        .digest,
+        selection: Selection::One,
+    });
+    let tops = before
+        .topology()
+        .resolve(EntityKind::Face, f.plane, f.feature, &[f.face, boss_top])
+        .expect("plate and boss tops");
+    assert_eq!(tops.len(), 2);
+    let refusal = kernel
+        .support_plane(&tops, &OperationContext::default())
+        .expect_err("parallel planes");
+    assert_eq!(refusal.kind(), ferritecad_types::ErrorKind::Input);
+    assert!(refusal.to_string().contains("do not lie in one plane"));
     warm(&doc, &mut kernel, &before, root.path());
     doc.write_changes(&[
         EditChange::constant(f.base, ExpressionSlot::ExtrudeDistance, 15.).expect("height"),
