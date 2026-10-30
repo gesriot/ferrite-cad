@@ -567,3 +567,75 @@ fn a_consumed_boss_rim_survives_blind_to_face_and_vertex() {
         built.release_all(&mut kernel);
     }
 }
+
+#[test]
+fn separate_regions_reach_the_end_like_blind() {
+    use ferritecad_document::*;
+    use ferritecad_types::ObjectId;
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let mut doc = ferritecad_fixtures::open_plate(root.path()).expect("plate");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let f = ferritecad_fixtures::up_to_end::ceiling(&mut doc, &mut kernel).expect("ceiling");
+    let body = ferritecad_fixtures::feature_changes::body(&doc).expect("plate body");
+    let circle = |center| ferritecad_fixtures::datum_planes::circle(f.boss.plane, center, 1.5);
+    let mut profile = circle([18., 20.]).expect("left post");
+    profile
+        .curves
+        .extend(circle([32., 20.]).expect("right post").curves);
+    let (sketch, feature) = (ObjectId::new(), ObjectId::new());
+    doc.write_changes(&[
+        EditChange::AddSketch {
+            object: sketch,
+            name: None,
+            sketch: profile,
+        },
+        EditChange::AddFeature {
+            object: feature,
+            body,
+            name: None,
+            feature: FeatureAddition::Extrude {
+                profile: sketch,
+                regions: vec![],
+                operation: SolidOperation::Add,
+                reversed: false,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(20.).expect("height"),
+                },
+            },
+        },
+    ])
+    .expect("two posts in one sketch");
+    let signature = |built: &ferritecad_eval::RebuildResult| {
+        built.topology().features[&feature]
+            .bindings
+            .iter()
+            .map(|(n, entities)| (*n, entities.len()))
+            .collect::<Vec<_>>()
+    };
+    let blind = rebuild_cold(&doc, &mut kernel, &context).expect("blind");
+    assert!(blind.all_built(), "{:?}", blind.report());
+    let names = signature(&blind);
+    let volume = kernel
+        .shape_stats(blind.shape(feature).expect("posts"))
+        .expect("volume")
+        .1;
+    blind.release_all(&mut kernel);
+    for end in [f.face_end(0.).expect("face"), f.vertex_end()] {
+        doc.write_changes(&[EditChange::SetEndCondition {
+            object: feature,
+            end_condition: end,
+        }])
+        .expect("referenced end");
+        let built = rebuild_cold(&doc, &mut kernel, &context).expect("up to");
+        assert!(built.all_built(), "{:?}", built.report());
+        assert_eq!(signature(&built), names);
+        let shape = built.shape(feature).expect("posts");
+        assert!((kernel.shape_stats(shape).expect("volume").1 - volume).abs() < 1e-6);
+        assert!(kernel.is_valid(shape).expect("BRepCheck"));
+        built.release_all(&mut kernel);
+    }
+}

@@ -565,7 +565,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
                         if matches!(request, SweepRequest::UpTo { .. }) {
-                            kernel.validate_solid(tool.shape)?;
+                            kernel.validate_solids(tool.shape)?;
                         }
                         if previous.is_none() && multiple_regions {
                             let solids = kernel.solid_count(tool.shape)?;

@@ -81,12 +81,14 @@ lower face of a ceiling therefore lowers the end. The kernel constructs curved o
 surfaces; no radius or coordinate rule substitutes for that operation.
 
 Coverage is topological. The kernel splits an auxiliary long prism at the surface
-and retains the solid containing the whole starting cap. That solid must not touch
+and retains each solid containing a whole starting cap. No retained solid may touch
 any surviving part of the auxiliary far cap. Bounds only size the auxiliary prism;
-there are no sampled rays or centre-point coverage decisions. The result must be one
-valid solid with finite positive volume. The new far cap retains the ordinary sweep
-end-cap provenance; auxiliary geometry creates no names. Blind and a parallel face
-at the same height have identical names, including edges consumed by Fillet.
+there are no sampled rays or centre-point coverage decisions. Every retained solid
+must be valid with finite positive volume. Separate regions give separate solids, as
+with Blind, and a new body still needs one solid. The new far caps retain the ordinary
+sweep end-cap provenance, including region refinement; auxiliary geometry creates no
+names. Blind and a parallel face at the same height have identical names, including
+edges consumed by Fillet.
 
 `up_to_vertex` projects the named vertex onto the fixed extrusion direction. The
 finite distance must be strictly positive; the resulting perpendicular end plane

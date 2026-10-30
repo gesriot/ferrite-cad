@@ -330,10 +330,12 @@ fn joins(a: PlanarPoint, b: PlanarPoint) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use ferritecad_document::{Expression, Point2, SolidOperation};
+    use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
+
     #[test]
     fn vertex_extent_checks_kernel_numbers_and_the_requested_direction() {
-        use super::*;
-        use ferritecad_types::ErrorKind;
         let plane = SketchPlane::new(Point3::ORIGIN, Vec3::X, Vec3::Z).expect("plane");
         for p in [
             Point3 {
@@ -380,10 +382,6 @@ mod tests {
             ErrorKind::Kernel
         );
     }
-
-    use super::*;
-    use ferritecad_document::{Expression, Point2, SolidOperation};
-    use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
 
     fn line(start: (f64, f64), end: (f64, f64)) -> SketchCurve {
         SketchCurve {

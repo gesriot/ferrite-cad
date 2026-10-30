@@ -36,8 +36,8 @@ solver state and the initial approximation, rather than editable dimensions.
 Extrude and Revolve name their consumed feature through `previous`. `NewBody`
 requires no predecessor; `Add`, `Cut` and `Intersect` require one. Extrude keeps
 `Blind`, `Symmetric`, `ThroughAll`, `UpToFace` and `UpToVertex` plus `reversed`;
-`ThroughAll` is valid only
-for `Cut` and `Intersect`. New bodies and additive bosses have nothing to go through.
+`ThroughAll` is valid only for `Cut` and `Intersect`. New bodies and additive bosses
+have nothing to go through.
 `UpToFace` stores `result: ObjectId`, `face: EntityReference` and signed finite
 `offset_mm: Expression`; `UpToVertex` stores `result` and `vertex: EntityReference`.
 The former requires a face kind, the latter a vertex with `selection: one`.

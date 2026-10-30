@@ -384,7 +384,7 @@ fn intersect_accepts_referenced_ends_and_vertex_refuses_behind_or_multiple_solid
     assert!(
         result.report().failed[0]
             .message
-            .contains("must produce one solid")
+            .contains("separate solids")
     );
     result.release_all(&mut kernel);
 }

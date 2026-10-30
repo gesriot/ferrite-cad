@@ -52,10 +52,10 @@ pub trait GeometryKernel {
         )))
     }
 
-    /// Checks that a result is one valid solid with finite positive volume.
-    fn validate_solid(&mut self, shape: ShapeHandle) -> Result<()> {
+    /// Checks that a result holds valid solids with finite positive volume.
+    fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
         Err(ferritecad_types::CadError::unsupported(format!(
-            "this kernel does not validate solid {shape}"
+            "this kernel does not validate the solids of {shape}"
         )))
     }
 

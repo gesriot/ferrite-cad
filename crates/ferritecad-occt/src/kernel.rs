@@ -724,9 +724,9 @@ impl GeometryKernel for OcctKernel {
         self.session.solid_count(self.raw(shape)?)
     }
 
-    fn validate_solid(&mut self, shape: ShapeHandle) -> Result<()> {
+    fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
         let raw = self.raw(shape)?;
-        checked_solid(
+        checked_solids(
             self.session.solid_count(raw)?,
             self.session.shape_stats(raw)?.1,
             self.session.is_valid(raw)?,
@@ -1103,10 +1103,10 @@ fn naming_kind(raw: u64) -> Result<SubShapeKind> {
     }
 }
 
-fn checked_solid(count: usize, volume: f64, valid: bool) -> Result<()> {
-    if count != 1 {
+fn checked_solids(count: usize, volume: f64, valid: bool) -> Result<()> {
+    if count == 0 {
         return Err(CadError::kernel(
-            "extrusion to a referenced end must produce one solid",
+            "extrusion to a referenced end produced no solid",
         ));
     }
     if !volume.is_finite() || volume <= 0. {
@@ -1120,21 +1120,22 @@ fn checked_solid(count: usize, volume: f64, valid: bool) -> Result<()> {
 
 #[cfg(test)]
 mod solid_tests {
-    use super::checked_solid;
+    use super::checked_solids;
 
     #[test]
-    fn reject_empty_multiple_non_finite_and_invalid_kernel_solids() {
-        assert!(checked_solid(1, 1., true).is_ok());
+    fn reject_empty_non_finite_and_invalid_kernel_solids() {
+        assert!(checked_solids(1, 1., true).is_ok());
+        // Separate profile regions sweep into separate solids, as with Blind.
+        assert!(checked_solids(2, 1., true).is_ok());
         for (count, volume, valid, reason) in [
-            (0, 1., true, "one solid"),
-            (2, 1., true, "one solid"),
+            (0, 1., true, "no solid"),
             (1, f64::NAN, true, "finite and positive"),
             (1, f64::INFINITY, true, "finite and positive"),
             (1, 0., true, "finite and positive"),
             (1, -1., true, "finite and positive"),
             (1, 1., false, "invalid solid"),
         ] {
-            let error = checked_solid(count, volume, valid).expect_err("refuse kernel answer");
+            let error = checked_solids(count, volume, valid).expect_err("refuse kernel answer");
             assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
             assert!(error.to_string().contains(reason), "{error}");
         }

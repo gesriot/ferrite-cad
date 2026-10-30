@@ -335,7 +335,10 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
     return FC_OCCT_KERNEL;
   }
   auto sweep = prism.Prism();
+  // Separate regions sweep into separate solids, as with Blind. Every solid
+  // holding a start cap must end at the surface before the auxiliary far cap.
   TopTools_IndexedMapOfShape selected;
+  bool uncovered = false;
   for (TopExp_Explorer solid(split.Shape(), TopAbs_SOLID); solid.More(); solid.Next()) {
     TopTools_IndexedMapOfShape members;
     TopExp::MapShapes(solid.Current(), TopAbs_FACE, members);
@@ -346,13 +349,22 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
       for (TopTools_ListOfShape::Iterator it(split.Modified(sweep.LastShape(face)));
            it.More(); it.Next()) far |= members.Contains(it.Value());
     }
-    if (start && !far) selected.Add(solid.Current());
+    if (start && far) uncovered = true;
+    else if (start) selected.Add(solid.Current());
   }
-  if (selected.Extent() != 1) {
+  if (uncovered || selected.IsEmpty()) {
     write_error(error, "end surface does not cover the profile ahead of the sketch plane");
     return FC_OCCT_INVALID_INPUT;
   }
-  record.shape = selected(1);
+  if (selected.Extent() == 1) {
+    record.shape = selected(1);
+  } else {
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    for (int i = 1; i <= selected.Extent(); ++i) builder.Add(compound, selected(i));
+    record.shape = compound;
+  }
   naming_inventory(record);
   for (const auto &face : faces) {
     if (!naming_contains(record, sweep.FirstShape(face))) {
@@ -389,6 +401,23 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
   for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
     naming_link(record, 0, 1, 6, 2, it.Value());
   naming_link(record, 0, 1, 6, 2, until);
+  // As in naming_sweep, each region's far cap is refined by its outer loop; the
+  // far caps are now the end-surface pieces of the solid holding that region.
+  if (faces.size() > 1) {
+    size_t loop = 0, segment = 0;
+    for (size_t r = 0; r < faces.size(); ++r) {
+      for (int i = 1; i <= selected.Extent(); ++i) {
+        TopTools_IndexedMapOfShape members;
+        TopExp::MapShapes(selected(i), TopAbs_FACE, members);
+        if (!members.Contains(sweep.FirstShape(faces[r]))) continue;
+        for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
+          if (members.Contains(it.Value()))
+            for (size_t k = 0; k < loops[loop]; ++k)
+              naming_link(record, 0, segment + k, 7, 2, it.Value());
+      }
+      for (size_t i = 0; i < regions[r]; ++i) segment += loops[loop++];
+    }
+  }
   return FC_OCCT_OK;
 }
 
