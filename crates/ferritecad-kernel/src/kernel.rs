@@ -52,6 +52,13 @@ pub trait GeometryKernel {
         )))
     }
 
+    /// Checks that a result is one valid solid with finite positive volume.
+    fn validate_solid(&mut self, shape: ShapeHandle) -> Result<()> {
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "this kernel does not validate solid {shape}"
+        )))
+    }
+
     /// Tight bounds of the shape projected on a model-space unit direction.
     fn projected_bounds(
         &mut self,
@@ -92,6 +99,29 @@ pub trait GeometryKernel {
         request: &ExtrudeRequest,
         context: &OperationContext,
     ) -> Result<OperationResult>;
+
+    /// Returns the model-space point of the exact named vertex.
+    fn vertex_point(&mut self, vertex: SubShapeHandle) -> Result<ferritecad_types::Point3> {
+        let _ = vertex;
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not report vertex points",
+        ))
+    }
+
+    /// Sweeps to the first forward intersection with the untrimmed end surface.
+    fn extrude_to_face(
+        &mut self,
+        profile: &crate::Profile,
+        reversed: bool,
+        faces: &[SubShapeHandle],
+        offset_mm: f64,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        let _ = (profile, reversed, faces, offset_mm, context);
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not extrude to a face",
+        ))
+    }
 
     /// Turns a planar profile about an axis in its plane into a solid.
     ///

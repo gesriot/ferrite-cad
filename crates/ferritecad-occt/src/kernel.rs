@@ -648,8 +648,89 @@ impl GeometryKernel for OcctKernel {
         assembled
     }
 
+    fn vertex_point(&mut self, vertex: SubShapeHandle) -> Result<ferritecad_types::Point3> {
+        if vertex.kind() != SubShapeKind::Vertex {
+            return Err(CadError::input("a vertex point requires a vertex"));
+        }
+        let raw = self.raw(vertex.shape())?;
+        let p = self.session.vertex_point(raw, vertex.index())?;
+        ferritecad_types::Point3::new(p[0], p[1], p[2])
+            .map_err(|error| CadError::kernel_because("vertex point is not finite", error))
+    }
+
+    fn extrude_to_face(
+        &mut self,
+        profile: &ferritecad_kernel::Profile,
+        reversed: bool,
+        faces: &[SubShapeHandle],
+        offset_mm: f64,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        context.check_cancelled()?;
+        let first = faces
+            .first()
+            .ok_or_else(|| CadError::input("face selection is empty"))?;
+        let shape = first.shape();
+        if !offset_mm.is_finite()
+            || faces
+                .iter()
+                .any(|f| f.shape() != shape || f.kind() != SubShapeKind::Face)
+        {
+            return Err(CadError::input(
+                "end faces must belong to one result with a finite offset",
+            ));
+        }
+        let raw = self.raw(shape)?;
+        let ids: Vec<_> = faces.iter().map(|f| f.index()).collect();
+        let segments: Vec<_> = profile
+            .segments()
+            .map(|s| segment_of(&s.geometry))
+            .collect();
+        let loops: Vec<_> = profile.loops().map(|l| l.segments().len()).collect();
+        let regions: Vec<_> = profile
+            .regions()
+            .iter()
+            .map(|r| 1 + r.inner.len())
+            .collect();
+        let raw = self.session.extrude_to_face(
+            &plane_of(profile.plane()),
+            &segments,
+            ffi::ProfilePartition {
+                loops: &loops,
+                regions: &regions,
+            },
+            raw,
+            &ids,
+            offset_mm,
+            if reversed { -1. } else { 1. },
+            context,
+        )?;
+        let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
+        self.naming_curves
+            .insert(shape, profile.segments().map(|s| s.label).collect());
+        if let Err(error) = context.check_cancelled() {
+            self.release(shape);
+            return Err(error);
+        }
+        Ok(OperationResult {
+            shape,
+            removed_volume: 0.,
+        })
+    }
+
     fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
         self.session.solid_count(self.raw(shape)?)
+    }
+
+    fn validate_solid(&mut self, shape: ShapeHandle) -> Result<()> {
+        let raw = self.raw(shape)?;
+        checked_solid(
+            self.session.solid_count(raw)?,
+            self.session.shape_stats(raw)?.1,
+            self.session.is_valid(raw)?,
+        )
     }
 
     fn projected_bounds(
@@ -1019,5 +1100,43 @@ fn naming_kind(raw: u64) -> Result<SubShapeKind> {
         1 => Ok(SubShapeKind::Edge),
         2 => Ok(SubShapeKind::Vertex),
         _ => Err(CadError::kernel("unknown elementary shape kind")),
+    }
+}
+
+fn checked_solid(count: usize, volume: f64, valid: bool) -> Result<()> {
+    if count != 1 {
+        return Err(CadError::kernel(
+            "extrusion to a referenced end must produce one solid",
+        ));
+    }
+    if !volume.is_finite() || volume <= 0. {
+        return Err(CadError::kernel("solid volume must be finite and positive"));
+    }
+    if !valid {
+        return Err(CadError::kernel("the kernel returned an invalid solid"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod solid_tests {
+    use super::checked_solid;
+
+    #[test]
+    fn reject_empty_multiple_non_finite_and_invalid_kernel_solids() {
+        assert!(checked_solid(1, 1., true).is_ok());
+        for (count, volume, valid, reason) in [
+            (0, 1., true, "one solid"),
+            (2, 1., true, "one solid"),
+            (1, f64::NAN, true, "finite and positive"),
+            (1, f64::INFINITY, true, "finite and positive"),
+            (1, 0., true, "finite and positive"),
+            (1, -1., true, "finite and positive"),
+            (1, 1., false, "invalid solid"),
+        ] {
+            let error = checked_solid(count, volume, valid).expect_err("refuse kernel answer");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+            assert!(error.to_string().contains(reason), "{error}");
+        }
     }
 }

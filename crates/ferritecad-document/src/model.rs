@@ -676,6 +676,40 @@ pub enum EndCondition {
     Symmetric { distance: Expression },
     /// Through everything present, in the given direction.
     ThroughAll,
+    /// The untrimmed surface of a named face, offset along its outward normal.
+    UpToFace {
+        result: ObjectId,
+        face: crate::EntityReference,
+        offset_mm: Expression,
+    },
+    /// A plane through a named vertex, perpendicular to the sweep direction.
+    UpToVertex {
+        result: ObjectId,
+        vertex: crate::EntityReference,
+    },
+}
+
+impl EndCondition {
+    pub fn support(&self) -> Option<ObjectId> {
+        match self {
+            Self::UpToFace { result, .. } | Self::UpToVertex { result, .. } => Some(*result),
+            Self::Blind { .. } | Self::Symmetric { .. } | Self::ThroughAll => None,
+        }
+    }
+}
+
+impl std::fmt::Display for EndCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blind { distance } => write!(f, "blind {} mm", distance.value()),
+            Self::Symmetric { distance } => write!(f, "symmetric {} mm", distance.value()),
+            Self::ThroughAll => f.write_str("through all"),
+            Self::UpToFace {
+                face, offset_mm, ..
+            } => write!(f, "up to face {}, offset {} mm", face.id, offset_mm.value()),
+            Self::UpToVertex { vertex, .. } => write!(f, "up to vertex {}", vertex.id),
+        }
+    }
 }
 
 /// How a feature's result combines with an existing body.
@@ -1005,6 +1039,19 @@ impl Extrude {
             EndCondition::ThroughAll => {
                 hasher.str("through_all");
             }
+            EndCondition::UpToFace {
+                result,
+                face,
+                offset_mm,
+            } => {
+                hasher.str("up_to_face").bytes(&result.to_bytes());
+                face.meaning.feed(&mut hasher);
+                offset_mm.feed(&mut hasher);
+            }
+            EndCondition::UpToVertex { result, vertex } => {
+                hasher.str("up_to_vertex").bytes(&result.to_bytes());
+                vertex.meaning.feed(&mut hasher);
+            }
         }
 
         // Which earlier result this one consumes is part of what it is. Two
@@ -1226,7 +1273,10 @@ impl ObjectPayload {
                 references.push((*result, R::Support));
             }
             Self::Sketch(s) => references.push((s.plane, R::Plane)),
-            Self::Extrude(e) => references.push((e.profile, R::Profile)),
+            Self::Extrude(e) => {
+                references.push((e.profile, R::Profile));
+                references.extend(e.end_condition.support().map(|id| (id, R::Support)));
+            }
             Self::Revolve(r) => references.push((r.profile, R::Profile)),
             Self::Body(b) => references.extend(b.tip_feature.map(|tip| (tip, R::BodyTip))),
             _ => {}
@@ -1352,6 +1402,21 @@ impl ObjectPayload {
                         ));
                     }
                     EndCondition::ThroughAll => {}
+                    EndCondition::UpToFace {
+                        face, offset_mm, ..
+                    } => {
+                        crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
+                        offset_mm.validate()?;
+                    }
+                    EndCondition::UpToVertex { vertex, .. } => {
+                        crate::entity_reference::validate_kind(vertex, crate::EntityKind::Vertex)?;
+                        if vertex.meaning.selection != crate::Selection::One {
+                            return Err(CadError::input(format!(
+                                "vertex reference {} requires selection one",
+                                vertex.id
+                            )));
+                        }
+                    }
                 }
                 match (extrude.operation, extrude.previous.is_some()) {
                     (SolidOperation::NewBody, false) => Ok(()),

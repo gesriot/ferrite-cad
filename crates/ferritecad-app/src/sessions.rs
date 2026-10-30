@@ -1335,6 +1335,7 @@ mod tests {
     mod new_document;
     mod recovery;
     mod tabs;
+    mod up_to_end;
     use ferritecad_document::Document;
     use ferritecad_jobs::{
         CreateDocumentRequest, HistoryLimits, NewDocument, PlateSize, create_document,

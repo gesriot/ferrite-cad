@@ -594,7 +594,23 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                     ferritecad_document::EndCondition::ThroughAll => {
                         serde_json::json!({"kind":"through_all"})
                     }
-                    _ => return None,
+                    ferritecad_document::EndCondition::UpToFace {
+                        result,
+                        face,
+                        offset_mm,
+                    } => {
+                        serde_json::json!({
+                            "kind": "up_to_face", "result": result, "face": reference_json(face),
+                            "offset": distance(offset_mm.value()),
+                        })
+                    }
+                    ferritecad_document::EndCondition::UpToVertex { result, vertex } => {
+                        serde_json::json!({
+                            "kind": "up_to_vertex", "result": result,
+                            "vertex": reference_json(vertex),
+                        })
+                    }
+                    _ => serde_json::json!({ "kind": "unsupported" }),
                 };
                 Some(Feature {
                     feature_id: o.id,

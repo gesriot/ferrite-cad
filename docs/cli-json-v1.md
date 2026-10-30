@@ -1509,3 +1509,13 @@ and its stored fields: `placement`; `from`/`distance_mm`; or
 have `id`, `producer`, `kind`, `digest` and `selection`. A successfully evaluated
 plane has `computed: {origin, x_axis, normal}`, each an `{x,y,z}` vector;
 otherwise `computed` is null. See [datum planes](datum-planes.md) for edit requests.
+
+### Referenced extrusion ends
+
+`inspect.result.features[].end_condition` uses `kind: "up_to_face"`, `result`,
+`face` and a unitful `offset`, or `kind: "up_to_vertex"`, `result` and `vertex`.
+References use the common `id`, `producer`, `kind`, `digest`, `selection` fields;
+`id` is diagnostic and does not affect geometric meaning or cache identity.
+No computed distance is stored. A Face datum on the resulting cap exposes its
+`computed.origin`. See [referenced sweep ends](generic-sweeps.md) for editing,
+resolution failures and cold/cached behaviour.

@@ -14,6 +14,7 @@ use crate::{
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExpressionSlot {
     ExtrudeDistance,
+    ExtrudeEndOffset,
     DatumOffset,
     FilletRadius,
     ChamferDistance,
@@ -38,6 +39,7 @@ impl std::fmt::Display for ExpressionSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (kind, constraint) = match self {
             Self::DatumOffset => ("datum_offset", None),
+            Self::ExtrudeEndOffset => ("extrude_end_offset", None),
             Self::ExtrudeDistance => ("extrude_distance", None),
             Self::FilletRadius => ("fillet_radius", None),
             Self::ChamferDistance => ("chamfer_distance", None),
@@ -427,7 +429,8 @@ fn expressions(
             EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
                 visit(S::ExtrudeDistance, distance)
             }
-            EndCondition::ThroughAll => {}
+            EndCondition::UpToFace { offset_mm, .. } => visit(S::ExtrudeEndOffset, offset_mm),
+            EndCondition::ThroughAll | EndCondition::UpToVertex { .. } => {}
         },
         ObjectPayload::Fillet(fillet) => visit(S::FilletRadius, &mut fillet.radius_mm),
         ObjectPayload::Chamfer(chamfer) => visit(S::ChamferDistance, &mut chamfer.distance_mm),
@@ -620,7 +623,17 @@ impl Document {
                 object.payload.validate()?;
             }
             for (id, object) in &changed {
-                if object.original.is_none() {
+                let old = object
+                    .original
+                    .as_ref()
+                    .map(|o| o.payload.dependencies(*id))
+                    .unwrap_or_default();
+                if object
+                    .payload
+                    .dependencies(*id)
+                    .iter()
+                    .any(|d| !old.contains(d))
+                {
                     validate_candidate_dependencies(document, &changed, *id, &object.payload)?;
                 }
             }

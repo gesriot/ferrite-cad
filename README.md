@@ -128,6 +128,11 @@ offset from another plane; sketches and bodies on it move with their support.
 A deleted, split or curved support refuses with its identity instead of choosing
 another face. Planes are added through `edit`; the window draws and edits documents
 that contain them. [Datum planes](docs/datum-planes.md).
+Extrude can terminate at a named face's untrimmed surface, at a signed outward
+surface offset, or at the plane through a named vertex perpendicular to its direction.
+CLI `set_end_condition` and `extrude_end_offset` edit these definitions. The window
+draws the resulting bodies; its Cut depth form directs referenced ends to `edit`.
+[Referenced sweep ends](docs/generic-sweeps.md).
 
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.

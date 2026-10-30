@@ -304,6 +304,44 @@ fn check_semantic_references(
             );
         }
         ObjectPayload::Extrude(extrude) => {
+            let support = extrude.end_condition.support();
+            if let Some(result) = support {
+                if !by_id
+                    .get(&result)
+                    .is_some_and(|o| o.payload.kind().is_some_and(ObjectKind::is_feature))
+                {
+                    report.error(
+                        "reference.wrong-kind",
+                        Some(object.id),
+                        format!("extrude {} requires feature result {result}", object.id),
+                    );
+                }
+                if !edges.contains(&(object.id, result, DependencyRole::Support)) {
+                    report.error(
+                        "reference.missing-edge",
+                        Some(object.id),
+                        format!(
+                            "extrude {} has no support dependency on {result}",
+                            object.id
+                        ),
+                    );
+                }
+            }
+            for &(dependent, dependency, role) in edges {
+                if dependent == object.id
+                    && role == DependencyRole::Support
+                    && support != Some(dependency)
+                {
+                    report.error(
+                        "reference.unexpected-edge",
+                        Some(object.id),
+                        format!(
+                            "extrude {} has an unexpected support dependency on {dependency}",
+                            object.id
+                        ),
+                    );
+                }
+            }
             require(
                 extrude.profile,
                 DependencyRole::Profile,

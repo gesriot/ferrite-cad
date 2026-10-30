@@ -34,6 +34,11 @@ slot `datum_offset`); `inspect --json` reports definitions and computed frames. 
 window draws sketches and bodies at the evaluated frames and its existing forms keep
 working; creating a plane from a viewport face is separate work.
 See [datum planes](datum-planes.md).
+Extrude can terminate at a named face's untrimmed surface, at a signed outward
+surface offset, or at the plane through a named vertex perpendicular to its direction.
+CLI `set_end_condition` and `extrude_end_offset` edit these definitions. The window
+draws the resulting bodies; its Cut depth form directs referenced ends to `edit`.
+[Referenced sweep ends](generic-sweeps.md).
 
 §30A: CLI не меняется. Окно получает рабочую сессию открытого документа
 ([контракт](document-session.md)): на маршруте высоты Extrude Apply, Undo/Redo и

@@ -205,6 +205,34 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_vertex_point(
+        session: *mut RawSession,
+        shape: u64,
+        vertex: u64,
+        point: *mut f64,
+        error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_extrude_to_face(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        loops: *const usize,
+        loop_count: usize,
+        regions: *const usize,
+        region_count: usize,
+        shape: u64,
+        ids: *const u64,
+        count: usize,
+        offset: f64,
+        sign: f64,
+        linear: f64,
+        angular: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        error: *mut RawError,
+    ) -> i32;
     fn fc_occt_revolve(
         session: *mut RawSession,
         plane: *const Plane,
@@ -606,6 +634,61 @@ impl Session {
         let status = unsafe { fc_occt_solid_count(self.raw, shape, &mut count, &mut error) };
         interpret(status, &error, "counting solids")?;
         Ok(count)
+    }
+
+    pub(crate) fn vertex_point(&mut self, shape: u64, vertex: u64) -> Result<[f64; 3]> {
+        let mut point = [0.; 3];
+        let mut error = RawError::empty();
+        // SAFETY: outputs are writable for three doubles and one error; the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_vertex_point(self.raw, shape, vertex, point.as_mut_ptr(), &mut error)
+        };
+        interpret(status, &error, "reading a vertex point")?;
+        Ok(point)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn extrude_to_face(
+        &mut self,
+        plane: &Plane,
+        segments: &[Segment],
+        partition: ProfilePartition<'_>,
+        shape: u64,
+        faces: &[u64],
+        offset: f64,
+        sign: f64,
+        context: &ferritecad_kernel::OperationContext,
+    ) -> Result<u64> {
+        let mut output = 0;
+        let mut error = RawError::empty();
+        let tolerance = context.tolerance();
+        // SAFETY: input slices and the cancellation token live throughout the call;
+        // output pointers are writable and the bridge catches every exception.
+        let status = unsafe {
+            fc_occt_extrude_to_face(
+                self.raw,
+                plane,
+                segments.as_ptr(),
+                segments.len(),
+                partition.loops.as_ptr(),
+                partition.loops.len(),
+                partition.regions.as_ptr(),
+                partition.regions.len(),
+                shape,
+                faces.as_ptr(),
+                faces.len(),
+                offset,
+                sign,
+                tolerance.linear(),
+                tolerance.angular(),
+                Some(cancel_trampoline),
+                context.cancel() as *const CancelToken as *mut c_void,
+                &mut output,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "extruding to a face")?;
+        Ok(output)
     }
 
     /// Region counts partition loops; loop counts partition segments.

@@ -97,6 +97,25 @@ fn geometry_units(value: &mut Value, unit: &str) {
 }
 
 fn end_json(end: &ferritecad_document::EndCondition) -> Value {
+    use ferritecad_document::EndCondition;
+    match end {
+        EndCondition::UpToFace {
+            result,
+            face,
+            offset_mm,
+        } => {
+            return json!({
+                "kind":"up_to_face", "result":result, "face":edges_json(&[*face])[0],
+                "offset":{"value":offset_mm.value(), "unit":"mm"},
+            });
+        }
+        EndCondition::UpToVertex { result, vertex } => {
+            return json!({
+                "kind":"up_to_vertex", "result":result, "vertex":edges_json(&[*vertex])[0],
+            });
+        }
+        _ => {}
+    }
     let mut value = serde_json::to_value(end).expect("end condition");
     if let Some(distance) = value.get_mut("distance") {
         *distance = json!({"value":distance["value"], "unit":"mm"});

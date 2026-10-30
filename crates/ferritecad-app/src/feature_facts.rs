@@ -241,6 +241,9 @@ pub(crate) fn read(
                 match &e.end_condition {
                     EndCondition::Blind { distance } => distance.value(),
                     EndCondition::Symmetric { distance } => distance.value() * 2.,
+                    EndCondition::ThroughAll
+                    | EndCondition::UpToFace { .. }
+                    | EndCondition::UpToVertex { .. } => 10.,
                     _ => 10.,
                 },
             ),
@@ -283,6 +286,18 @@ pub(crate) fn read(
             if cut.operation != ferritecad_document::SolidOperation::Cut {
                 continue;
             }
+            if matches!(
+                cut.end_condition,
+                EndCondition::UpToFace { .. } | EndCondition::UpToVertex { .. }
+            ) {
+                cuts.push(CutParameterChoice {
+                    feature: o.id,
+                    name: o.name.clone(),
+                    saved: None,
+                    refusal: Some("this feature's end condition is edited through `edit`".into()),
+                });
+                continue;
+            }
             let Some(tool) = objects.iter().find_map(|o| match &o.payload {
                 ObjectPayload::Sketch(s) if o.id == cut.profile => Some(s),
                 _ => None,
@@ -303,6 +318,10 @@ pub(crate) fn read(
                     depth_mm: distance.value(),
                 },
                 EndCondition::ThroughAll => CutExtent::ThroughAll,
+                EndCondition::Symmetric { .. } => continue,
+                EndCondition::UpToFace { .. } | EndCondition::UpToVertex { .. } => {
+                    unreachable!("referenced conditions have an explicit refusal")
+                }
                 _ => continue,
             };
             cuts.push(CutParameterChoice {

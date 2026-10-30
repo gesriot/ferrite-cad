@@ -38,6 +38,29 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
     SketchPlane::new(origin, x_axis, normal)
 }
 
+pub(crate) fn vertex_extent(
+    plane: SketchPlane,
+    reversed: bool,
+    p: Point3,
+) -> Result<ExtrudeExtent> {
+    let p = Point3::new(p.x, p.y, p.z)
+        .map_err(|error| CadError::kernel_because("vertex point is not finite", error))?;
+    let origin = plane.origin();
+    let n = plane.normal();
+    let sign = if reversed { -1. } else { 1. };
+    let distance =
+        sign * ((p.x - origin.x) * n.x + (p.y - origin.y) * n.y + (p.z - origin.z) * n.z);
+    if !distance.is_finite() {
+        return Err(CadError::kernel("vertex projection is not finite"));
+    }
+    if distance <= 0. {
+        return Err(CadError::input(
+            "end vertex is not ahead of the sketch plane",
+        ));
+    }
+    ExtrudeExtent::blind(distance)
+}
+
 /// Builds a profile from a sketch's curves.
 ///
 /// Main curves form disjoint closed boundaries with even/odd nesting.
@@ -203,11 +226,12 @@ pub fn extrude_request(
             })?;
             return through_all_request(profile, feature.reversed, bounds);
         }
-        other => {
-            return Err(CadError::unsupported(format!(
-                "end condition {other:?} is not implemented"
-            )));
+        EndCondition::UpToFace { .. } | EndCondition::UpToVertex { .. } => {
+            return Err(CadError::input(
+                "a referenced end condition needs its resolved support",
+            ));
         }
+        _ => return Err(CadError::unsupported("unsupported extrusion end condition")),
     };
 
     Ok(ExtrudeRequest::new(profile, extent, feature.reversed))
@@ -306,6 +330,57 @@ fn joins(a: PlanarPoint, b: PlanarPoint) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vertex_extent_checks_kernel_numbers_and_the_requested_direction() {
+        use super::*;
+        use ferritecad_types::ErrorKind;
+        let plane = SketchPlane::new(Point3::ORIGIN, Vec3::X, Vec3::Z).expect("plane");
+        for p in [
+            Point3 {
+                x: f64::NAN,
+                y: 0.,
+                z: 1.,
+            },
+            Point3 {
+                x: 0.,
+                y: 0.,
+                z: f64::INFINITY,
+            },
+        ] {
+            assert_eq!(
+                vertex_extent(plane, false, p)
+                    .expect_err("nonfinite")
+                    .kind(),
+                ErrorKind::Kernel
+            );
+        }
+        for z in [0., -1.] {
+            assert_eq!(
+                vertex_extent(plane, false, Point3::new(0., 0., z).expect("point"))
+                    .expect_err("not ahead")
+                    .kind(),
+                ErrorKind::Input
+            );
+        }
+        assert_eq!(
+            vertex_extent(plane, true, Point3::new(10., 20., -3.).expect("point"))
+                .expect("reversed"),
+            ExtrudeExtent::blind(3.).expect("blind")
+        );
+        let far = SketchPlane::new(
+            Point3::new(0., 0., -f64::MAX).expect("origin"),
+            Vec3::X,
+            Vec3::Z,
+        )
+        .expect("plane");
+        assert_eq!(
+            vertex_extent(far, false, Point3::new(0., 0., f64::MAX).expect("point"))
+                .expect_err("overflow")
+                .kind(),
+            ErrorKind::Kernel
+        );
+    }
+
     use super::*;
     use ferritecad_document::{Expression, Point2, SolidOperation};
     use ferritecad_types::{ErrorKind, ObjectId, StableEntityId, Transform};
