@@ -316,6 +316,9 @@ impl Editor {
                     if response.clicked() {
                         self.begin_edit(path, source, choice.feature);
                     }
+                    if let Some(reason) = &choice.refusal {
+                        ui.label(reason);
+                    }
                     if let Some(reason) = refusal {
                         response.on_hover_text(reason);
                     }

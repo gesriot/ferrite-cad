@@ -502,6 +502,35 @@ fn run<K: GeometryKernel + ?Sized>(
                                 CadError::input("ThroughAll has no target to go through")
                             })?,
                         },
+                        ObjectPayload::Extrude(e) if e.end_condition.support().is_some() => {
+                            let (result, reference) = match &e.end_condition {
+                                EndCondition::UpToFace { result, face, .. } => (*result, face),
+                                EndCondition::UpToVertex { result, vertex } => (*result, vertex),
+                                _ => unreachable!("supported end condition"),
+                            };
+                            let kind = match &e.end_condition {
+                                EndCondition::UpToFace { .. } => {
+                                    ferritecad_document::EntityKind::Face
+                                }
+                                _ => ferritecad_document::EntityKind::Vertex,
+                            };
+                            let entities =
+                                state.topology.resolve(kind, *id, result, &[*reference])?;
+                            let end = match &e.end_condition {
+                                EndCondition::UpToFace { offset_mm, .. } => SurfaceEnd::Face {
+                                    faces: entities,
+                                    offset: offset_mm.value(),
+                                },
+                                _ => SurfaceEnd::Vertex(entities[0]),
+                            };
+                            SweepRequest::UpTo {
+                                profile,
+                                reversed: e.reversed,
+                                end,
+                                support_key: state.keys[&result],
+                                payload_key: e.cache_key(scoped.tolerance()),
+                            }
+                        }
                         ObjectPayload::Extrude(e) => {
                             SweepRequest::Extrude(extrude_request(e, profile, None)?)
                         }
@@ -535,6 +564,9 @@ fn run<K: GeometryKernel + ?Sized>(
                         let tool = request.build(kernel, &scoped)?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
+                        if matches!(request, SweepRequest::UpTo { .. }) {
+                            kernel.validate_solids(tool.shape)?;
+                        }
                         if previous.is_none() && multiple_regions {
                             let solids = kernel.solid_count(tool.shape)?;
                             if solids != 1 {
@@ -936,7 +968,22 @@ fn boolean_kind(
     }
 }
 
+enum SurfaceEnd {
+    Face {
+        faces: Vec<ferritecad_kernel::SubShapeHandle>,
+        offset: f64,
+    },
+    Vertex(ferritecad_kernel::SubShapeHandle),
+}
+
 enum SweepRequest {
+    UpTo {
+        profile: Profile,
+        reversed: bool,
+        end: SurfaceEnd,
+        support_key: ContentHash,
+        payload_key: ContentHash,
+    },
     ThroughAll {
         profile: Profile,
         reversed: bool,
@@ -952,6 +999,20 @@ impl SweepRequest {
         context: &OperationContext,
     ) -> ContentHash {
         match self {
+            Self::UpTo {
+                profile,
+                support_key,
+                payload_key,
+                ..
+            } => {
+                let mut h = ferritecad_types::CanonicalHasher::new("eval.extrude.up-to");
+                h.algorithm_version(1);
+                kernel.feed(&mut h);
+                context.tolerance().feed(&mut h);
+                profile.feed(&mut h);
+                h.hash(support_key).hash(payload_key);
+                h.finish()
+            }
             Self::ThroughAll {
                 profile, reversed, ..
             } => through_all_profile_key(profile, *reversed),
@@ -965,6 +1026,27 @@ impl SweepRequest {
         context: &OperationContext,
     ) -> Result<ferritecad_kernel::OperationResult> {
         match self {
+            Self::UpTo {
+                profile,
+                reversed,
+                end,
+                ..
+            } => match end {
+                SurfaceEnd::Face { faces, offset } => {
+                    kernel.extrude_to_face(profile, *reversed, faces, *offset, context)
+                }
+                SurfaceEnd::Vertex(vertex) => {
+                    let extent = crate::convert::vertex_extent(
+                        *profile.plane(),
+                        *reversed,
+                        kernel.vertex_point(*vertex)?,
+                    )?;
+                    kernel.extrude(
+                        &ferritecad_kernel::ExtrudeRequest::new(profile.clone(), extent, *reversed),
+                        context,
+                    )
+                }
+            },
             Self::ThroughAll {
                 profile,
                 reversed,

@@ -35,8 +35,16 @@ Sketch curve coordinates, circle radii and arc angles remain `f64`: they describ
 solver state and the initial approximation, rather than editable dimensions.
 Extrude and Revolve name their consumed feature through `previous`. `NewBody`
 requires no predecessor; `Add`, `Cut` and `Intersect` require one. Extrude keeps
-`Blind`, `Symmetric` and `ThroughAll` plus `reversed`; `ThroughAll` is valid only
-for `Cut` and `Intersect`. New bodies and additive bosses have nothing to go through.
+`Blind`, `Symmetric`, `ThroughAll`, `UpToFace` and `UpToVertex` plus `reversed`;
+`ThroughAll` is valid only for `Cut` and `Intersect`. New bodies and additive bosses
+have nothing to go through.
+`UpToFace` stores `result: ObjectId`, `face: EntityReference` and signed finite
+`offset_mm: Expression`; `UpToVertex` stores `result` and `vertex: EntityReference`.
+The former requires a face kind, the latter a vertex with `selection: one`.
+Each adds a `support` dependency on its result feature; missing or extra rows refuse
+validation. These fields are persisted in the tagged end-condition payload. Changing
+an existing condition adds/removes that row and validates new targets and graph cycles.
+The signed `extrude_end_offset` expression slot edits only `UpToFace`.
 Revolve stores `previous`, `axis` (`sketch_x`, `sketch_y` or `{"line": curve UUID}`),
 and `FullTurn` or a partial angle expression. A Line axis follows its stored
 start-to-end direction and may be construction geometry. There is no stored

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use ferritecad_document::{
-    Access, Dependency, Document, EndCondition, ObjectPayload, ObjectRecord, ValidationReport,
+    Access, Dependency, Document, ObjectPayload, ObjectRecord, ValidationReport,
 };
 use ferritecad_types::{ObjectId, Result};
 
@@ -184,16 +184,16 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
         ),
         ObjectPayload::Sketch(s) => format!("on plane {}, {} curves", s.plane, s.curves.len()),
         ObjectPayload::Extrude(e) => format!(
-            "profile {}, {}, {:?}{}",
+            "profile {}, {}, {}{}",
             e.profile,
-            match &e.end_condition {
-                EndCondition::Blind { distance } => format!("blind {} mm", distance.value()),
-                EndCondition::Symmetric { distance } =>
-                    format!("symmetric {} mm", distance.value()),
-                EndCondition::ThroughAll => "through all".to_owned(),
-                other => format!("{other:?}"),
+            e.end_condition,
+            match e.operation {
+                ferritecad_document::SolidOperation::NewBody => "NewBody",
+                ferritecad_document::SolidOperation::Add => "Add",
+                ferritecad_document::SolidOperation::Cut => "Cut",
+                ferritecad_document::SolidOperation::Intersect => "Intersect",
+                _ => "unsupported operation",
             },
-            e.operation,
             if e.reversed { ", reversed" } else { "" }
         ),
         ObjectPayload::Revolve(r) => format!(

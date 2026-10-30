@@ -70,8 +70,8 @@ changes either signed offset. Ordinary Undo/Redo restores the whole transaction.
 built. `rebuild` names the definition and prints the computed normal.
 
 The window draws bodies and sketches at these evaluated frames and can edit their
-existing dimensions. Creating a datum from a viewport face is separate work, as
-are sweep end conditions that terminate at a face or vertex.
+existing dimensions. Creating a datum from a viewport face is separate work. Extrude conditions that
+terminate at a face or vertex use the same references; see [sweep ends](generic-sweeps.md).
 
 ## Executable recipe
 

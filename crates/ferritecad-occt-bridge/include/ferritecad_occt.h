@@ -262,6 +262,18 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/* Returns the point of the exact vertex occurrence. */
+FcOcctStatus fc_occt_vertex_point(FcOcctSession *session, uint64_t shape,
+    uint64_t vertex, double *point, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Sweeps to the untrimmed named surface, preserving ordinary sweep inputs. */
+FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count,
+    const size_t *loops, size_t loop_count, const size_t *regions, size_t region_count,
+    uint64_t shape, const uint64_t *ids, size_t count, double offset, double sign,
+    double linear, double angular, FcOcctCancelFn cancel, void *cancel_context,
+    uint64_t *out_shape, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 /* Turn the same planar region accepted by extrude about an in-plane model-space axis.
  * angle is in (0, 2*pi], and 2*pi is the full turn with no caps. */
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,

@@ -93,6 +93,14 @@ the same unitful `distance` shown above. Unconsumed floors may disappear when
 changing Blind to ThroughAll. Consumed references
 must still resolve. Circle and depth edits use `set_curve_geometry` and `set_expression`.
 
+`up_to_face` carries `result`, a complete face reference and unitful `offset`;
+`up_to_vertex` carries `result` and a complete vertex reference with `selection: one`.
+Both use `set_end_condition`; `set_expression` slot `extrude_end_offset` edits the
+face offset. New support targets are validated for existing as well as new features;
+cycles refuse before publication. Undo/Redo includes the condition and dependency row.
+See [referenced sweep ends](generic-sweeps.md#referenced-end-conditions) for JSON and
+an executable recipe.
+
 Generic sweeps accept `NewBody`, `Add`, `Cut` and `Intersect`. `add_feature` derives
 `previous` from the candidate Body tip. `add_body` supplies `object`, `name`,
 `feature_object`, `feature_name` and `feature`; its first feature must use `NewBody`.

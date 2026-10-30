@@ -150,6 +150,10 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                         height_mm: distance.value(),
                                     })
                                 }
+                                EndCondition::Symmetric { .. }
+                                | EndCondition::ThroughAll
+                                | EndCondition::UpToFace { .. }
+                                | EndCondition::UpToVertex { .. } => None,
                                 _ => None,
                             }
                         }

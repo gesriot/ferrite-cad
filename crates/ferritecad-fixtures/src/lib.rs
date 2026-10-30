@@ -35,6 +35,7 @@ pub use edit_request::edit_request_json;
 
 pub mod datum_planes;
 pub mod feature_changes;
+pub mod up_to_end;
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

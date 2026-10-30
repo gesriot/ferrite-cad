@@ -453,9 +453,22 @@ impl Constraint {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum End {
-    Blind { distance: Number },
-    Symmetric { distance: Number },
+    Blind {
+        distance: Number,
+    },
+    Symmetric {
+        distance: Number,
+    },
     ThroughAll,
+    UpToFace {
+        result: ObjectId,
+        face: Reference,
+        offset: Number,
+    },
+    UpToVertex {
+        result: ObjectId,
+        vertex: Reference,
+    },
 }
 impl End {
     fn into_end(self) -> Result<ferritecad_document::EndCondition> {
@@ -467,6 +480,19 @@ impl End {
                 distance: distance.expression(Dimension::Length)?,
             },
             Self::ThroughAll => ferritecad_document::EndCondition::ThroughAll,
+            Self::UpToFace {
+                result,
+                face,
+                offset,
+            } => ferritecad_document::EndCondition::UpToFace {
+                result,
+                face: face.into_reference()?,
+                offset_mm: offset.expression(Dimension::Length)?,
+            },
+            Self::UpToVertex { result, vertex } => ferritecad_document::EndCondition::UpToVertex {
+                result,
+                vertex: vertex.into_reference()?,
+            },
         })
     }
 }

@@ -38,6 +38,10 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <gp_Circ.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <Geom_OffsetSurface.hxx>
+#include <Geom_Plane.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -253,6 +257,168 @@ void naming_sweep(ShapeRecord &record, Sweep &sweep,
     for (size_t i = 0; i < region_loop_counts[r]; ++i)
       segment += loop_segment_counts[loop++];
   }
+}
+
+void write_error(FcOcctError *out, const std::string &message);
+
+// A split keeps provenance from the prism; the cutting surface only supplies
+// the end cap. No auxiliary shape becomes a naming input.
+FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
+    const TopoDS_Face &until, const gp_Ax3 &frame, double sign,
+    const std::vector<TopoDS_Edge> &edges, const FcOcctSegment *segments,
+    const std::vector<TopoDS_Face> &faces, const size_t *loops, const size_t *regions,
+    FcOcctError *error, const Message_ProgressRange &progress) {
+  const gp_Dir direction(gp_Vec(frame.Direction()) * sign);
+  gp_Trsf local;
+  local.SetTransformation(gp_Ax3(frame.Location(), direction, frame.XDirection()));
+  Bnd_Box bounds;
+  const BRepAdaptor_Surface surface(until);
+  double length = 1.;
+  if (surface.GetType() == GeomAbs_Plane) {
+    BRepBndLib::AddOptimal(input.Moved(TopLoc_Location(local)), bounds, false, false);
+    double x0, y0, z0, x1, y1, z1;
+    bounds.Get(x0, y0, z0, x1, y1, z1);
+    const gp_Pln plane = surface.Plane().Transformed(local);
+    const gp_Dir n = plane.Axis().Direction();
+    if (std::abs(n.Z()) > Precision::Angular()) {
+      const double c = gp_Vec(plane.Location().XYZ()).Dot(gp_Vec(n));
+      // An interval bound sizes the auxiliary prism; only the split decides coverage.
+      length += std::max(0., (c - std::min(n.X()*x0, n.X()*x1)
+                                  - std::min(n.Y()*y0, n.Y()*y1)) / n.Z());
+      if (n.Z() < 0.)
+        length = 1. + std::max(0., (c - std::max(n.X()*x0, n.X()*x1)
+                                      - std::max(n.Y()*y0, n.Y()*y1)) / n.Z());
+    }
+  } else {
+    BRepBndLib::Add(until.Moved(TopLoc_Location(local)), bounds, false);
+    if (!bounds.IsVoid() && !bounds.IsOpenZmax()) {
+      double x0, y0, z0, x1, y1, z1;
+      bounds.Get(x0, y0, z0, x1, y1, z1);
+      length += std::max(0., z1);
+    } else {
+      bounds.SetVoid();
+      BRepPrimAPI_MakePrism infinite(input, direction, false);
+      BRepAlgoAPI_Common intersection;
+      TopTools_ListOfShape arguments, tools;
+      arguments.Append(infinite.Shape()); tools.Append(until);
+      intersection.SetArguments(arguments); intersection.SetTools(tools);
+      intersection.SetNonDestructive(true);
+      intersection.Build(progress);
+      if (!intersection.IsDone()) {
+        write_error(error, "cannot bound the end surface intersection");
+        return FC_OCCT_KERNEL;
+      }
+      BRepBndLib::AddOptimal(intersection.Shape().Moved(TopLoc_Location(local)),
+                            bounds, false, false);
+      if (bounds.IsVoid() || bounds.IsOpenZmax()) {
+        write_error(error, "end surface does not cover the profile ahead of the sketch plane");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      double x0, y0, z0, x1, y1, z1;
+      bounds.Get(x0, y0, z0, x1, y1, z1);
+      length += std::max(0., z1);
+    }
+  }
+  if (!std::isfinite(length) || Precision::IsInfinite(length)) {
+    write_error(error, "end surface does not cover the profile ahead of the sketch plane");
+    return FC_OCCT_INVALID_INPUT;
+  }
+  BRepPrimAPI_MakePrism prism(input, gp_Vec(direction) * length);
+  TopTools_ListOfShape objects, tools;
+  objects.Append(prism.Shape()); tools.Append(until);
+  BRepAlgoAPI_Splitter split;
+  split.SetArguments(objects); split.SetTools(tools);
+  split.SetNonDestructive(true);
+  split.Build(progress);
+  if (!split.IsDone()) {
+    write_error(error, "cannot split the extrusion at its end surface");
+    return FC_OCCT_KERNEL;
+  }
+  auto sweep = prism.Prism();
+  // Separate regions sweep into separate solids, as with Blind. Every solid
+  // holding a start cap must end at the surface before the auxiliary far cap.
+  TopTools_IndexedMapOfShape selected;
+  bool uncovered = false;
+  for (TopExp_Explorer solid(split.Shape(), TopAbs_SOLID); solid.More(); solid.Next()) {
+    TopTools_IndexedMapOfShape members;
+    TopExp::MapShapes(solid.Current(), TopAbs_FACE, members);
+    bool start = false, far = false;
+    for (const auto &face : faces) {
+      start |= members.Contains(sweep.FirstShape(face));
+      far |= members.Contains(sweep.LastShape(face));
+      for (TopTools_ListOfShape::Iterator it(split.Modified(sweep.LastShape(face)));
+           it.More(); it.Next()) far |= members.Contains(it.Value());
+    }
+    if (start && far) uncovered = true;
+    else if (start) selected.Add(solid.Current());
+  }
+  if (uncovered || selected.IsEmpty()) {
+    write_error(error, "end surface does not cover the profile ahead of the sketch plane");
+    return FC_OCCT_INVALID_INPUT;
+  }
+  if (selected.Extent() == 1) {
+    record.shape = selected(1);
+  } else {
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    for (int i = 1; i <= selected.Extent(); ++i) builder.Add(compound, selected(i));
+    record.shape = compound;
+  }
+  naming_inventory(record);
+  for (const auto &face : faces) {
+    if (!naming_contains(record, sweep.FirstShape(face))) {
+      write_error(error, "end surface does not cover the profile ahead of the sketch plane");
+      return FC_OCCT_INVALID_INPUT;
+    }
+  }
+  GProp_GProps properties;
+  BRepGProp::VolumeProperties(record.shape, properties);
+  if (!std::isfinite(properties.Mass()) || properties.Mass() <= 0.) {
+    write_error(error, "extrusion to the end surface needs a finite positive volume");
+    return FC_OCCT_KERNEL;
+  }
+  if (!BRepCheck_Analyzer(record.shape).IsValid()) {
+    write_error(error, "extrusion to the end surface is not a valid solid");
+    return FC_OCCT_KERNEL;
+  }
+  ShapeRecord source;
+  source.shape = prism.Shape();
+  naming_sweep(source, sweep, edges, segments, faces, loops, regions, true);
+  for (size_t i = 0; i < source.naming_history.size(); i += 6) {
+    const auto *row = source.naming_history.data() + i;
+    if (row[3] == 3 || (row[2] == 6 && row[1] == 1)) continue;
+    const auto &sub = source.sub_shapes[row[4]];
+    naming_link(record, 0, row[1], row[2], 2, sub);
+    for (TopTools_ListOfShape::Iterator it(split.Modified(sub)); it.More(); it.Next())
+      naming_link(record, 0, row[1], row[2], 2, it.Value());
+    if (row[2] < 6) {
+      for (TopTools_ListOfShape::Iterator it(split.Generated(sub)); it.More(); it.Next())
+        if (naming_kind(it.Value()) == naming_kind(sub) + 1)
+          naming_link(record, 0, row[1], row[2], 2, it.Value());
+    }
+  }
+  for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
+    naming_link(record, 0, 1, 6, 2, it.Value());
+  naming_link(record, 0, 1, 6, 2, until);
+  // As in naming_sweep, each region's far cap is refined by its outer loop; the
+  // far caps are now the end-surface pieces of the solid holding that region.
+  if (faces.size() > 1) {
+    size_t loop = 0, segment = 0;
+    for (size_t r = 0; r < faces.size(); ++r) {
+      for (int i = 1; i <= selected.Extent(); ++i) {
+        TopTools_IndexedMapOfShape members;
+        TopExp::MapShapes(selected(i), TopAbs_FACE, members);
+        if (!members.Contains(sweep.FirstShape(faces[r]))) continue;
+        for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
+          if (members.Contains(it.Value()))
+            for (size_t k = 0; k < loops[loop]; ++k)
+              naming_link(record, 0, segment + k, 7, 2, it.Value());
+      }
+      for (size_t i = 0; i < regions[r]; ++i) segment += loops[loop++];
+    }
+  }
+  return FC_OCCT_OK;
 }
 
 /// Consults the caller's cancellation callback.
@@ -540,7 +706,8 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
                              double top_offset, const double *axis_origin,
-                             const double *axis_direction, double angle, FcOcctCancelFn cancel,
+                             const double *axis_direction, double angle, const TopoDS_Face *until,
+                             FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
@@ -922,6 +1089,12 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       const bool partial = angle < 2 * std::acos(-1.0);
       naming_sweep(record, sweep, edges, segments, faces,
                    loop_segment_counts, region_loop_counts, partial);
+    } else if (until) {
+      const auto status = up_to_surface(record, input, *until, frame, top_offset,
+          edges, segments, faces, loop_segment_counts, region_loop_counts,
+          out_error, indicator->Start());
+      if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
+      if (status != FC_OCCT_OK) return status;
     } else {
       const gp_Vec sweep = gp_Vec(frame.Direction()) * (top_offset - base_offset);
       BRepPrimAPI_MakePrism prism(input, sweep);
@@ -978,8 +1151,82 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              FcOcctError *out_error) noexcept {
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, base_offset,
-                       top_offset, nullptr, nullptr, 0,
+                       top_offset, nullptr, nullptr, 0, nullptr,
                        cancel, cancel_context, out_shape, out_error);
+}
+
+FcOcctStatus fc_occt_vertex_point(FcOcctSession *session, uint64_t shape,
+    uint64_t vertex, double *point, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !point) return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    naming_inventory(found->second);
+    if (vertex >= found->second.sub_shapes.size()) return FC_OCCT_UNKNOWN_HANDLE;
+    const auto &sub = found->second.sub_shapes[vertex];
+    if (sub.ShapeType() != TopAbs_VERTEX) return FC_OCCT_INVALID_INPUT;
+    const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(sub));
+    point[0] = p.X(); point[1] = p.Y(); point[2] = p.Z();
+    if (!finite3(point)) {
+      write_error(error, "vertex point is not finite");
+      return FC_OCCT_KERNEL;
+    }
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count,
+    const size_t *loops, size_t loop_count, const size_t *regions, size_t region_count,
+    uint64_t shape, const uint64_t *ids, size_t count, double offset, double sign,
+    double linear, double angular, FcOcctCancelFn cancel, void *cancel_context,
+    uint64_t *out_shape, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !ids || !count || !std::isfinite(offset)) return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    naming_inventory(found->second);
+    TopoDS_Face first;
+    for (size_t i = 0; i < count; ++i) {
+      if (ids[i] >= found->second.sub_shapes.size()) return FC_OCCT_UNKNOWN_HANDLE;
+      const auto &sub = found->second.sub_shapes[ids[i]];
+      if (sub.ShapeType() != TopAbs_FACE) return FC_OCCT_INVALID_INPUT;
+      TopoDS_Face face;
+      for (TopExp_Explorer it(found->second.shape, TopAbs_FACE); it.More(); it.Next())
+        if (it.Current().IsSame(sub)) { face = TopoDS::Face(it.Current()); break; }
+      if (face.IsNull()) return FC_OCCT_UNKNOWN_HANDLE;
+      if (!i) first = face;
+      else if (BRepAdaptor_Surface(first).GetType() == GeomAbs_Plane) {
+        double p[6];
+        const auto status = fc_occt_support_plane(session, shape, ids, count,
+                                                  linear, angular, p, error);
+        if (status != FC_OCCT_OK) {
+          write_error(error, "face descendants do not lie on one surface");
+          return status;
+        }
+      } else {
+        TopLoc_Location a, b;
+        if (BRep_Tool::Surface(first, a) != BRep_Tool::Surface(face, b) ||
+            !a.IsEqual(b) || first.Orientation() != face.Orientation()) {
+          write_error(error, "face descendants do not lie on one surface");
+          return FC_OCCT_INVALID_INPUT;
+        }
+      }
+    }
+    if (first.Orientation() != TopAbs_FORWARD && first.Orientation() != TopAbs_REVERSED)
+      return FC_OCCT_INVALID_INPUT;
+    Handle(Geom_Surface) surface = BRep_Tool::Surface(first);
+    if (offset != 0.) {
+      Handle(Geom_OffsetSurface) shifted = new Geom_OffsetSurface(surface,
+          first.Orientation() == TopAbs_REVERSED ? -offset : offset);
+      const auto equivalent = shifted->Surface();
+      surface = equivalent.IsNull() ? shifted : equivalent;
+    }
+    const TopoDS_Face until = BRepBuilderAPI_MakeFace(surface, linear).Face();
+    return sweep_profile(session, plane, segments, segment_count, loops, loop_count,
+        regions, region_count, 0., sign, nullptr, nullptr, 0., &until,
+        cancel, cancel_context, out_shape, error);
+  });
 }
 
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
@@ -992,7 +1239,7 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
   if (!axis_origin || !axis_direction) return FC_OCCT_INVALID_INPUT;
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, 0, 0,
-                       axis_origin, axis_direction, angle,
+                       axis_origin, axis_direction, angle, nullptr,
                        cancel, cancel_context, out_shape, out_error);
 }
 

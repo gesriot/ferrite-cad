@@ -27,7 +27,7 @@ pub enum DependencyRole {
     Predecessor,
     /// The feature whose result a body exposes as its current tip.
     BodyTip,
-    /// The feature result supplying a datum face.
+    /// The feature result supplying a face or vertex by reference.
     Support,
     /// A named value an expression reads.
     Parameter,

@@ -149,12 +149,16 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                     }
                 }
             }
-            ObjectPayload::Extrude(_) => {
+            ObjectPayload::Extrude(extrude) => {
                 if let Some(names) = built.topology().feature(*id) {
                     // Every face this feature named, its own and the ones it
                     // carried forward, counted where the names live.
                     write!(line, "solid, {} named faces", names.named_face_count())
                         .expect("writing to a String cannot fail");
+                    if extrude.end_condition.support().is_some() {
+                        write!(line, "; {}", extrude.end_condition)
+                            .expect("writing to a String cannot fail");
+                    }
                 }
             }
             ObjectPayload::Fillet(fillet) => {
