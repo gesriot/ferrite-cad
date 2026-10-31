@@ -1163,11 +1163,18 @@ fn check_witness_owners(
     if counts.len() != witnesses.len() {
         return Err(CadError::kernel("incomplete solid membership answer"));
     }
-    let failures: Vec<_> = witnesses.iter().zip(counts).filter(|(_, count)| **count != 1)
-        .map(|(w, count)| format!(
-            "reference {} resolves to faces in {count} solids; one containing solid is required. \
-             Replace this reference or choose All.", w.reference
-        )).collect();
+    let failures: Vec<_> = witnesses
+        .iter()
+        .zip(counts)
+        .filter(|(_, count)| **count != 1)
+        .map(|(w, count)| {
+            format!(
+                "reference {} resolves to faces in {count} solids; one containing solid \
+                 is required. Replace this reference or choose All.",
+                w.reference
+            )
+        })
+        .collect();
     if failures.is_empty() {
         Ok(())
     } else {

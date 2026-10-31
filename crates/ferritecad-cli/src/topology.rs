@@ -34,8 +34,9 @@ pub(crate) fn inspect_names(document: &Document) -> String {
             let mut text = String::new();
             for (id, names) in &built.topology().features {
                 if let Some(shape) = names.shape() {
-                    writeln!(text, "feature {id}: {} solids", kernel.solid_count(shape)?)
-                        .expect("String write");
+                    let count = kernel.solid_count(shape)?;
+                    let noun = if count == 1 { "solid" } else { "solids" };
+                    writeln!(text, "feature {id}: {count} {noun}").expect("String write");
                 }
             }
             text.push_str(&report(&built, true)?);

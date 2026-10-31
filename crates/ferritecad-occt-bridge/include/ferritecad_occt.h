@@ -206,6 +206,8 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 /* Destroys a session and every shape it still holds. Null is accepted. */
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
+/* Collects the result facts: solid count, smallest member volume, member validity,
+ * free lower-dimensional shapes and a null shape. Classification is separate. */
 FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
     size_t *count, double *minimum_volume, int32_t *valid,
     int32_t *free_shapes, int32_t *null_shape,
@@ -270,9 +272,11 @@ FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
  * inside them. The indicator is wired anyway because the algorithms that come
  * later do poll it.
  *
+ * A nonzero `boolean_tool` marks a prism the same feature consumes in a boolean at once;
+ * its member-volume checks are deferred to that boolean's result.
+ *
  * On success `*out_shape` receives a session-local shape identifier.
  */
-/* A boolean_tool prism defers member-volume checks to its consuming feature result. */
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,

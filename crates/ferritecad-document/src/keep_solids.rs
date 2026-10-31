@@ -38,7 +38,12 @@ impl std::fmt::Display for KeepSelection {
         match self {
             Self::All => f.write_str("all solids"),
             Self::ContainingFaces(faces) => {
-                write!(f, "solids containing {} face references", faces.len())
+                let noun = if faces.len() == 1 {
+                    "reference"
+                } else {
+                    "references"
+                };
+                write!(f, "solids containing {} face {noun}", faces.len())
             }
         }
     }

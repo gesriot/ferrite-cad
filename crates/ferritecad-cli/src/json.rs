@@ -124,7 +124,9 @@ pub struct Inspection {
     chamfers: Vec<serde_json::Value>,
     /// Saved datum definitions with their computed frames, when built.
     datum_planes: Vec<serde_json::Value>,
+    /// Saved KeepSolids selections with their face references.
     keep_solids: Vec<serde_json::Value>,
+    /// The solid count of every built feature result.
     feature_results: Vec<serde_json::Value>,
 }
 
@@ -666,14 +668,14 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 let selection = match &keep.selection {
                     ferritecad_document::KeepSelection::All => serde_json::json!({"kind": "all"}),
                     ferritecad_document::KeepSelection::ContainingFaces(faces) => {
-                        serde_json::json!({
-                            "kind": "containing_faces", "faces": faces.iter().map(reference_json)
-                                .collect::<Vec<_>>(),
-                        })
+                        let faces: Vec<_> = faces.iter().map(reference_json).collect();
+                        serde_json::json!({"kind": "containing_faces", "faces": faces})
                     }
                 };
-                Some(serde_json::json!({"feature_id": o.id, "name": o.name,
-                "previous_feature_id": keep.previous, "selection": selection}))
+                Some(serde_json::json!({
+                    "feature_id": o.id, "name": o.name,
+                    "previous_feature_id": keep.previous, "selection": selection,
+                }))
             })
             .collect(),
     };

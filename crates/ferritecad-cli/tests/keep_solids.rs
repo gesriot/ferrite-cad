@@ -110,8 +110,14 @@ fn keep_solids_cli_publishes_both_pieces_then_selects_and_refuses_atomically() {
             String::from_utf8_lossy(&output.stderr)
         );
         let text = String::from_utf8_lossy(&output.stdout);
-        assert!(text.contains("solids containing 1 face references"));
-        assert!(text.contains("1 solids"));
+        assert!(
+            text.contains("solids containing 1 face reference"),
+            "{text}"
+        );
+        assert!(
+            text.contains("1 solid") && !text.contains("1 solids"),
+            "{text}"
+        );
     }
     for (index, selection) in [Selection::One, Selection::AllDescendants]
         .into_iter()

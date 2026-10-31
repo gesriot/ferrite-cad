@@ -222,7 +222,9 @@ fn report(
             _ => {}
         }
         if let Some(shape) = built.shape(*id) {
-            write!(line, "; {} solids", kernel.solid_count(shape)?).expect("String write");
+            let count = kernel.solid_count(shape)?;
+            let noun = if count == 1 { "solid" } else { "solids" };
+            write!(line, "; {count} {noun}").expect("String write");
         }
         writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
     }
