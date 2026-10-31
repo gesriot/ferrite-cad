@@ -142,7 +142,7 @@ references. That copying command is not required by M1–M3.
 
 | Alternative | Why rejected |
 |---|---|
-| One Body per solid, created on rebuild | Mutates the document and invents UUIDs during evaluation. |
+| One Body per solid, created on rebuild | Invents document objects during evaluation. |
 | One piece keeps the old Body, others get new Bodies | Requires an unrequested winner. |
 | Shared history exposed through several Body tips | Conflicts with ADR 0004 ownership and edits. |
 | Independent solid lists beside `tip_feature` | Stores a second answer to what the Body contains. |
