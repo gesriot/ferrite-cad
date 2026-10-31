@@ -261,6 +261,83 @@ void naming_sweep(ShapeRecord &record, Sweep &sweep,
 
 void write_error(FcOcctError *out, const std::string &message);
 
+struct ResultProperties {
+  size_t count = 0;
+  double minimum_volume = 1.;
+  double volume = 0.;
+  bool valid = true;
+  bool free_shapes = false;
+  bool null_shape = false;
+};
+
+// Containers may nest, but cannot hide free lower dimensions beside their solids.
+bool has_free_shapes(const TopoDS_Shape &shape) {
+  if (shape.ShapeType() == TopAbs_SOLID) return false;
+  if (shape.ShapeType() != TopAbs_COMPOUND && shape.ShapeType() != TopAbs_COMPSOLID)
+    return true;
+  for (TopoDS_Iterator it(shape); it.More(); it.Next())
+    if (has_free_shapes(it.Value())) return true;
+  return false;
+}
+
+ResultProperties result_properties(const TopoDS_Shape &shape, bool geometry, bool volumes) {
+  ResultProperties facts;
+  facts.null_shape = shape.IsNull();
+  if (facts.null_shape) return facts;
+  TopTools_IndexedMapOfShape solids;
+  TopExp::MapShapes(shape, TopAbs_SOLID, solids);
+  facts.count = static_cast<size_t>(solids.Extent());
+  facts.free_shapes = has_free_shapes(shape);
+  if (volumes) facts.minimum_volume = std::numeric_limits<double>::infinity();
+  for (int i = 1; i <= solids.Extent(); ++i) {
+    if (geometry && !BRepCheck_Analyzer(solids(i)).IsValid()) facts.valid = false;
+    if (volumes) {
+      GProp_GProps properties;
+      BRepGProp::VolumeProperties(solids(i), properties);
+      const double volume = properties.Mass();
+      facts.volume += volume;
+      if (!std::isfinite(volume)) facts.minimum_volume =
+          std::numeric_limits<double>::quiet_NaN();
+      else if (volume < facts.minimum_volume) facts.minimum_volume = volume;
+    }
+  }
+  return facts;
+}
+
+FcOcctStatus check_result(const ResultProperties &facts, const std::string &operation,
+    FcOcctError *error, const std::string &invalid = "") {
+  if (facts.null_shape) {
+    write_error(error, "the " + operation + " returned a null shape");
+    return FC_OCCT_KERNEL;
+  }
+  if (facts.free_shapes) {
+    write_error(error, "the kernel returned free shapes outside its solids");
+    return FC_OCCT_KERNEL;
+  }
+  if (facts.count == 0) {
+    write_error(error, "the " + operation + " result is empty and contains no solid");
+    return FC_OCCT_UNSUPPORTED;
+  }
+  if (!std::isfinite(facts.minimum_volume) || facts.minimum_volume <= 0.) {
+    write_error(error, "solid volume must be finite and positive");
+    return FC_OCCT_KERNEL;
+  }
+  if (!facts.valid) {
+    write_error(error, invalid.empty() ? "the kernel returned an invalid solid" : invalid);
+    return FC_OCCT_KERNEL;
+  }
+  return FC_OCCT_OK;
+}
+
+FcOcctStatus checked_result(const TopoDS_Shape &shape, const std::string &operation,
+    bool geometry, FcOcctError *error, double *volume = nullptr,
+    const std::string &invalid = "") {
+  const auto facts = result_properties(shape, geometry, true);
+  if (volume) *volume = facts.volume;
+  return check_result(facts, operation, error, invalid);
+}
+
+
 // A split keeps provenance from the prism; the cutting surface only supplies
 // the end cap. No auxiliary shape becomes a naming input.
 FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
@@ -372,16 +449,9 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
       return FC_OCCT_INVALID_INPUT;
     }
   }
-  GProp_GProps properties;
-  BRepGProp::VolumeProperties(record.shape, properties);
-  if (!std::isfinite(properties.Mass()) || properties.Mass() <= 0.) {
-    write_error(error, "extrusion to the end surface needs a finite positive volume");
-    return FC_OCCT_KERNEL;
-  }
-  if (!BRepCheck_Analyzer(record.shape).IsValid()) {
-    write_error(error, "extrusion to the end surface is not a valid solid");
-    return FC_OCCT_KERNEL;
-  }
+  const auto status = checked_result(record.shape, "extrusion to the end surface", true,
+      error, nullptr, "extrusion to the end surface is not a valid solid");
+  if (status != FC_OCCT_OK) return status;
   ShapeRecord source;
   source.shape = prism.Shape();
   naming_sweep(source, sweep, edges, segments, faces, loops, regions, true);
@@ -707,7 +777,7 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              size_t region_count, double base_offset,
                              double top_offset, const double *axis_origin,
                              const double *axis_direction, double angle, const TopoDS_Face *until,
-                             FcOcctCancelFn cancel,
+                             bool prism_tool, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
@@ -1080,11 +1150,9 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
         return FC_OCCT_KERNEL;
       }
       record.shape = revol.Shape();
-      if (!BRepCheck_Analyzer(record.shape).IsValid()) {
-        write_error(out_error,
-            "the revolution is invalid: the profile may cross the axis of revolution");
-        return FC_OCCT_KERNEL;
-      }
+      const auto status = checked_result(record.shape, "revolution", true, out_error, nullptr,
+          "the revolution is invalid: the profile may cross the axis of revolution");
+      if (status != FC_OCCT_OK) return status;
       auto sweep = revol.Revol();
       const bool partial = angle < 2 * std::acos(-1.0);
       naming_sweep(record, sweep, edges, segments, faces,
@@ -1105,21 +1173,120 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
         return FC_OCCT_KERNEL;
       }
       record.shape = prism.Shape();
+      // The profile is checked; a prism needs no new geometric revalidation.
+      const auto status = check_result(
+          result_properties(record.shape, false, !prism_tool), "extrusion", out_error);
+      if (status != FC_OCCT_OK) return status;
       auto sweep_builder = prism.Prism();
       naming_sweep(record, sweep_builder, edges, segments, faces,
                    loop_segment_counts, region_loop_counts, true);
     }
-    if (axis_origin) {
-      TopTools_IndexedMapOfShape solids;
-      TopExp::MapShapes(record.shape, TopAbs_SOLID, solids);
-      GProp_GProps properties;
-      BRepGProp::VolumeProperties(record.shape, properties);
-      if (solids.Extent() == 0 || !(properties.Mass() > 0)) {
-        write_error(out_error, "the revolution is not one valid solid with positive volume");
-        return FC_OCCT_KERNEL;
-      }
-    }
 
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_check_solid_properties(size_t count, double minimum_volume,
+    int32_t valid, int32_t free_shapes, int32_t null_shape, const char *operation,
+    FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!operation) return FC_OCCT_INVALID_INPUT;
+    ResultProperties facts;
+    facts.count = count;
+    facts.minimum_volume = minimum_volume;
+    facts.valid = valid;
+    facts.free_shapes = free_shapes;
+    facts.null_shape = null_shape;
+    return check_result(facts, operation, error);
+  });
+}
+
+FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
+    size_t *count, double *minimum_volume, int32_t *valid,
+    int32_t *free_shapes, int32_t *null_shape, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !count || !minimum_volume || !valid || !free_shapes || !null_shape)
+      return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    const auto facts = result_properties(found->second.shape, true, true);
+    *count = facts.count;
+    *minimum_volume = facts.minimum_volume;
+    *valid = facts.valid;
+    *free_shapes = facts.free_shapes;
+    *null_shape = facts.null_shape;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_validate_solid_structure(FcOcctSession *session, uint64_t shape,
+    FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session) return FC_OCCT_INVALID_INPUT;
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    return check_result(result_properties(found->second.shape, false, false),
+                        "restored operation", error);
+  });
+}
+
+FcOcctStatus fc_occt_keep_solids(FcOcctSession *session, uint64_t target,
+    const uint64_t *faces, const size_t *offsets, size_t family_count,
+    size_t *owner_counts, uint64_t *out_shape, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || !out_shape || !offsets || (family_count && (!faces || !owner_counts)))
+      return FC_OCCT_INVALID_INPUT;
+    *out_shape = 0;
+    const auto found = session->shapes.find(target);
+    if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    auto &source = found->second;
+    naming_inventory(source);
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(source.shape, TopAbs_SOLID, solids);
+    std::vector<TopTools_IndexedMapOfShape> members(solids.Extent());
+    for (int i = 1; i <= solids.Extent(); ++i)
+      TopExp::MapShapes(solids(i), TopAbs_FACE, members[i - 1]);
+    std::set<int> selected;
+    bool refused = false;
+    for (size_t family = 0; family < family_count; ++family) {
+      std::set<int> owners;
+      bool missing = offsets[family] == offsets[family + 1];
+      for (size_t at = offsets[family]; at < offsets[family + 1]; ++at) {
+        if (faces[at] >= source.sub_shapes.size()) return FC_OCCT_INVALID_INPUT;
+        const auto &face = source.sub_shapes[faces[at]];
+        if (face.ShapeType() != TopAbs_FACE) return FC_OCCT_INVALID_INPUT;
+        size_t count = 0;
+        for (int i = 1; i <= solids.Extent(); ++i) {
+          if (members[i - 1].Contains(face)) { owners.insert(i); ++count; }
+        }
+        missing = missing || count == 0;
+      }
+      owner_counts[family] = missing ? 0 : owners.size();
+      if (owner_counts[family] != 1) refused = true;
+      selected.insert(owners.begin(), owners.end());
+    }
+    if (refused) return FC_OCCT_OK;
+    ShapeRecord record;
+    if (!family_count) {
+      record.shape = source.shape;
+    } else {
+      TopoDS_Compound result;
+      BRep_Builder builder;
+      builder.MakeCompound(result);
+      for (int owner : selected) builder.Add(result, solids(owner));
+      record.shape = result;
+    }
+    const auto status = checked_result(record.shape, "KeepSolids", false, error);
+    if (status != FC_OCCT_OK) return status;
+    naming_inventory(record);
+    for (size_t i = 0; i < source.sub_shapes.size(); ++i) {
+      const auto &sub = source.sub_shapes[i];
+      if (naming_contains(record, sub)) naming_link(record, target, i, naming_kind(sub), 0, sub);
+      else naming_deleted(record, target, i, naming_kind(sub));
+    }
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
@@ -1146,12 +1313,13 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const size_t *loop_segment_counts,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
-                             double top_offset, FcOcctCancelFn cancel,
+                             double top_offset, int32_t boolean_tool,
+                             FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, base_offset,
-                       top_offset, nullptr, nullptr, 0, nullptr,
+                       top_offset, nullptr, nullptr, 0, nullptr, boolean_tool != 0,
                        cancel, cancel_context, out_shape, out_error);
 }
 
@@ -1224,7 +1392,7 @@ FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *
     }
     const TopoDS_Face until = BRepBuilderAPI_MakeFace(surface, linear).Face();
     return sweep_profile(session, plane, segments, segment_count, loops, loop_count,
-        regions, region_count, 0., sign, nullptr, nullptr, 0., &until,
+        regions, region_count, 0., sign, nullptr, nullptr, 0., &until, false,
         cancel, cancel_context, out_shape, error);
   });
 }
@@ -1239,7 +1407,7 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
   if (!axis_origin || !axis_direction) return FC_OCCT_INVALID_INPUT;
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, 0, 0,
-                       axis_origin, axis_direction, angle, nullptr,
+                       axis_origin, axis_direction, angle, nullptr, false,
                        cancel, cancel_context, out_shape, out_error);
 }
 
@@ -1316,33 +1484,19 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
     }
 
     const TopoDS_Shape &produced = algorithm.Shape();
-    if (produced.IsNull()) {
-      write_error(out_error, "the boolean produced nothing");
-      return FC_OCCT_KERNEL;
-    }
-    // Exactly one solid. Nothing left is a tool that swallowed the part;
-    // several is a cut that split it, and neither is a result a body could
-    // become without this layer choosing on the caller's behalf.
-    TopTools_IndexedMapOfShape solids;
-    TopExp::MapShapes(produced, TopAbs_SOLID, solids);
-    if (solids.Extent() != 1) {
-      write_error(out_error,
-                  "a " + operation + " must leave exactly one solid, and this left " +
-                      std::to_string(solids.Extent()));
-      return FC_OCCT_UNSUPPORTED;
-    }
-    const TopoDS_Shape result_shape = solids(1);
-    BRepCheck_Analyzer analyzer(result_shape);
-    if (!analyzer.IsValid()) {
-      write_error(out_error,
-                  "the " + operation + " produced a solid Open CASCADE calls invalid");
-      return FC_OCCT_KERNEL;
-    }
+    // Validate the complete result before recording its provenance.
+    const TopoDS_Shape &result_shape = produced;
 
-    GProp_GProps after;
-    BRepGProp::VolumeProperties(result_shape, after);
-    const double removed = before.Mass() - after.Mass();
-    if (!std::isfinite(removed) || (kind == 0 && removed <= 0.0)) {
+    double volume = 0.;
+    const auto status = checked_result(result_shape,
+        kind == 0 ? "cut" : kind == 1 ? "add" : "intersect", true, out_error, &volume);
+    if (status != FC_OCCT_OK) return status;
+    const double removed = before.Mass() - volume;
+    if (!std::isfinite(removed)) {
+      write_error(out_error, "the " + operation + " produced a non-finite volume change");
+      return FC_OCCT_KERNEL;
+    }
+    if (kind == 0 && removed <= 0.0) {
       write_error(out_error,
                   "the tool removed no material, so this is not a cut");
       return FC_OCCT_UNSUPPORTED;
@@ -2191,6 +2345,13 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     }
     naming_inventory(found->second);
     const ShapeRecord &source = found->second;
+    TopTools_IndexedMapOfShape input_solids;
+    TopExp::MapShapes(source.shape, TopAbs_SOLID, input_solids);
+    if (input_solids.Extent() != 1) {
+      write_error(out_error, "edge operations on a result with " +
+          std::to_string(input_solids.Extent()) + " solids are not supported yet");
+      return FC_OCCT_UNSUPPORTED;
+    }
     std::vector<TopoDS_Edge> selected_edges;
     for (size_t i = 0; i < edge_count; ++i) {
       const uint64_t edge = edges[i];
@@ -2248,31 +2409,20 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
       return FC_OCCT_KERNEL;
     }
     const TopoDS_Shape produced = fillet.Shape();
-    if (produced.IsNull()) {
-      write_error(out_error, "the " + what + " produced nothing");
-      return FC_OCCT_KERNEL;
-    }
-    TopTools_IndexedMapOfShape solids;
-    TopExp::MapShapes(produced, TopAbs_SOLID, solids);
-    if (solids.Extent() != 1) {
+    const auto facts = result_properties(produced, true, true);
+    const auto status = check_result(facts, what, out_error,
+        std::string(chamfer ? "chamfering the selected edges at distance "
+                            : "rounding the selected edges at radius ") +
+            std::to_string(amount) +
+            " produced a shape Open CASCADE reports as invalid; it "
+            "is refused rather than returned");
+    if (status != FC_OCCT_OK) return status;
+    if (facts.count != 1) {
       write_error(out_error, "a " + what + " must leave exactly one solid, and this left " +
-                                 std::to_string(solids.Extent()));
+                                 std::to_string(facts.count));
       return FC_OCCT_KERNEL;
     }
-    // Validated as built, not after extracting the solid: the builder's
-    // history speaks about `produced`, and that is the shape kept.
-    if (!well_formed(produced)) {
-      write_error(out_error,
-                  std::string(chamfer ? "chamfering the selected edges at distance "
-                                      : "rounding the selected edges at radius ") +
-                      std::to_string(amount) +
-                      " produced a shape Open CASCADE reports as invalid; it "
-                      "is refused rather than returned");
-      return FC_OCCT_KERNEL;
-    }
-    GProp_GProps after;
-    BRepGProp::VolumeProperties(produced, after);
-    const double removed = before.Mass() - after.Mass();
+    const double removed = before.Mass() - facts.volume;
     if (!std::isfinite(removed)) {
       write_error(out_error, "the " + what + " produced a non-finite volume change");
       return FC_OCCT_KERNEL;

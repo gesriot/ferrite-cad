@@ -35,7 +35,7 @@ pub fn rebuild(args: RebuildArgs) -> Result<ExitCode> {
     // sidecar is untouched by construction rather than by promise.
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())?;
     let complete = built.all_built();
-    let outcome = report(&document, &built, kernel.identity().to_string());
+    let outcome = report(&document, &built, &mut kernel);
     built.release_all(&mut kernel);
 
     print!("{}", outcome?);
@@ -51,7 +51,11 @@ pub fn rebuild(args: RebuildArgs) -> Result<ExitCode> {
 /// Assembled rather than streamed so a failure halfway through cannot leave
 /// half a report on the terminal, and so the result can be compared in a test
 /// without capturing a process's output.
-fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<String> {
+fn report(
+    document: &Document,
+    built: &RebuildResult,
+    kernel: &mut impl GeometryKernel,
+) -> Result<String> {
     use std::fmt::Write as _;
 
     let objects: Vec<ObjectRecord> = document.objects()?;
@@ -71,7 +75,7 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
         document.meta().document_id
     )
     .expect("writing to a String cannot fail");
-    writeln!(out, "  kernel {kernel}").expect("writing to a String cannot fail");
+    writeln!(out, "  kernel {}", kernel.identity()).expect("writing to a String cannot fail");
 
     // Deliberately no elapsed time. It would be the only line that changed
     // between two runs of the same document, and it would change every one.
@@ -207,12 +211,18 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                     .expect("writing to a String cannot fail");
                 }
             }
+            ObjectPayload::KeepSolids(keep) => {
+                write!(line, "KeepSolids: {}", keep.selection).expect("String write");
+            }
             ObjectPayload::Body(body) => {
                 if let Some(tip) = body.tip_feature {
                     write!(line, "tip {}", named(tip)).expect("writing to a String cannot fail");
                 }
             }
             _ => {}
+        }
+        if let Some(shape) = built.shape(*id) {
+            write!(line, "; {} solids", kernel.solid_count(shape)?).expect("String write");
         }
         writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
     }

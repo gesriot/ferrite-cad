@@ -206,6 +206,26 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 /* Destroys a session and every shape it still holds. Null is accepted. */
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
+FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
+    size_t *count, double *minimum_volume, int32_t *valid,
+    int32_t *free_shapes, int32_t *null_shape,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Classifies collected result facts without examining geometry again. */
+FcOcctStatus fc_occt_check_solid_properties(size_t count, double minimum_volume,
+    int32_t valid, int32_t free_shapes, int32_t null_shape, const char *operation,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Trusted cached geometry needs only nonempty solids and no free lower dimensions. */
+FcOcctStatus fc_occt_validate_solid_structure(FcOcctSession *session, uint64_t shape,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Each family must have one native owning solid. No owner ordinals are returned.
+ * A refusal sets the family counts and leaves out_shape zero; All has no families. */
+FcOcctStatus fc_occt_keep_solids(FcOcctSession *session, uint64_t target,
+    const uint64_t *faces, const size_t *offsets, size_t family_count,
+    size_t *owner_counts, uint64_t *out_shape, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
     size_t *count, FcOcctError *error) FC_OCCT_NOEXCEPT;
 
@@ -252,13 +272,15 @@ FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
  *
  * On success `*out_shape` receives a session-local shape identifier.
  */
+/* A boolean_tool prism defers member-volume checks to its consuming feature result. */
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
-                             double top_offset, FcOcctCancelFn cancel,
+                             double top_offset, int32_t boolean_tool,
+                             FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 

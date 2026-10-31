@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use ferritecad_document::Document;
 use ferritecad_eval::{RebuildResult, rebuild_cold};
-use ferritecad_kernel::OperationContext;
+use ferritecad_kernel::{GeometryKernel, OperationContext};
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::{CadError, Result};
 
@@ -30,7 +30,17 @@ pub(crate) fn inspect_names(document: &Document) -> String {
     let result = (|| {
         let mut kernel = OcctKernel::new()?;
         let built = rebuild_cold(document, &mut kernel, &OperationContext::default())?;
-        let text = report(&built, true);
+        let text = (|| -> Result<String> {
+            let mut text = String::new();
+            for (id, names) in &built.topology().features {
+                if let Some(shape) = names.shape() {
+                    writeln!(text, "feature {id}: {} solids", kernel.solid_count(shape)?)
+                        .expect("String write");
+                }
+            }
+            text.push_str(&report(&built, true)?);
+            Ok(text)
+        })();
         built.release_all(&mut kernel);
         text
     })();

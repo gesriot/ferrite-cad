@@ -286,7 +286,9 @@ the restored B-Rep, not stored as durable ordinal identities or extra names.
 `KeepSolids` keys include predecessor key and canonical reference meanings,
 excluding diagnostic UUIDs; its All mode and selected mode are distinct.
 Restore checks the same full incidence and provenance constraints, as well as
-the result validity contract. Corrupt or incomplete records reject atomically.
+the result validity contract. On restoration, this means its structural part; geometric validity
+and member volumes were checked when the trusted record was created.
+Corrupt or incomplete records reject atomically.
 An archive hit never fabricates raw operation history.
 
 ### 6. Store selections in the feature chain; publish atomically

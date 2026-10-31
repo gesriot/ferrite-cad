@@ -57,6 +57,7 @@ pub struct ExtrudeRequest {
     profile: Profile,
     extent: ExtrudeExtent,
     reversed: bool,
+    boolean_tool: bool,
 }
 
 impl ExtrudeRequest {
@@ -65,7 +66,19 @@ impl ExtrudeRequest {
             profile,
             extent,
             reversed,
+            boolean_tool: false,
         }
+    }
+
+    /// Consume the prism immediately in a boolean of the same feature.
+    /// Its member-volume check is deferred to that boolean's published result.
+    pub fn for_boolean_tool(mut self) -> Self {
+        self.boolean_tool = true;
+        self
+    }
+
+    pub fn is_boolean_tool(&self) -> bool {
+        self.boolean_tool
     }
 
     pub fn profile(&self) -> &Profile {
@@ -84,7 +97,7 @@ impl ExtrudeRequest {
     /// Feeds the request into a cache key.
     ///
     /// The caller must also feed the kernel identity and the tolerance; this
-    /// covers only what the request itself contributes.
+    /// covers only geometry. A temporary boolean tool is never archived on its own.
     pub fn feed(&self, hasher: &mut CanonicalHasher) {
         hasher.field("extrude");
         self.profile.feed(hasher);

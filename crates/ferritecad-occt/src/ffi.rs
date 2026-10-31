@@ -182,6 +182,41 @@ unsafe extern "C" {
     fn fc_occt_version() -> *const c_char;
     fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
     fn fc_occt_session_destroy(session: *mut RawSession);
+    fn fc_occt_check_solid_properties(
+        count: usize,
+        minimum_volume: f64,
+        valid: i32,
+        free_shapes: i32,
+        null_shape: i32,
+        operation: *const c_char,
+        error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_validate_solid_structure(
+        session: *mut RawSession,
+        shape: u64,
+        error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_solid_properties(
+        session: *mut RawSession,
+        shape: u64,
+        count: *mut usize,
+        minimum_volume: *mut f64,
+        valid: *mut i32,
+        free_shapes: *mut i32,
+        null_shape: *mut i32,
+        error: *mut RawError,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_keep_solids(
+        session: *mut RawSession,
+        target: u64,
+        faces: *const u64,
+        offsets: *const usize,
+        family_count: usize,
+        owner_counts: *mut usize,
+        out_shape: *mut u64,
+        error: *mut RawError,
+    ) -> i32;
     fn fc_occt_solid_count(
         session: *mut RawSession,
         shape: u64,
@@ -200,6 +235,7 @@ unsafe extern "C" {
         region_count: usize,
         base_offset: f64,
         top_offset: f64,
+        boolean_tool: i32,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
@@ -627,6 +663,67 @@ impl Session {
         Ok(Self { raw })
     }
 
+    pub(crate) fn validate_solid_structure(&mut self, shape: u64) -> Result<()> {
+        let mut error = RawError::empty();
+        // SAFETY: the session is live and the error output is writable.
+        let status = unsafe { fc_occt_validate_solid_structure(self.raw, shape, &mut error) };
+        interpret(status, &error, "checking cached result structure")
+    }
+
+    pub(crate) fn solid_properties(
+        &mut self,
+        shape: u64,
+    ) -> Result<(usize, f64, bool, bool, bool)> {
+        let mut null = 0;
+        let (mut count, mut volume, mut valid, mut free) = (0, 0., 0, 0);
+        let mut error = RawError::empty();
+        // SAFETY: each output is writable for its declared type; the session is live.
+        let status = unsafe {
+            fc_occt_solid_properties(
+                self.raw,
+                shape,
+                &mut count,
+                &mut volume,
+                &mut valid,
+                &mut free,
+                &mut null,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "checking every solid in a result")?;
+        Ok((count, volume, valid != 0, free != 0, null != 0))
+    }
+
+    pub(crate) fn keep_solids(
+        &mut self,
+        target: u64,
+        families: &[Vec<u64>],
+    ) -> Result<(u64, Vec<usize>)> {
+        let faces: Vec<_> = families.iter().flatten().copied().collect();
+        let mut offsets = vec![0];
+        for family in families {
+            offsets.push(offsets.last().copied().unwrap_or(0) + family.len());
+        }
+        let mut counts = vec![0; families.len()];
+        let mut shape = 0;
+        let mut error = RawError::empty();
+        // SAFETY: offsets partitions faces; all input/output arrays live across this call.
+        let status = unsafe {
+            fc_occt_keep_solids(
+                self.raw,
+                target,
+                faces.as_ptr(),
+                offsets.as_ptr(),
+                families.len(),
+                counts.as_mut_ptr(),
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "selecting solids by face membership")?;
+        Ok((shape, counts))
+    }
+
     pub(crate) fn solid_count(&mut self, shape: u64) -> Result<usize> {
         let mut count = 0;
         let mut error = RawError::empty();
@@ -692,6 +789,7 @@ impl Session {
     }
 
     /// Region counts partition loops; loop counts partition segments.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn extrude(
         &mut self,
         plane: &Plane,
@@ -699,6 +797,7 @@ impl Session {
         partition: ProfilePartition<'_>,
         base_offset: f64,
         top_offset: f64,
+        boolean_tool: bool,
         cancel: &CancelToken,
     ) -> Result<u64> {
         let ProfilePartition {
@@ -740,6 +839,7 @@ impl Session {
                 regions.len(),
                 base_offset,
                 top_offset,
+                i32::from(boolean_tool),
                 Some(cancel_trampoline),
                 context,
                 &mut shape,
@@ -1577,6 +1677,32 @@ impl Drop for Session {
 // SAFETY: the raw pointer is uniquely owned by this value.
 unsafe impl Send for Session {}
 
+pub(crate) fn checked_solids(
+    operation: &str,
+    count: usize,
+    volume: f64,
+    valid: bool,
+    free: bool,
+    null: bool,
+) -> Result<()> {
+    let operation = std::ffi::CString::new(operation)
+        .map_err(|e| CadError::kernel_because("invalid operation label", e))?;
+    let mut error = RawError::empty();
+    // SAFETY: the label is NUL-terminated and live; the error output is writable.
+    let status = unsafe {
+        fc_occt_check_solid_properties(
+            count,
+            volume,
+            i32::from(valid),
+            i32::from(free),
+            i32::from(null),
+            operation.as_ptr(),
+            &mut error,
+        )
+    };
+    interpret(status, &error, "checking a solid result")
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2037,6 +2163,7 @@ mod tests {
                 },
                 0.0,
                 15.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("one closed curve is a whole profile");
@@ -2111,6 +2238,7 @@ mod tests {
                 },
                 0.0,
                 15.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("a circle inside a circle bounds a region with a hole");
@@ -2229,6 +2357,7 @@ mod tests {
                     },
                     0.0,
                     3.0,
+                    false,
                     &CancelToken::new(),
                 )
                 .expect_err(what);
@@ -2251,6 +2380,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("an off-centre hole is still a hole");
@@ -2293,6 +2423,7 @@ mod tests {
                     },
                     0.0,
                     2.0,
+                    false,
                     &CancelToken::new(),
                 )
                 .expect_err(&format!("{counts:?}"));
@@ -2315,6 +2446,7 @@ mod tests {
                     1,
                     0.0,
                     2.0,
+                    0,
                     None,
                     std::ptr::null_mut(),
                     &mut shape,
@@ -2342,6 +2474,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect_err("a chain of two circles is not a loop");
@@ -2357,6 +2490,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("one loop of four lines");
@@ -2389,6 +2523,7 @@ mod tests {
                     },
                     0.0,
                     2.0,
+                    false,
                     &CancelToken::new()
                 )
                 .is_err()
@@ -2409,6 +2544,7 @@ mod tests {
                         },
                         0.0,
                         2.0,
+                        false,
                         &CancelToken::new()
                     )
                     .is_err()
@@ -2435,6 +2571,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("builds a prism");
@@ -2501,6 +2638,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("builds a prism");
@@ -2682,6 +2820,7 @@ mod tests {
                 },
                 0.0,
                 h,
+                false,
                 &CancelToken::new(),
             )
             .expect("a plate");

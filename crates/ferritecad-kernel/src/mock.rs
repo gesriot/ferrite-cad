@@ -251,6 +251,21 @@ impl GeometryKernel for MockKernel {
         &self.identity
     }
 
+    fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+        self.lookup(shape)?;
+        Ok(1)
+    }
+
+    fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.lookup(shape)?;
+        Ok(())
+    }
+
+    fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.lookup(shape)?;
+        Ok(())
+    }
+
     fn projected_bounds(
         &mut self,
         shape: ShapeHandle,

@@ -3,7 +3,7 @@
 use ferritecad_document::*;
 use ferritecad_fixtures::datum_planes::{boss, sweep_face};
 use ferritecad_jobs::{DocumentSession, EditRequest, edit_copy};
-use ferritecad_kernel::{NamingInput, OperationContext, TessellationParams};
+use ferritecad_kernel::{GeometryKernel, NamingInput, OperationContext, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::ObjectId;
 
@@ -115,8 +115,43 @@ fn plane_addition_face_change_offset_and_undo_redo_share_atomic_transactions() {
         changed_content
     );
     let source = session.current().path().to_owned();
+    let before = std::fs::read(&source).expect("source bytes");
+    let detached = root.path().join("detached.fcad");
+    edit_copy(
+        &EditRequest {
+            source: source.clone(),
+            destination: detached.clone(),
+            expected: session.current().version(),
+            changes: vec![
+                EditChange::constant(f.plane, ExpressionSlot::DatumOffset, 5.).expect("detached"),
+            ],
+        },
+        &mut kernel,
+        &OperationContext::default(),
+    )
+    .expect("disconnected Add retains both solids");
+    let published = Document::open_read_only(&detached).expect("published set");
+    let built =
+        ferritecad_eval::rebuild_cold(&published, &mut kernel, &OperationContext::default())
+            .expect("detached rebuild");
+    assert!(built.all_built());
+    let shape = built.shape(f.feature).expect("complete Add result");
+    assert_eq!(kernel.solid_count(shape).expect("count"), 2);
+    kernel.validate_solids(shape).expect("every member valid");
+    assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
+    let volume = kernel.shape_stats(shape).expect("volume").1;
+    assert!((volume - (24000. + 36. * std::f64::consts::PI)).abs() < 1e-6);
+    assert_eq!(built.plane(f.plane).expect("offset plane").origin().z, -5.);
+    built.release_all(&mut kernel);
+    assert_eq!(std::fs::read(&source).expect("source unchanged"), before);
     for (i, changes) in [
-        vec![EditChange::constant(f.plane, ExpressionSlot::DatumOffset, 5.).expect("detached")],
+        vec![
+            EditChange::constant(f.plane, ExpressionSlot::DatumOffset, 5.).expect("detached"),
+            EditChange::SetOperation {
+                object: f.feature,
+                operation: SolidOperation::Intersect,
+            },
+        ],
         vec![EditChange::SetDatumFace {
             object: f.plane,
             face: EntityReference {
@@ -143,6 +178,10 @@ fn plane_addition_face_change_offset_and_undo_redo_share_atomic_transactions() {
             .expect_err("no invalid publication");
         if i == 0 {
             assert!(error.to_string().contains("unbuilt"), "{error}");
+            assert!(
+                error.to_string().contains("intersect result is empty"),
+                "{error}"
+            );
         } else {
             let cause = std::error::Error::source(&error).expect("input cause");
             assert!(cause.to_string().contains("face"), "{cause}");

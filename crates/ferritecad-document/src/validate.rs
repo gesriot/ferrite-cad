@@ -374,6 +374,14 @@ fn check_semantic_references(
             edges,
             report,
         ),
+        ObjectPayload::KeepSolids(keep) => check_sweep_predecessor(
+            object,
+            crate::SolidOperation::Cut,
+            Some(keep.previous),
+            by_id,
+            edges,
+            report,
+        ),
         ObjectPayload::Revolve(revolve) => {
             check_sweep_predecessor(
                 object,
@@ -457,7 +465,8 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
             ObjectPayload::Extrude(_)
             | ObjectPayload::Revolve(_)
             | ObjectPayload::Fillet(_)
-            | ObjectPayload::Chamfer(_) => {
+            | ObjectPayload::Chamfer(_)
+            | ObjectPayload::KeepSolids(_) => {
                 if let Some(previous) = object.payload.previous_feature() {
                     consumers.entry(previous).or_default().push(object.id);
                 }
@@ -516,7 +525,8 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
             ObjectPayload::Extrude(_)
             | ObjectPayload::Revolve(_)
             | ObjectPayload::Fillet(_)
-            | ObjectPayload::Chamfer(_) => Some((object.id, object.payload.previous_feature())),
+            | ObjectPayload::Chamfer(_)
+            | ObjectPayload::KeepSolids(_) => Some((object.id, object.payload.previous_feature())),
             _ => None,
         })
         .collect();

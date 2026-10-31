@@ -54,6 +54,9 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::SetRevolveExtent { object, extent } => json!({
             "kind":"set_revolve_extent", "object":object, "extent":turn_json(extent),
         }),
+        EditChange::SetKeepSelection { object, selection } => json!({
+            "kind":"set_keep_selection", "object":object, "selection":keep_json(selection),
+        }),
         EditChange::SetEdges { object, edges } => json!({
             "kind":"set_edges", "object":object, "edges":edges_json(edges),
         }),
@@ -126,6 +129,8 @@ fn end_json(end: &ferritecad_document::EndCondition) -> Value {
 fn feature_json(feature: &ferritecad_document::FeatureAddition) -> Value {
     use ferritecad_document::FeatureAddition as F;
     match feature {
+        F::KeepSolids { selection } => json!({"kind":"keep_solids",
+            "selection":keep_json(selection)}),
         F::Extrude {
             profile,
             regions,
@@ -171,4 +176,13 @@ pub fn edges_json(edges: &[ferritecad_document::EntityReference]) -> Vec<Value> 
             "digest":meaning.digest.to_string(), "selection":meaning.selection})
         })
         .collect()
+}
+
+fn keep_json(selection: &ferritecad_document::KeepSelection) -> Value {
+    match selection {
+        ferritecad_document::KeepSelection::All => json!({"kind":"all"}),
+        ferritecad_document::KeepSelection::ContainingFaces(faces) => {
+            json!({"kind":"containing_faces", "faces":edges_json(faces)})
+        }
+    }
 }

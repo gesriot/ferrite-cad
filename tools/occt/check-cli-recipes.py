@@ -9,7 +9,11 @@ import subprocess
 import sys
 import tempfile
 
-RECIPES = [('docs/generic-sweeps.md',
+RECIPES = [('docs/keep-solids.md',
+  'KEEP_SOLIDS_RECIPE',
+  {'no-solver': 'KEEP_SOLIDS_OK ', 'solver': 'KEEP_SOLIDS_OK ',
+   'stub': 'KEEP_SOLIDS_NO_KERNEL '}),
+ ('docs/generic-sweeps.md',
   'UP_TO_END_RECIPE',
   {'no-solver': 'UP_TO_END_OK ', 'solver': 'UP_TO_END_OK ',
    'stub': 'UP_TO_END_NO_KERNEL '}),

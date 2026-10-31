@@ -124,6 +124,8 @@ pub struct Inspection {
     chamfers: Vec<serde_json::Value>,
     /// Saved datum definitions with their computed frames, when built.
     datum_planes: Vec<serde_json::Value>,
+    keep_solids: Vec<serde_json::Value>,
+    feature_results: Vec<serde_json::Value>,
 }
 
 fn reference_json(reference: &ferritecad_document::EntityReference) -> serde_json::Value {
@@ -421,6 +423,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     // call read_extrude_source(path) or the text renderer beside this reading.
     let source = ExtrudeEditSource::read(&document)?;
     let mut planes = std::collections::BTreeMap::new();
+    let mut feature_results = Vec::new();
     let (rebuild, rebuild_error) = if ferritecad_occt::is_available() {
         let evaluated = (|| -> Result<_> {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
@@ -432,6 +435,14 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             for id in built.order() {
                 if let Some(plane) = built.plane(*id) {
                     planes.insert(*id, plane);
+                }
+            }
+            for (id, names) in &built.topology().features {
+                if let Some(shape) = names.shape() {
+                    feature_results.push(serde_json::json!({
+                        "feature_id": id, "solid_count":
+                        ferritecad_kernel::GeometryKernel::solid_count(&mut kernel, shape)?,
+                    }));
                 }
             }
             let report = built.report();
@@ -644,6 +655,27 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         fillets,
         chamfers,
         datum_planes,
+        feature_results,
+        keep_solids: document
+            .objects()?
+            .into_iter()
+            .filter_map(|o| {
+                let ferritecad_document::ObjectPayload::KeepSolids(keep) = o.payload else {
+                    return None;
+                };
+                let selection = match &keep.selection {
+                    ferritecad_document::KeepSelection::All => serde_json::json!({"kind": "all"}),
+                    ferritecad_document::KeepSelection::ContainingFaces(faces) => {
+                        serde_json::json!({
+                            "kind": "containing_faces", "faces": faces.iter().map(reference_json)
+                                .collect::<Vec<_>>(),
+                        })
+                    }
+                };
+                Some(serde_json::json!({"feature_id": o.id, "name": o.name,
+                "previous_feature_id": keep.previous, "selection": selection}))
+            })
+            .collect(),
     };
     document.close()?;
     Ok(result)
