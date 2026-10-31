@@ -44,6 +44,7 @@ pub enum NamingOperation {
     Chamfer,
     Fuse,
     Common,
+    KeepSolids,
 }
 
 impl NamingOperation {
@@ -56,6 +57,7 @@ impl NamingOperation {
             Self::Chamfer => 4,
             Self::Fuse => 5,
             Self::Common => 6,
+            Self::KeepSolids => 7,
         }
     }
 
@@ -69,6 +71,7 @@ impl NamingOperation {
             Self::Chamfer,
             Self::Fuse,
             Self::Common,
+            Self::KeepSolids,
         ]
         .into_iter()
         .find(|operation| operation.tag() == tag)
@@ -83,4 +86,11 @@ pub struct NamingHistory {
     /// Outer-boundary curve witnesses for caps of a multi-region sweep.
     pub cap_boundaries: BTreeMap<SubShapeHandle, BTreeSet<StableEntityId>>,
     pub relations: BTreeSet<(NamingInput, NamingRelation, Option<SubShapeHandle>)>,
+}
+
+/// One face reference after exact or complete-family resolution.
+#[derive(Debug)]
+pub struct SolidWitness {
+    pub reference: StableEntityId,
+    pub faces: Vec<SubShapeHandle>,
 }

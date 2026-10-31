@@ -182,6 +182,26 @@ unsafe extern "C" {
     fn fc_occt_version() -> *const c_char;
     fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
     fn fc_occt_session_destroy(session: *mut RawSession);
+    fn fc_occt_solid_properties(
+        session: *mut RawSession,
+        shape: u64,
+        count: *mut usize,
+        minimum_volume: *mut f64,
+        valid: *mut i32,
+        free_shapes: *mut i32,
+        error: *mut RawError,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_keep_solids(
+        session: *mut RawSession,
+        target: u64,
+        faces: *const u64,
+        offsets: *const usize,
+        family_count: usize,
+        owner_counts: *mut usize,
+        out_shape: *mut u64,
+        error: *mut RawError,
+    ) -> i32;
     fn fc_occt_solid_count(
         session: *mut RawSession,
         shape: u64,
@@ -625,6 +645,55 @@ impl Session {
             ));
         }
         Ok(Self { raw })
+    }
+
+    pub(crate) fn solid_properties(&mut self, shape: u64) -> Result<(usize, f64, bool, bool)> {
+        let (mut count, mut volume, mut valid, mut free) = (0, 0., 0, 0);
+        let mut error = RawError::empty();
+        // SAFETY: each output is writable for its declared type; the session is live.
+        let status = unsafe {
+            fc_occt_solid_properties(
+                self.raw,
+                shape,
+                &mut count,
+                &mut volume,
+                &mut valid,
+                &mut free,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "checking every solid in a result")?;
+        Ok((count, volume, valid != 0, free != 0))
+    }
+
+    pub(crate) fn keep_solids(
+        &mut self,
+        target: u64,
+        families: &[Vec<u64>],
+    ) -> Result<(u64, Vec<usize>)> {
+        let faces: Vec<_> = families.iter().flatten().copied().collect();
+        let mut offsets = vec![0];
+        for family in families {
+            offsets.push(offsets.last().copied().unwrap_or(0) + family.len());
+        }
+        let mut counts = vec![0; families.len()];
+        let mut shape = 0;
+        let mut error = RawError::empty();
+        // SAFETY: offsets partitions faces; all input/output arrays live across this call.
+        let status = unsafe {
+            fc_occt_keep_solids(
+                self.raw,
+                target,
+                faces.as_ptr(),
+                offsets.as_ptr(),
+                families.len(),
+                counts.as_mut_ptr(),
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "selecting solids by face membership")?;
+        Ok((shape, counts))
     }
 
     pub(crate) fn solid_count(&mut self, shape: u64) -> Result<usize> {

@@ -483,7 +483,6 @@ fn run<K: GeometryKernel + ?Sized>(
                         _ => unreachable!("sweep branch"),
                     };
                     let profile = profile.select(selected)?;
-                    let multiple_regions = profile.regions().len() > 1;
                     state.topology.select_profile(*id, &profile)?;
                     let target = previous
                         .map(|p| {
@@ -564,18 +563,6 @@ fn run<K: GeometryKernel + ?Sized>(
                         let tool = request.build(kernel, &scoped)?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
-                        if matches!(request, SweepRequest::UpTo { .. }) {
-                            kernel.validate_solids(tool.shape)?;
-                        }
-                        if previous.is_none() && multiple_regions {
-                            let solids = kernel.solid_count(tool.shape)?;
-                            if solids != 1 {
-                                return Err(CadError::unsupported(format!(
-                                    "the selected regions sweep into {solids} separate solids, \
-                                     and a new body must be one solid"
-                                )));
-                            }
-                        }
                         let tool_names =
                             state
                                 .topology
@@ -608,6 +595,70 @@ fn run<K: GeometryKernel + ?Sized>(
                         };
                         state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, shape);
+                        if let Some(cache) = cache.as_deref_mut() {
+                            store(kernel, cache, key, *id, state, events);
+                        }
+                    }
+                    state.keys.insert(*id, key);
+                }
+
+                ObjectPayload::KeepSolids(keep) => {
+                    let witnesses = match &keep.selection {
+                        ferritecad_document::KeepSelection::All => Vec::new(),
+                        ferritecad_document::KeepSelection::ContainingFaces(faces) => {
+                            // Report every unresolved reference before testing native membership.
+                            state.topology.resolve(
+                                ferritecad_document::EntityKind::Face,
+                                *id,
+                                keep.previous,
+                                faces,
+                            )?;
+                            faces
+                                .iter()
+                                .map(|face| {
+                                    Ok(ferritecad_kernel::SolidWitness {
+                                        reference: face.id,
+                                        faces: state.topology.resolve(
+                                            ferritecad_document::EntityKind::Face,
+                                            *id,
+                                            keep.previous,
+                                            &[*face],
+                                        )?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>>>()?
+                        }
+                    };
+                    let key = crate::cache::keep_archive_key(
+                        kernel.identity(),
+                        &state.keys[&keep.previous],
+                        keep.cache_key(),
+                    );
+                    let key = state.topology.cache_key(*id, key);
+                    let restored = match cache.as_deref_mut() {
+                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                        None => false,
+                    };
+                    if !restored {
+                        let previous = &state.topology.features[&keep.previous];
+                        let target = state.shapes[&keep.previous];
+                        let result =
+                            kernel
+                                .keep_solids(target, &witnesses, &scoped)
+                                .map_err(|error| CadError::Context {
+                                    kind: error.kind(),
+                                    message: format!("KeepSolids {id}: {error}"),
+                                    source: Box::new(error),
+                                })?;
+                        state.owned.push(result.shape);
+                        let names = state.topology.name_operation(
+                            *id,
+                            result.shape,
+                            &[previous],
+                            kernel,
+                        )?;
+                        state.topology.insert_feature(*id, names)?;
+                        state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
                         }

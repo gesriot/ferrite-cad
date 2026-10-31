@@ -556,6 +556,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
+            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume: 0.0,
@@ -636,6 +637,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
+            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume: 0.0,
@@ -710,7 +712,10 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
             .insert(shape, profile.segments().map(|s| s.label).collect());
-        if let Err(error) = context.check_cancelled() {
+        if let Err(error) = context
+            .check_cancelled()
+            .and_then(|()| self.validate_solids(shape))
+        {
             self.release(shape);
             return Err(error);
         }
@@ -726,11 +731,50 @@ impl GeometryKernel for OcctKernel {
 
     fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
         let raw = self.raw(shape)?;
-        checked_solids(
-            self.session.solid_count(raw)?,
-            self.session.shape_stats(raw)?.1,
-            self.session.is_valid(raw)?,
-        )
+        let (count, volume, valid, free) = self.session.solid_properties(raw)?;
+        checked_solids(count, volume, valid, free)
+    }
+
+    fn keep_solids(
+        &mut self,
+        target: ShapeHandle,
+        witnesses: &[ferritecad_kernel::SolidWitness],
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        context.check_cancelled()?;
+        let raw = self.raw(target)?;
+        let families = witnesses
+            .iter()
+            .map(|w| {
+                w.faces
+                    .iter()
+                    .map(|face| {
+                        if face.shape() != target || face.kind() != SubShapeKind::Face {
+                            return Err(CadError::input(
+                                "solid witness must name a face of its predecessor",
+                            ));
+                        }
+                        Ok(face.index())
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (raw, counts) = self.session.keep_solids(raw, &families)?;
+        check_witness_owners(witnesses, &counts)?;
+        let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::KeepSolids);
+        if let Err(error) = context
+            .check_cancelled()
+            .and_then(|()| self.validate_solids(shape))
+        {
+            self.release(shape);
+            return Err(error);
+        }
+        Ok(OperationResult {
+            shape,
+            removed_volume: 0.,
+        })
     }
 
     fn projected_bounds(
@@ -762,6 +806,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, request.kind().naming_operation());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
+            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -800,6 +845,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Fillet);
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
+            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -838,6 +884,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Chamfer);
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
+            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -1103,17 +1150,39 @@ fn naming_kind(raw: u64) -> Result<SubShapeKind> {
     }
 }
 
-fn checked_solids(count: usize, volume: f64, valid: bool) -> Result<()> {
+fn check_witness_owners(
+    witnesses: &[ferritecad_kernel::SolidWitness],
+    counts: &[usize],
+) -> Result<()> {
+    if counts.len() != witnesses.len() {
+        return Err(CadError::kernel("incomplete solid membership answer"));
+    }
+    let failures: Vec<_> = witnesses.iter().zip(counts).filter(|(_, count)| **count != 1)
+        .map(|(w, count)| format!(
+            "reference {} resolves to faces in {count} solids; one containing solid is required. \
+             Replace this reference or choose All.", w.reference
+        )).collect();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CadError::topology(failures.join("; ")))
+    }
+}
+
+fn checked_solids(count: usize, volume: f64, valid: bool, free: bool) -> Result<()> {
     if count == 0 {
-        return Err(CadError::kernel(
-            "extrusion to a referenced end produced no solid",
-        ));
+        return Err(CadError::kernel("the kernel result contains no solid"));
     }
     if !volume.is_finite() || volume <= 0. {
         return Err(CadError::kernel("solid volume must be finite and positive"));
     }
     if !valid {
         return Err(CadError::kernel("the kernel returned an invalid solid"));
+    }
+    if free {
+        return Err(CadError::kernel(
+            "the kernel returned free shapes outside its solids",
+        ));
     }
     Ok(())
 }
@@ -1123,10 +1192,44 @@ mod solid_tests {
     use super::checked_solids;
 
     #[test]
+    fn reject_free_shapes_and_invalid_members_even_with_other_valid_solids() {
+        assert!(
+            checked_solids(2, 10., true, true)
+                .expect_err("free shape")
+                .to_string()
+                .contains("free shapes")
+        );
+        for volume in [0., -1., f64::NAN, f64::INFINITY] {
+            assert!(checked_solids(2, volume, true, false).is_err());
+        }
+        assert!(checked_solids(2, 10., false, false).is_err());
+    }
+
+    #[test]
+    fn each_face_witness_requires_one_owner() {
+        let witness = ferritecad_kernel::SolidWitness {
+            reference: ferritecad_types::StableEntityId::new(),
+            faces: vec![],
+        };
+        for count in [0, 2] {
+            let error = super::check_witness_owners(std::slice::from_ref(&witness), &[count])
+                .expect_err("no arbitrary owner");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Topology);
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("faces in {count} solids"))
+            );
+            assert!(error.to_string().contains(&witness.reference.to_string()));
+        }
+        super::check_witness_owners(&[witness], &[1]).expect("one owner");
+    }
+
+    #[test]
     fn reject_empty_non_finite_and_invalid_kernel_solids() {
-        assert!(checked_solids(1, 1., true).is_ok());
+        assert!(checked_solids(1, 1., true, false).is_ok());
         // Separate profile regions sweep into separate solids, as with Blind.
-        assert!(checked_solids(2, 1., true).is_ok());
+        assert!(checked_solids(2, 1., true, false).is_ok());
         for (count, volume, valid, reason) in [
             (0, 1., true, "no solid"),
             (1, f64::NAN, true, "finite and positive"),
@@ -1135,7 +1238,8 @@ mod solid_tests {
             (1, -1., true, "finite and positive"),
             (1, 1., false, "invalid solid"),
         ] {
-            let error = checked_solids(count, volume, valid).expect_err("refuse kernel answer");
+            let error =
+                checked_solids(count, volume, valid, false).expect_err("refuse kernel answer");
             assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
             assert!(error.to_string().contains(reason), "{error}");
         }

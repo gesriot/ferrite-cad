@@ -206,6 +206,16 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 /* Destroys a session and every shape it still holds. Null is accepted. */
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
+FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
+    size_t *count, double *minimum_volume, int32_t *valid, int32_t *free_shapes,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Each family must have one native owning solid. No owner ordinals are returned.
+ * A refusal sets the family counts and leaves out_shape zero; All has no families. */
+FcOcctStatus fc_occt_keep_solids(FcOcctSession *session, uint64_t target,
+    const uint64_t *faces, const size_t *offsets, size_t family_count,
+    size_t *owner_counts, uint64_t *out_shape, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
     size_t *count, FcOcctError *error) FC_OCCT_NOEXCEPT;
 

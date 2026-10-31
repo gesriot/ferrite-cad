@@ -52,10 +52,27 @@ pub trait GeometryKernel {
         )))
     }
 
-    /// Checks that a result holds valid solids with finite positive volume.
+    /// Checks every member is valid with finite positive volume, and rejects an empty
+    /// set or free lower-dimensional remnants outside its solids.
     fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
         Err(ferritecad_types::CadError::unsupported(format!(
             "this kernel does not validate the solids of {shape}"
+        )))
+    }
+
+    /// Keep the union selected by face families. Empty witnesses means All.
+    /// Each family must belong to exactly one solid. Only Kept/Deleted history
+    /// is permitted; solid ordinals never leave this call.
+    fn keep_solids(
+        &mut self,
+        target: ShapeHandle,
+        witnesses: &[crate::SolidWitness],
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        context.check_cancelled()?;
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "this kernel cannot select solids in {target} using {} references",
+            witnesses.len()
         )))
     }
 
@@ -144,23 +161,17 @@ pub trait GeometryKernel {
 
     /// Combines target and tool with Fuse, Cut or Common.
     ///
-    /// The result is one solid or a refusal. A boolean that leaves nothing, or
-    /// that splits the target into pieces, is not a feature this contract can
-    /// name: there would be no single result to be the body's new tip, and
-    /// choosing one of several would be the kernel deciding what the user
-    /// meant. A Cut tool that misses the target entirely is a refusal too — it
-    /// produces a perfectly valid solid which happens to be the target again,
-    /// and calling that a cut would put a feature in the history that did
-    /// nothing.
-    ///
-    /// Complete provenance is available through `naming_history`.
+    /// Return the complete nonempty set of valid solids with finite positive member
+    /// volumes and complete elementary provenance for both inputs. Refuse free
+    /// lower-dimensional remnants and Cut without removed material. Never select
+    /// a result member on the caller's behalf.
     fn boolean(
         &mut self,
         request: &BooleanRequest,
         context: &OperationContext,
     ) -> Result<OperationResult>;
 
-    /// Rounds the requested edge set in one builder, producing one valid solid.
+    /// Rounds the requested edges, retaining the complete valid result set.
     /// Full edge, vertex and neighbouring-face provenance is in `naming_history`.
     /// Kernels without this operation return `Unsupported`.
     fn fillet_edges(
@@ -175,7 +186,7 @@ pub trait GeometryKernel {
         )))
     }
 
-    /// Chamfers the requested edge set in one builder, producing one valid solid.
+    /// Chamfers the requested edges, retaining the complete valid result set.
     /// The distance is equal along both adjacent faces. Full provenance is in
     /// `naming_history`; kernels without this operation return `Unsupported`.
     fn chamfer_edges(

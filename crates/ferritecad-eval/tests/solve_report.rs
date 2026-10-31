@@ -105,6 +105,9 @@ impl RecordingKernel {
 }
 
 impl GeometryKernel for RecordingKernel {
+    fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.inner.validate_solids(shape)
+    }
     /// Delegated: this double is about something else, and a cut it
     /// answered differently would be a second kernel.
     fn boolean(

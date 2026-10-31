@@ -220,6 +220,7 @@ impl ModelNaming {
                 ObjectPayload::Revolve(_) => NamingOperation::Revolve,
                 ObjectPayload::Fillet(_) => NamingOperation::Fillet,
                 ObjectPayload::Chamfer(_) => NamingOperation::Chamfer,
+                ObjectPayload::KeepSolids(_) => NamingOperation::KeepSolids,
                 _ => continue,
             };
             self.operations.insert(object.id, operation);
@@ -403,6 +404,12 @@ impl ModelNaming {
     }
 
     pub(crate) fn check_derivations(&self, producer: ObjectId, graph: &Derivations) -> Result<()> {
+        if self.operations.get(&producer) == Some(&NamingOperation::KeepSolids) && !graph.is_empty()
+        {
+            return Err(CadError::topology(
+                "KeepSolids cannot mint derivation nodes",
+            ));
+        }
         if !self.lineage.contains_key(&producer)
             || self
                 .previous
@@ -523,6 +530,60 @@ impl FeatureNaming {
     }
 }
 
+// Selection rebinds existing names, including ambiguous names, without deriving any nodes.
+fn retain_names(
+    topology: ShapeTopology,
+    history: &ferritecad_kernel::NamingHistory,
+    inputs: &[&FeatureNaming],
+) -> Result<FeatureNaming> {
+    let [source] = inputs else {
+        return Err(CadError::topology("KeepSolids needs one named predecessor"));
+    };
+    let mut rebind = BTreeMap::new();
+    let mut entities = BTreeMap::new();
+    let mut bindings = BTreeMap::<Name, BTreeSet<_>>::new();
+    for (input, relation, output) in &history.relations {
+        match (input, relation, output) {
+            (NamingInput::SubShape(old), NamingRelation::Kept, Some(new)) => {
+                let name = source.entities[old];
+                if rebind.insert(*old, *new).is_some() || entities.insert(*new, name).is_some() {
+                    return Err(CadError::topology(
+                        "selection history is not identity-preserving",
+                    ));
+                }
+                bindings.entry(name).or_default().insert(*new);
+            }
+            (NamingInput::SubShape(_), NamingRelation::Deleted, None) => {}
+            _ => {
+                return Err(CadError::topology(
+                    "selection history must only keep or delete",
+                ));
+            }
+        }
+    }
+    if entities.keys().ne(topology.adjacent_faces.keys()) {
+        return Err(CadError::topology("selection omitted an output entity"));
+    }
+    let ancestry = source
+        .ancestry
+        .iter()
+        .filter_map(|(name, members)| {
+            let retained: BTreeSet<_> = members
+                .iter()
+                .filter_map(|m| rebind.get(m).copied())
+                .collect();
+            (!retained.is_empty()).then_some((*name, retained))
+        })
+        .collect();
+    Ok(FeatureNaming {
+        derivations: Derivations::new(),
+        topology,
+        entities,
+        bindings,
+        ancestry,
+    })
+}
+
 fn derive(
     shape: ShapeHandle,
     owner: ObjectId,
@@ -537,6 +598,9 @@ fn derive(
         .operation
         .ok_or_else(|| CadError::topology("operation history has no operator identity"))?;
     validate_history(shape, &topology, &history, inputs)?;
+    if operation == NamingOperation::KeepSolids {
+        return retain_names(topology, &history, inputs);
+    }
     let mut derivations = Derivations::new();
     for source in inputs {
         for (digest, node) in &source.derivations {

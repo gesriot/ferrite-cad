@@ -112,6 +112,19 @@ pub fn edge_archive_key(
     hasher.finish()
 }
 
+pub fn keep_archive_key(
+    kernel: &KernelIdentity,
+    target_key: &ContentHash,
+    payload_key: ContentHash,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("eval.keep-solids.named");
+    hasher.algorithm_version(1);
+    kernel.feed(&mut hasher);
+    hasher.field("target").hash(target_key);
+    hasher.field("payload").hash(&payload_key);
+    hasher.finish()
+}
+
 /// Writes one feature's geometry and names into the sidecar, under a key the
 /// caller computed.
 ///

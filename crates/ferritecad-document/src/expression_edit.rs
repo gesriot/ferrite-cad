@@ -60,6 +60,10 @@ impl std::fmt::Display for ExpressionSlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditChange {
+    SetKeepSelection {
+        object: ObjectId,
+        selection: crate::KeepSelection,
+    },
     AddDatumPlane {
         object: ObjectId,
         name: Option<String>,
@@ -138,6 +142,9 @@ pub enum EditChange {
 /// A feature's stated inputs; the candidate Body supplies its predecessor.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeatureAddition {
+    KeepSolids {
+        selection: crate::KeepSelection,
+    },
     Extrude {
         profile: ObjectId,
         regions: Vec<StableEntityId>,
@@ -165,6 +172,11 @@ pub enum FeatureAddition {
 impl FeatureAddition {
     pub fn payload(&self, previous: Option<ObjectId>) -> Result<ObjectPayload> {
         Ok(match self {
+            Self::KeepSolids { selection } => ObjectPayload::KeepSolids(crate::KeepSolids {
+                previous: previous
+                    .ok_or_else(|| CadError::input("KeepSolids needs a predecessor"))?,
+                selection: selection.clone(),
+            }),
             Self::Extrude {
                 profile,
                 regions,
@@ -226,7 +238,8 @@ impl EditChange {
 
     pub fn object(&self) -> ObjectId {
         match self {
-            Self::AddDatumPlane { object, .. }
+            Self::SetKeepSelection { object, .. }
+            | Self::AddDatumPlane { object, .. }
             | Self::SetDatumFace { object, .. }
             | Self::AddBody { object, .. }
             | Self::SetEdges { object, .. }
@@ -271,6 +284,13 @@ impl EditChange {
                 };
                 crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
                 *saved = *face;
+                return Ok(());
+            }
+            Self::SetKeepSelection { selection, .. } => {
+                let ObjectPayload::KeepSolids(keep) = payload else {
+                    return Err(CadError::input("selection edit requires KeepSolids"));
+                };
+                keep.selection = selection.clone();
                 return Ok(());
             }
             Self::SetEdges { edges, .. } => {
@@ -374,7 +394,8 @@ impl EditChange {
                     "an object addition must be applied to the document",
                 ));
             }
-            Self::SetDatumFace { .. }
+            Self::SetKeepSelection { .. }
+            | Self::SetDatumFace { .. }
             | Self::SetEdges { .. }
             | Self::SetRegions { .. }
             | Self::SetOperation { .. }
