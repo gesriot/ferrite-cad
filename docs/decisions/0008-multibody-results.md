@@ -65,12 +65,11 @@ its curve/end/cap roots pass the unchanged complete-profile check.
 
 For the slot, four original plate faces each have two descendants; exact
 references to them refuse. Two original side faces each survive once, one in
-each solid. Their producer remains the plate feature. In the measured document
-their digests begin `607c595f9849b8d3` and `fe9ab08e7e5fe786`; these are examples
-for those UUIDs, not reserved names. All twelve result-face names resolve once
-and each face belongs to exactly one solid. Native containment, not coordinates,
-therefore distinguishes the pieces. Eighteen of the plate's 26 elementary names
-survive unchanged. Detached Add preserves all 26 plate names.
+each solid. Their producer remains the plate feature. All twelve result-face
+names resolve once and each face belongs to exactly one solid. Native
+containment, not coordinates, therefore distinguishes the pieces. Eighteen of
+the plate's 26 elementary names survive unchanged. Detached Add preserves all
+26 plate names.
 
 Two cold rebuilds, a cache fill and a warm rebuild retain identical digest sets
 and binding cardinalities for each document. Every feature hits the cache in
@@ -179,6 +178,11 @@ reference explicitly says `all_descendants`. A merge that still leaves one
 owning solid keeps the stated "solid containing this face" meaning; it does
 not promise to preserve a volume or an old connected-component count.
 
+A piece may have no face whose name resolves to it alone: every face may be an
+ambiguous binding or a descendant shared with another piece. Such a piece cannot
+be selected individually. It stays reachable through All, and the refusal of each
+attempted witness names the observed cardinality. No geometric rule fills that gap.
+
 Reject a mandatory selection after every split: it would fail all four common
 cases without adding information. Reject a new solid-name algebra: existing
 face references and membership express the required selection. Reject a keep
@@ -259,6 +263,10 @@ disconnected components must be present once. Independent readers must check
 component count, winding, bounds and total volume as appropriate. Existing
 imported STEP assembly definitions/occurrences retain their own identities and
 must not be flattened or duplicated by this native Body policy.
+
+`export-stl` already writes one selected Body to one file and refuses to guess
+among several Bodies. It keeps that contract: the file holds every component of
+that Body's result once, with no per-component files or ordinal selection.
 
 There is currently no shipped native-model STEP export command. STEP writing
 exists in the OCCT smoke round trip and corpus generator; do not describe those
@@ -352,7 +360,8 @@ and valid-face/solid checks. Test selected pieces merging and splitting again.
 selects a piece by a face witness through the shared edit path, and repairs a
 lost witness without retargeting. Check the full GUI suite under the memory
 watchdog, mesh picking and Undo/Redo. FBX's independent reader sees both
-components once under one Body identity; native STEP write/read-back retains
+components once under one Body identity; `export-stl` of that Body contains both
+components with the expected total volume; native STEP write/read-back retains
 both solids without changing imported assembly identity. Audit every retired
 one-solid expectation with a replacement. Regenerate affected fixtures and
 document the actual CLI/window interaction.
