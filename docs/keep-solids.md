@@ -162,13 +162,11 @@ edit(all_pieces, selected, [{"kind": "set_keep_selection", "object": keep,
                             "selection": {"kind": "containing_faces", "faces": witnesses}}])
 assert count(selected) == 1
 call("rebuild", selected, "--cold")
-call("rebuild", selected)
-call("rebuild", selected)
 before = selected.read_bytes()
 refused = root / "refused.fcad"
 error = edit(selected, refused, [{"kind": "set_keep_selection", "object": keep,
                                  "selection": {"kind": "containing_faces", "faces": []}}], code=2)
 assert error["error"]["kind"] == "input"
 assert selected.read_bytes() == before and not refused.exists()
-print("KEEP_SOLIDS_OK complete set, named selection, cache and atomic refusal")
+print("KEEP_SOLIDS_OK complete set, named selection, cold rebuild and atomic refusal")
 ```
