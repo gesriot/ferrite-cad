@@ -261,6 +261,11 @@ impl GeometryKernel for MockKernel {
         Ok(())
     }
 
+    fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.lookup(shape)?;
+        Ok(())
+    }
+
     fn projected_bounds(
         &mut self,
         shape: ShapeHandle,

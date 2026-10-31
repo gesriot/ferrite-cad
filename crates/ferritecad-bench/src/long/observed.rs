@@ -79,6 +79,7 @@ impl GeometryKernel for Observed {
     forward!(naming_history(shape: ShapeHandle) -> Result<NamingHistory>);
     forward!(solid_count(shape: ShapeHandle) -> Result<usize>);
     forward!(validate_solids(shape: ShapeHandle) -> Result<()>);
+    forward!(validate_solid_structure(shape: ShapeHandle) -> Result<()>);
     forward!(transform(shape: ShapeHandle, transform: &Transform, context: &OperationContext)
         -> Result<OperationResult>);
     forward!(tessellate(shape: ShapeHandle, params: &TessellationParams, context: &OperationContext)

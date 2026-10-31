@@ -17,7 +17,9 @@ Naming occurs on the complete geometric result before selection. KeepSolids reta
 deletes elementary topology and creates no derivation nodes. A surviving split face
 keeps its split name, even if only one piece remains. One atomic `brep.generative.v2`
 archive stores the entire selected result, names, ancestry and incidence. Restoration
-validates every member and the complete incidence before publishing anything.
+checks that the trusted result contains solids and no free lower dimensions, and validates
+the complete incidence before publishing anything; geometry and member volumes were checked
+when the record was created.
 
 ## Requests and refusals
 

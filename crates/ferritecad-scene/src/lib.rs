@@ -3268,6 +3268,10 @@ mod tests {
             self.inner.validate_solids(shape)
         }
 
+        fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+            self.inner.validate_solid_structure(shape)
+        }
+
         fn decode_shape_with(
             &mut self,
             blob: &BrepBlob,
@@ -4590,6 +4594,10 @@ mod tests {
             self.inner.validate_solids(shape)
         }
 
+        fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+            self.inner.validate_solid_structure(shape)
+        }
+
         fn decode_shape_with(
             &mut self,
             blob: &BrepBlob,
@@ -4945,6 +4953,10 @@ mod tests {
 
         fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
             self.inner.validate_solids(shape)
+        }
+
+        fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+            self.inner.validate_solid_structure(shape)
         }
 
         fn decode_shape_with(

@@ -556,7 +556,6 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume: 0.0,
@@ -637,7 +636,6 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, profile.segments().map(|s| s.label).collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume: 0.0,
@@ -712,10 +710,7 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
             .insert(shape, profile.segments().map(|s| s.label).collect());
-        if let Err(error) = context
-            .check_cancelled()
-            .and_then(|()| self.validate_solids(shape))
-        {
+        if let Err(error) = context.check_cancelled() {
             self.release(shape);
             return Err(error);
         }
@@ -727,6 +722,10 @@ impl GeometryKernel for OcctKernel {
 
     fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
         self.session.solid_count(self.raw(shape)?)
+    }
+
+    fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.session.validate_solid_structure(self.raw(shape)?)
     }
 
     fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
@@ -776,10 +775,7 @@ impl GeometryKernel for OcctKernel {
         let shape = ShapeHandle::new(self.session_id, raw);
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::KeepSolids);
-        if let Err(error) = context
-            .check_cancelled()
-            .and_then(|()| self.validate_solids(shape))
-        {
+        if let Err(error) = context.check_cancelled() {
             self.release(shape);
             return Err(error);
         }
@@ -818,7 +814,6 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, request.kind().naming_operation());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -857,7 +852,6 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Fillet);
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -896,7 +890,6 @@ impl GeometryKernel for OcctKernel {
             .insert(shape, ferritecad_kernel::NamingOperation::Chamfer);
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
-            self.validate_solids(shape)?;
             Ok(OperationResult {
                 shape,
                 removed_volume,
@@ -1189,28 +1182,7 @@ fn checked_solids(
     free: bool,
     null: bool,
 ) -> Result<()> {
-    if null {
-        return Err(CadError::kernel(format!(
-            "the {operation} returned a null shape"
-        )));
-    }
-    if free {
-        return Err(CadError::kernel(
-            "the kernel returned free shapes outside its solids",
-        ));
-    }
-    if count == 0 {
-        return Err(CadError::unsupported(format!(
-            "the {operation} result is empty and contains no solid"
-        )));
-    }
-    if !volume.is_finite() || volume <= 0. {
-        return Err(CadError::kernel("solid volume must be finite and positive"));
-    }
-    if !valid {
-        return Err(CadError::kernel("the kernel returned an invalid solid"));
-    }
-    Ok(())
+    ffi::checked_solids(operation, count, volume, valid, free, null)
 }
 
 #[cfg(test)]

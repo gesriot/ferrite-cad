@@ -211,6 +211,15 @@ FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
     int32_t *free_shapes, int32_t *null_shape,
     FcOcctError *error) FC_OCCT_NOEXCEPT;
 
+/* Classifies collected result facts without examining geometry again. */
+FcOcctStatus fc_occt_check_solid_properties(size_t count, double minimum_volume,
+    int32_t valid, int32_t free_shapes, int32_t null_shape, const char *operation,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
+/* Trusted cached geometry needs only nonempty solids and no free lower dimensions. */
+FcOcctStatus fc_occt_validate_solid_structure(FcOcctSession *session, uint64_t shape,
+    FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 /* Each family must have one native owning solid. No owner ordinals are returned.
  * A refusal sets the family counts and leaves out_shape zero; All has no families. */
 FcOcctStatus fc_occt_keep_solids(FcOcctSession *session, uint64_t target,

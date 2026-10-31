@@ -52,6 +52,14 @@ pub trait GeometryKernel {
         )))
     }
 
+    /// Checks only that cached geometry contains solids and no free lower dimensions.
+    /// Geometric validity and member volume were established when the record was made.
+    fn validate_solid_structure(&mut self, shape: ShapeHandle) -> Result<()> {
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "this kernel does not validate the solid structure of {shape}"
+        )))
+    }
+
     /// Checks every member is valid with finite positive volume, and rejects an empty
     /// set or free lower-dimensional remnants outside its solids.
     fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {

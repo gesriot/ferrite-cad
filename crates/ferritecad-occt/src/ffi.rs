@@ -182,6 +182,20 @@ unsafe extern "C" {
     fn fc_occt_version() -> *const c_char;
     fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
     fn fc_occt_session_destroy(session: *mut RawSession);
+    fn fc_occt_check_solid_properties(
+        count: usize,
+        minimum_volume: f64,
+        valid: i32,
+        free_shapes: i32,
+        null_shape: i32,
+        operation: *const c_char,
+        error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_validate_solid_structure(
+        session: *mut RawSession,
+        shape: u64,
+        error: *mut RawError,
+    ) -> i32;
     fn fc_occt_solid_properties(
         session: *mut RawSession,
         shape: u64,
@@ -646,6 +660,13 @@ impl Session {
             ));
         }
         Ok(Self { raw })
+    }
+
+    pub(crate) fn validate_solid_structure(&mut self, shape: u64) -> Result<()> {
+        let mut error = RawError::empty();
+        // SAFETY: the session is live and the error output is writable.
+        let status = unsafe { fc_occt_validate_solid_structure(self.raw, shape, &mut error) };
+        interpret(status, &error, "checking cached result structure")
     }
 
     pub(crate) fn solid_properties(
@@ -1651,6 +1672,32 @@ impl Drop for Session {
 // the contract already says a session is used from one thread at a time.
 // SAFETY: the raw pointer is uniquely owned by this value.
 unsafe impl Send for Session {}
+
+pub(crate) fn checked_solids(
+    operation: &str,
+    count: usize,
+    volume: f64,
+    valid: bool,
+    free: bool,
+    null: bool,
+) -> Result<()> {
+    let operation = std::ffi::CString::new(operation)
+        .map_err(|e| CadError::kernel_because("invalid operation label", e))?;
+    let mut error = RawError::empty();
+    // SAFETY: the label is NUL-terminated and live; the error output is writable.
+    let status = unsafe {
+        fc_occt_check_solid_properties(
+            count,
+            volume,
+            i32::from(valid),
+            i32::from(free),
+            i32::from(null),
+            operation.as_ptr(),
+            &mut error,
+        )
+    };
+    interpret(status, &error, "checking a solid result")
+}
 
 #[cfg(test)]
 mod tests {
