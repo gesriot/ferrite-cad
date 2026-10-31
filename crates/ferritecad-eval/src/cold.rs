@@ -561,7 +561,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         None => false,
                     };
                     if !restored {
-                        let tool = request.build(kernel, &scoped)?;
+                        let tool = request.build(kernel, &scoped, target.is_some())?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
                         let tool_names =
@@ -1073,11 +1073,12 @@ impl SweepRequest {
         }
     }
     fn build(
-        &self,
+        self,
         kernel: &mut (impl GeometryKernel + ?Sized),
         context: &OperationContext,
+        boolean_tool: bool,
     ) -> Result<ferritecad_kernel::OperationResult> {
-        match self {
+        let request = match self {
             Self::UpTo {
                 profile,
                 reversed,
@@ -1085,18 +1086,15 @@ impl SweepRequest {
                 ..
             } => match end {
                 SurfaceEnd::Face { faces, offset } => {
-                    kernel.extrude_to_face(profile, *reversed, faces, *offset, context)
+                    return kernel.extrude_to_face(&profile, reversed, &faces, offset, context);
                 }
                 SurfaceEnd::Vertex(vertex) => {
                     let extent = crate::convert::vertex_extent(
                         *profile.plane(),
-                        *reversed,
-                        kernel.vertex_point(*vertex)?,
+                        reversed,
+                        kernel.vertex_point(vertex)?,
                     )?;
-                    kernel.extrude(
-                        &ferritecad_kernel::ExtrudeRequest::new(profile.clone(), extent, *reversed),
-                        context,
-                    )
+                    ferritecad_kernel::ExtrudeRequest::new(profile, extent, reversed)
                 }
             },
             Self::ThroughAll {
@@ -1105,14 +1103,19 @@ impl SweepRequest {
                 target,
             } => {
                 let n = profile.plane().normal();
-                let sign = if *reversed { -1. } else { 1. };
+                let sign = if reversed { -1. } else { 1. };
                 let direction = ferritecad_types::Vec3::new(n.x * sign, n.y * sign, n.z * sign)?;
-                let bounds = kernel.projected_bounds(*target, direction)?;
-                let request = through_all_request(profile.clone(), *reversed, bounds)?;
-                kernel.extrude(&request, context)
+                let bounds = kernel.projected_bounds(target, direction)?;
+                through_all_request(profile, reversed, bounds)?
             }
-            Self::Extrude(r) => kernel.extrude(r, context),
-            Self::Revolve(r) => kernel.revolve(r, context),
-        }
+            Self::Extrude(r) => r,
+            Self::Revolve(r) => return kernel.revolve(&r, context),
+        };
+        let request = if boolean_tool {
+            request.for_boolean_tool()
+        } else {
+            request
+        };
+        kernel.extrude(&request, context)
     }
 }

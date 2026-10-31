@@ -777,7 +777,7 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              size_t region_count, double base_offset,
                              double top_offset, const double *axis_origin,
                              const double *axis_direction, double angle, const TopoDS_Face *until,
-                             FcOcctCancelFn cancel,
+                             bool prism_tool, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
@@ -1174,7 +1174,8 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       }
       record.shape = prism.Shape();
       // The profile is checked; a prism needs no new geometric revalidation.
-      const auto status = checked_result(record.shape, "extrusion", false, out_error);
+      const auto status = check_result(
+          result_properties(record.shape, false, !prism_tool), "extrusion", out_error);
       if (status != FC_OCCT_OK) return status;
       auto sweep_builder = prism.Prism();
       naming_sweep(record, sweep_builder, edges, segments, faces,
@@ -1312,12 +1313,13 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const size_t *loop_segment_counts,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
-                             double top_offset, FcOcctCancelFn cancel,
+                             double top_offset, int32_t boolean_tool,
+                             FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, base_offset,
-                       top_offset, nullptr, nullptr, 0, nullptr,
+                       top_offset, nullptr, nullptr, 0, nullptr, boolean_tool != 0,
                        cancel, cancel_context, out_shape, out_error);
 }
 
@@ -1390,7 +1392,7 @@ FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *
     }
     const TopoDS_Face until = BRepBuilderAPI_MakeFace(surface, linear).Face();
     return sweep_profile(session, plane, segments, segment_count, loops, loop_count,
-        regions, region_count, 0., sign, nullptr, nullptr, 0., &until,
+        regions, region_count, 0., sign, nullptr, nullptr, 0., &until, false,
         cancel, cancel_context, out_shape, error);
   });
 }
@@ -1405,7 +1407,7 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
   if (!axis_origin || !axis_direction) return FC_OCCT_INVALID_INPUT;
   return sweep_profile(session, plane, segments, segment_count, loop_segment_counts,
                        loop_count, region_loop_counts, region_count, 0, 0,
-                       axis_origin, axis_direction, angle, nullptr,
+                       axis_origin, axis_direction, angle, nullptr, false,
                        cancel, cancel_context, out_shape, out_error);
 }
 

@@ -21,6 +21,12 @@ checks that the trusted result contains solids and no free lower dimensions, and
 the complete incidence before publishing anything; geometry and member volumes were checked
 when the record was created.
 
+The feature result is checked once where it is built. NewBody checks its sweep;
+Add/Cut/Intersect check the boolean result, and KeepSolids checks its retained set.
+A prism used only as the same feature's boolean tool defers member-volume checks to
+that result. Existing Revolve and up-to-surface tool validation remains unchanged.
+Boolean removed-volume accounting reuses the checked output member-volume sum.
+
 ## Requests and refusals
 
 Add to a Body using the ordinary transactional `edit` request:

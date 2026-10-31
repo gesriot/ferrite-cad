@@ -272,13 +272,15 @@ FcOcctStatus fc_occt_solid_count(FcOcctSession *session, uint64_t shape,
  *
  * On success `*out_shape` receives a session-local shape identifier.
  */
+/* A boolean_tool prism defers member-volume checks to its consuming feature result. */
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count,
                              const size_t *loop_segment_counts,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
-                             double top_offset, FcOcctCancelFn cancel,
+                             double top_offset, int32_t boolean_tool,
+                             FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 

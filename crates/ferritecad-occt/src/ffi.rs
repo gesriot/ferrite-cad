@@ -235,6 +235,7 @@ unsafe extern "C" {
         region_count: usize,
         base_offset: f64,
         top_offset: f64,
+        boolean_tool: i32,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
@@ -788,6 +789,7 @@ impl Session {
     }
 
     /// Region counts partition loops; loop counts partition segments.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn extrude(
         &mut self,
         plane: &Plane,
@@ -795,6 +797,7 @@ impl Session {
         partition: ProfilePartition<'_>,
         base_offset: f64,
         top_offset: f64,
+        boolean_tool: bool,
         cancel: &CancelToken,
     ) -> Result<u64> {
         let ProfilePartition {
@@ -836,6 +839,7 @@ impl Session {
                 regions.len(),
                 base_offset,
                 top_offset,
+                i32::from(boolean_tool),
                 Some(cancel_trampoline),
                 context,
                 &mut shape,
@@ -2159,6 +2163,7 @@ mod tests {
                 },
                 0.0,
                 15.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("one closed curve is a whole profile");
@@ -2233,6 +2238,7 @@ mod tests {
                 },
                 0.0,
                 15.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("a circle inside a circle bounds a region with a hole");
@@ -2351,6 +2357,7 @@ mod tests {
                     },
                     0.0,
                     3.0,
+                    false,
                     &CancelToken::new(),
                 )
                 .expect_err(what);
@@ -2373,6 +2380,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("an off-centre hole is still a hole");
@@ -2415,6 +2423,7 @@ mod tests {
                     },
                     0.0,
                     2.0,
+                    false,
                     &CancelToken::new(),
                 )
                 .expect_err(&format!("{counts:?}"));
@@ -2437,6 +2446,7 @@ mod tests {
                     1,
                     0.0,
                     2.0,
+                    0,
                     None,
                     std::ptr::null_mut(),
                     &mut shape,
@@ -2464,6 +2474,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect_err("a chain of two circles is not a loop");
@@ -2479,6 +2490,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("one loop of four lines");
@@ -2511,6 +2523,7 @@ mod tests {
                     },
                     0.0,
                     2.0,
+                    false,
                     &CancelToken::new()
                 )
                 .is_err()
@@ -2531,6 +2544,7 @@ mod tests {
                         },
                         0.0,
                         2.0,
+                        false,
                         &CancelToken::new()
                     )
                     .is_err()
@@ -2557,6 +2571,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("builds a prism");
@@ -2623,6 +2638,7 @@ mod tests {
                 },
                 0.0,
                 2.0,
+                false,
                 &CancelToken::new(),
             )
             .expect("builds a prism");
@@ -2804,6 +2820,7 @@ mod tests {
                 },
                 0.0,
                 h,
+                false,
                 &CancelToken::new(),
             )
             .expect("a plate");

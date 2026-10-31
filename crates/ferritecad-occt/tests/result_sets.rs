@@ -542,3 +542,62 @@ fn each_boolean_consumes_the_whole_predecessor_set() {
         built.release_all(&mut kernel);
     }
 }
+
+#[test]
+fn a_degenerate_prism_tool_is_refused_by_the_boolean_result_checks() {
+    if !native() {
+        return;
+    }
+    use ferritecad_kernel::{
+        BooleanKind, BooleanRequest, ExtrudeExtent, ExtrudeRequest, SketchPlane,
+    };
+    use ferritecad_types::ErrorKind;
+
+    let root = tempfile::tempdir().expect("directory");
+    let mut doc = Document::create(root.path().join("thin-tool.fcad")).expect("document");
+    let p = plate(&mut doc).expect("plate");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let built = build(&doc, &mut kernel);
+    let target = built.shape(p.base).expect("plate result");
+    let before = kernel.encode_shape(target).expect("target bytes");
+    let sketch = rectangle(p.plane, [5., 5.], [10., 10.]).expect("simple profile");
+    let profile =
+        ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), SketchPlane::world_xy())
+            .expect("profile")
+            .profile;
+    // Positive public input below the native geometric tolerance produces a degenerate tool.
+    let request = ExtrudeRequest::new(
+        profile,
+        ExtrudeExtent::blind(1.0e-10).expect("positive extent"),
+        false,
+    )
+    .for_boolean_tool();
+    let tool = kernel.extrude(&request, &context).expect("temporary prism");
+    assert!(!kernel.is_valid(tool.shape).expect("independent BRepCheck"));
+    let live = kernel.live_shape_count();
+    for (kind, expected, detail) in [
+        (BooleanKind::Cut, ErrorKind::Kernel, "invalid solid"),
+        (
+            BooleanKind::Common,
+            ErrorKind::Unsupported,
+            "intersect result is empty",
+        ),
+    ] {
+        let request = BooleanRequest::new(kind, target, tool.shape).expect("boolean");
+        let error = kernel
+            .boolean(&request, &context)
+            .expect_err("no valid result");
+        assert_eq!(error.kind(), expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(
+            kernel.live_shape_count(),
+            live,
+            "no result published or leaked"
+        );
+        assert_eq!(kernel.encode_shape(target).expect("target bytes"), before);
+    }
+    kernel.release(tool.shape);
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+}

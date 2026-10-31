@@ -625,6 +625,7 @@ impl GeometryKernel for OcctKernel {
             },
             base_offset,
             top_offset,
+            request.is_boolean_tool(),
             context.cancel(),
         )?;
         context.progress().report(1.0);
