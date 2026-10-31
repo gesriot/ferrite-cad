@@ -560,6 +560,26 @@ fn a_degenerate_prism_tool_is_refused_by_the_boolean_result_checks() {
     let context = OperationContext::default();
     let built = build(&doc, &mut kernel);
     let target = built.shape(p.base).expect("plate result");
+    let face = *built.topology().features[&p.base]
+        .bindings
+        .iter()
+        .find(|(name, members)| name.kind == SubShapeKind::Face && members.len() == 1)
+        .expect("named singleton face")
+        .1
+        .first()
+        .expect("singleton");
+    // Freeze the input's container-membership flag before comparing serialized bytes.
+    let container = kernel
+        .keep_solids(
+            target,
+            &[ferritecad_kernel::SolidWitness {
+                reference: ferritecad_types::StableEntityId::new(),
+                faces: vec![face],
+            }],
+            &context,
+        )
+        .expect("containing result");
+    kernel.release(container.shape);
     let before = kernel.encode_shape(target).expect("target bytes");
     let sketch = rectangle(p.plane, [5., 5.], [10., 10.]).expect("simple profile");
     let profile =
