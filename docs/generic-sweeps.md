@@ -5,6 +5,8 @@ other operations consume the saved `previous` feature. The kernel combines the t
 and the swept tool with Fuse, Cut or Common. A result must contain exactly one valid
 solid. Empty intersections, disconnected additions and cuts splitting the target are
 feature failures. A Cut that removes no material also fails.
+[ADR 0008](decisions/0008-multibody-results.md) will replace the one-solid limit with
+complete result sets and explicit selection of retained pieces.
 
 Extrude supports Blind and Symmetric in either normal direction for all four operations.
 Symmetric extends the specified distance on each side of the sketch plane.

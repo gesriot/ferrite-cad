@@ -157,3 +157,4 @@ Much of the narrow implementation, its tests and its slice documentation will
 be deleted as the generic paths replace it. Older documents may stop opening
 without a compatibility warning: the program has not been distributed yet.
 Task 04 will measure edit response time on larger models before optimisation.
+[ADR 0008](0008-multibody-results.md) defines result sets and piece selection before task 12.
