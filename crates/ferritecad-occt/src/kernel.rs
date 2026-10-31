@@ -731,8 +731,20 @@ impl GeometryKernel for OcctKernel {
 
     fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
         let raw = self.raw(shape)?;
-        let (count, volume, valid, free) = self.session.solid_properties(raw)?;
-        checked_solids(count, volume, valid, free)
+        let (count, volume, valid, free, null) = self.session.solid_properties(raw)?;
+        use ferritecad_kernel::NamingOperation;
+        let operation = match self.naming_operations.get(&shape) {
+            Some(NamingOperation::Extrude) => "extrusion",
+            Some(NamingOperation::Revolve) => "revolution",
+            Some(NamingOperation::Cut) => "cut",
+            Some(NamingOperation::Fillet) => "fillet",
+            Some(NamingOperation::Chamfer) => "chamfer",
+            Some(NamingOperation::Fuse) => "add",
+            Some(NamingOperation::Common) => "intersect",
+            Some(NamingOperation::KeepSolids) => "KeepSolids",
+            None => "restored operation",
+        };
+        checked_solids(operation, count, volume, valid, free, null)
     }
 
     fn keep_solids(
@@ -1169,9 +1181,28 @@ fn check_witness_owners(
     }
 }
 
-fn checked_solids(count: usize, volume: f64, valid: bool, free: bool) -> Result<()> {
+fn checked_solids(
+    operation: &str,
+    count: usize,
+    volume: f64,
+    valid: bool,
+    free: bool,
+    null: bool,
+) -> Result<()> {
+    if null {
+        return Err(CadError::kernel(format!(
+            "the {operation} returned a null shape"
+        )));
+    }
+    if free {
+        return Err(CadError::kernel(
+            "the kernel returned free shapes outside its solids",
+        ));
+    }
     if count == 0 {
-        return Err(CadError::kernel("the kernel result contains no solid"));
+        return Err(CadError::unsupported(format!(
+            "the {operation} result is empty and contains no solid"
+        )));
     }
     if !volume.is_finite() || volume <= 0. {
         return Err(CadError::kernel("solid volume must be finite and positive"));
@@ -1179,31 +1210,12 @@ fn checked_solids(count: usize, volume: f64, valid: bool, free: bool) -> Result<
     if !valid {
         return Err(CadError::kernel("the kernel returned an invalid solid"));
     }
-    if free {
-        return Err(CadError::kernel(
-            "the kernel returned free shapes outside its solids",
-        ));
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod solid_tests {
     use super::checked_solids;
-
-    #[test]
-    fn reject_free_shapes_and_invalid_members_even_with_other_valid_solids() {
-        assert!(
-            checked_solids(2, 10., true, true)
-                .expect_err("free shape")
-                .to_string()
-                .contains("free shapes")
-        );
-        for volume in [0., -1., f64::NAN, f64::INFINITY] {
-            assert!(checked_solids(2, volume, true, false).is_err());
-        }
-        assert!(checked_solids(2, 10., false, false).is_err());
-    }
 
     #[test]
     fn each_face_witness_requires_one_owner() {
@@ -1226,21 +1238,49 @@ mod solid_tests {
     }
 
     #[test]
-    fn reject_empty_non_finite_and_invalid_kernel_solids() {
-        assert!(checked_solids(1, 1., true, false).is_ok());
-        // Separate profile regions sweep into separate solids, as with Blind.
-        assert!(checked_solids(2, 1., true, false).is_ok());
-        for (count, volume, valid, reason) in [
-            (0, 1., true, "no solid"),
-            (1, f64::NAN, true, "finite and positive"),
-            (1, f64::INFINITY, true, "finite and positive"),
-            (1, 0., true, "finite and positive"),
-            (1, -1., true, "finite and positive"),
-            (1, 1., false, "invalid solid"),
+    fn classify_every_result_validation_branch() {
+        use ferritecad_types::ErrorKind::{Kernel, Unsupported};
+        for count in [1, 2] {
+            checked_solids("cut", count, 1., true, false, false).expect("valid set");
+        }
+        for (count, volume, valid, free, null, kind, reason) in [
+            (
+                0,
+                0.,
+                true,
+                false,
+                false,
+                Unsupported,
+                "cut result is empty",
+            ),
+            (0, 0., true, false, true, Kernel, "null shape"),
+            (
+                2,
+                f64::NAN,
+                true,
+                false,
+                false,
+                Kernel,
+                "finite and positive",
+            ),
+            (
+                2,
+                f64::INFINITY,
+                true,
+                false,
+                false,
+                Kernel,
+                "finite and positive",
+            ),
+            (2, 0., true, false, false, Kernel, "finite and positive"),
+            (2, -1., true, false, false, Kernel, "finite and positive"),
+            (2, 1., false, false, false, Kernel, "invalid solid"),
+            (2, 1., true, true, false, Kernel, "free shapes"),
+            (0, 0., true, true, false, Kernel, "free shapes"),
         ] {
-            let error =
-                checked_solids(count, volume, valid, false).expect_err("refuse kernel answer");
-            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+            let error = checked_solids("cut", count, volume, valid, free, null)
+                .expect_err("refuse kernel answer");
+            assert_eq!(error.kind(), kind);
             assert!(error.to_string().contains(reason), "{error}");
         }
     }

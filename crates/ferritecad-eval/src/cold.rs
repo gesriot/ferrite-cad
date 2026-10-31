@@ -365,6 +365,7 @@ fn run<K: GeometryKernel + ?Sized>(
         let selection = match &object.payload {
             ObjectPayload::Extrude(e) => Some((e.profile, &e.regions)),
             ObjectPayload::Revolve(r) => Some((r.profile, &r.regions)),
+            ObjectPayload::KeepSolids(_) => None,
             _ => None,
         };
         if let Some((sketch_id, selected)) = selection

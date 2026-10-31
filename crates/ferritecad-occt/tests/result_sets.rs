@@ -389,3 +389,156 @@ fn edge_operation_on_a_set_refuses_with_its_solid_count() {
             .expect("remove test consumer");
     }
 }
+
+#[test]
+fn damaged_keep_archive_is_rejected_atomically_and_replaced() {
+    if !native() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let mut doc = Document::create(root.path().join("keep.fcad")).expect("document");
+    let p = plate(&mut doc).expect("plate");
+    let keep = ObjectId::new();
+    doc.write_changes(&[EditChange::AddFeature {
+        object: keep,
+        body: p.body,
+        name: None,
+        feature: FeatureAddition::KeepSolids {
+            selection: KeepSelection::All,
+        },
+    }])
+    .expect("KeepSolids");
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let mut cache = CacheStore::open(
+        root.path().join("cache"),
+        doc.meta().document_id,
+        kernel.identity().id(),
+        kernel.identity().version(),
+    )
+    .expect("cache");
+    let (cold, _) = rebuild_cached(&doc, &mut kernel, &mut cache, &context).expect("prime");
+    assert!(cold.all_built());
+    let expected = signature(&cold);
+    let ObjectPayload::Extrude(base) = doc.object(p.base).expect("object").expect("base").payload
+    else {
+        unreachable!("plate starts with Extrude")
+    };
+    let request = ferritecad_eval::extrude_request(
+        &base,
+        cold.profile(base.profile)
+            .expect("resolved profile")
+            .clone(),
+        None,
+    )
+    .expect("request");
+    let previous = cold.topology().cache_key(
+        p.base,
+        ferritecad_eval::extrude_archive_key(kernel.identity(), &request, &context),
+    );
+    let payload = KeepSolids {
+        previous: p.base,
+        selection: KeepSelection::All,
+    };
+    let mut hash = ferritecad_types::CanonicalHasher::new("eval.keep-solids.named");
+    hash.algorithm_version(1);
+    kernel.identity().feed(&mut hash);
+    hash.field("target").hash(&previous);
+    hash.field("payload").hash(&payload.cache_key());
+    let key = cold.topology().cache_key(keep, hash.finish());
+    let kind = ferritecad_topology::ARCHIVE_CACHE_KIND;
+    assert!(cache.get(keep, key, kind).expect("stored record").is_some());
+    cold.release_all(&mut kernel);
+    cache
+        .put(keep, key, kind, b"damaged named result")
+        .expect("corrupt inner record");
+    for outcome in [CacheOutcome::Rejected, CacheOutcome::Hit] {
+        let (actual, events) =
+            rebuild_cached(&doc, &mut kernel, &mut cache, &context).expect("rebuild after damage");
+        assert!(actual.all_built());
+        assert_eq!(
+            events
+                .iter()
+                .find(|e| e.feature == keep)
+                .expect("selection event")
+                .outcome,
+            outcome
+        );
+        assert_eq!(
+            events
+                .iter()
+                .find(|e| e.feature == p.base)
+                .expect("base event")
+                .outcome,
+            CacheOutcome::Hit
+        );
+        assert_eq!(signature(&actual), expected);
+        assert!(actual.topology().features[&keep].derivations.is_empty());
+        measure(&actual, keep, &mut kernel, 1, 24000.);
+        actual.release_all(&mut kernel);
+        assert_eq!(
+            kernel.live_shape_count(),
+            0,
+            "no partially restored shape survives"
+        );
+    }
+}
+
+#[test]
+fn each_boolean_consumes_the_whole_predecessor_set() {
+    if !native() {
+        return;
+    }
+    for operation in [
+        SolidOperation::Add,
+        SolidOperation::Cut,
+        SolidOperation::Intersect,
+    ] {
+        let root = tempfile::tempdir().expect("directory");
+        let mut doc = Document::create(root.path().join("set.fcad")).expect("document");
+        let p = plate(&mut doc).expect("plate");
+        let mut kernel = OcctKernel::new().expect("kernel");
+        let s = slot(&doc, &p, &mut kernel).expect("split");
+        doc.write_changes(&s.changes)
+            .expect("complete predecessor set");
+        let mut circles =
+            ferritecad_fixtures::datum_planes::circle(p.plane, [15., 20.], 2.).expect("first tool");
+        circles.curves.extend(
+            ferritecad_fixtures::datum_planes::circle(p.plane, [45., 20.], 2.)
+                .expect("second tool")
+                .curves,
+        );
+        let (profile, feature) = (ObjectId::new(), ObjectId::new());
+        let distance = if operation == SolidOperation::Cut {
+            4.
+        } else {
+            14.
+        };
+        doc.write_changes(&[
+            EditChange::AddSketch {
+                object: profile,
+                name: None,
+                sketch: circles,
+            },
+            EditChange::AddFeature {
+                object: feature,
+                body: p.body,
+                name: None,
+                feature: extrusion(profile, operation, distance).expect("boolean"),
+            },
+        ])
+        .expect("consumer");
+        let built = build(&doc, &mut kernel);
+        let pi = std::f64::consts::PI;
+        let expected = match operation {
+            SolidOperation::Add => 22400. + 32. * pi,
+            SolidOperation::Cut => 22400. - 32. * pi,
+            SolidOperation::Intersect => 80. * pi,
+            _ => unreachable!("tested boolean operations"),
+        };
+        measure(&built, feature, &mut kernel, 2, expected);
+        assert_eq!(built.shape(p.body), built.shape(feature));
+        warm(&doc, &built, &mut kernel);
+        built.release_all(&mut kernel);
+    }
+}

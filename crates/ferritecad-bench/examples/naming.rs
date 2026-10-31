@@ -112,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (previous, edges) = match object.payload {
                     ObjectPayload::Fillet(f) => (f.previous, f.edges),
                     ObjectPayload::Chamfer(c) => (c.previous, c.edges),
+                    ObjectPayload::KeepSolids(_) => continue, // This probe counts edge uses.
                     _ => continue,
                 };
                 model.resolve(

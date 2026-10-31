@@ -173,6 +173,7 @@ impl ModelNaming {
             let profile = match &object.payload {
                 ObjectPayload::Extrude(e) => Some(e.profile),
                 ObjectPayload::Revolve(r) => Some(r.profile),
+                ObjectPayload::KeepSolids(_) => None,
                 _ => None,
             };
             if let Some(profile) = profile {
@@ -207,6 +208,7 @@ impl ModelNaming {
                 ObjectPayload::Revolve(_) => {
                     self.sweeps.insert(object.id, NamingOperation::Revolve);
                 }
+                ObjectPayload::KeepSolids(_) => {}
                 _ => {}
             }
             let operation = match &object.payload {

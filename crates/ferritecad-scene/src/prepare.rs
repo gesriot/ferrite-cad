@@ -860,6 +860,7 @@ fn draws(object: &ObjectRecord) -> bool {
     match &object.payload {
         ObjectPayload::Body(body) => body.tip_feature.is_some(),
         ObjectPayload::ImportedStep(_) => true,
+        ObjectPayload::KeepSolids(_) => false, // Its Body presents the complete result.
         _ => false,
     }
 }

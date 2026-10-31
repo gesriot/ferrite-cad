@@ -291,7 +291,7 @@ fn split_face_one_refuses_two_and_explicit_family_builds_an_independent_body() {
 }
 
 #[test]
-fn intersect_accepts_referenced_ends_and_vertex_refuses_behind_or_multiple_solids() {
+fn intersect_accepts_referenced_ends_and_vertex_builds_islands_but_refuses_behind() {
     if !native() {
         return;
     }
@@ -351,7 +351,7 @@ fn intersect_accepts_referenced_ends_and_vertex_refuses_behind_or_multiple_solid
         EditChange::constant(f.plane, ExpressionSlot::DatumOffset, 20.).expect("restore"),
     ])
     .expect("move");
-    let (two, refused) = (ObjectId::new(), ObjectId::new());
+    let (two, islands) = (ObjectId::new(), ObjectId::new());
     let mut profile = circle(base.plane, [70., 20.], 2.).expect("first island");
     profile.curves.extend(
         circle(base.plane, [80., 20.], 2.)
@@ -367,7 +367,7 @@ fn intersect_accepts_referenced_ends_and_vertex_refuses_behind_or_multiple_solid
         EditChange::AddBody {
             object: ObjectId::new(),
             name: None,
-            feature_object: refused,
+            feature_object: islands,
             feature_name: None,
             feature: FeatureAddition::Extrude {
                 profile: two,
@@ -379,12 +379,12 @@ fn intersect_accepts_referenced_ends_and_vertex_refuses_behind_or_multiple_solid
         },
     ])
     .expect("two islands");
-    let result = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("rebuild");
-    assert_eq!(result.report().failed.len(), 1);
-    assert!(
-        result.report().failed[0]
-            .message
-            .contains("separate solids")
-    );
+    let result = built(&doc, &mut kernel);
+    let shape = result.shape(islands).expect("two islands");
+    assert_eq!(kernel.solid_count(shape).expect("members"), 2);
+    kernel.validate_solids(shape).expect("valid members");
+    let expected = 2. * std::f64::consts::PI * 4. * 30.;
+    assert!((kernel.shape_stats(shape).expect("volume").1 - expected).abs() < 1e-6);
+    warm(&doc, &mut kernel, root.path(), &result);
     result.release_all(&mut kernel);
 }

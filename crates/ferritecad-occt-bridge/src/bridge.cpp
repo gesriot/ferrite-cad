@@ -1138,14 +1138,17 @@ bool has_free_shapes(const TopoDS_Shape &shape) {
 }
 
 FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
-    size_t *count, double *minimum_volume, int32_t *valid, int32_t *free_shapes,
+    size_t *count, double *minimum_volume, int32_t *valid,
+    int32_t *free_shapes, int32_t *null_shape,
     FcOcctError *error) noexcept {
   return guarded(error, [&]() -> FcOcctStatus {
-    if (!session || !count || !minimum_volume || !valid || !free_shapes)
+    if (!session || !count || !minimum_volume || !valid || !free_shapes || !null_shape)
       return FC_OCCT_INVALID_INPUT;
     const auto found = session->shapes.find(shape);
     if (found == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
     const auto &result = found->second.shape;
+    *null_shape = result.IsNull();
+    if (*null_shape) return FC_OCCT_OK;
     TopTools_IndexedMapOfShape solids;
     TopExp::MapShapes(result, TopAbs_SOLID, solids);
     *count = static_cast<size_t>(solids.Extent());
@@ -1423,7 +1426,11 @@ FcOcctStatus fc_occt_boolean(FcOcctSession *session, int32_t kind,
     GProp_GProps after;
     BRepGProp::VolumeProperties(result_shape, after);
     const double removed = before.Mass() - after.Mass();
-    if (!std::isfinite(removed) || (kind == 0 && removed <= 0.0)) {
+    if (!std::isfinite(removed)) {
+      write_error(out_error, "the " + operation + " produced a non-finite volume change");
+      return FC_OCCT_KERNEL;
+    }
+    if (kind == 0 && removed <= 0.0) {
       write_error(out_error,
                   "the tool removed no material, so this is not a cut");
       return FC_OCCT_UNSUPPORTED;
@@ -2342,6 +2349,10 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     }
     TopTools_IndexedMapOfShape solids;
     TopExp::MapShapes(produced, TopAbs_SOLID, solids);
+    if (solids.IsEmpty()) {
+      write_error(out_error, "the " + what + " result is empty and contains no solid");
+      return FC_OCCT_UNSUPPORTED;
+    }
     if (solids.Extent() != 1) {
       write_error(out_error, "a " + what + " must leave exactly one solid, and this left " +
                                  std::to_string(solids.Extent()));

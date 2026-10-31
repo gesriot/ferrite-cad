@@ -189,6 +189,7 @@ unsafe extern "C" {
         minimum_volume: *mut f64,
         valid: *mut i32,
         free_shapes: *mut i32,
+        null_shape: *mut i32,
         error: *mut RawError,
     ) -> i32;
     #[allow(clippy::too_many_arguments)]
@@ -647,7 +648,11 @@ impl Session {
         Ok(Self { raw })
     }
 
-    pub(crate) fn solid_properties(&mut self, shape: u64) -> Result<(usize, f64, bool, bool)> {
+    pub(crate) fn solid_properties(
+        &mut self,
+        shape: u64,
+    ) -> Result<(usize, f64, bool, bool, bool)> {
+        let mut null = 0;
         let (mut count, mut volume, mut valid, mut free) = (0, 0., 0, 0);
         let mut error = RawError::empty();
         // SAFETY: each output is writable for its declared type; the session is live.
@@ -659,11 +664,12 @@ impl Session {
                 &mut volume,
                 &mut valid,
                 &mut free,
+                &mut null,
                 &mut error,
             )
         };
         interpret(status, &error, "checking every solid in a result")?;
-        Ok((count, volume, valid != 0, free != 0))
+        Ok((count, volume, valid != 0, free != 0, null != 0))
     }
 
     pub(crate) fn keep_solids(

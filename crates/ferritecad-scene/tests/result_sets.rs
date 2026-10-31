@@ -43,10 +43,12 @@ fn one_body_mesh_contains_both_pieces_and_named_selection_removes_only_one() {
                 .collect();
             if xs.iter().all(|x| *x <= 28.) {
                 left += 1;
-            } else if xs.iter().all(|x| *x >= 32.) {
-                right += 1;
             } else {
-                panic!("triangle crosses the empty slot: {xs:?}");
+                assert!(
+                    xs.iter().all(|x| *x >= 32.),
+                    "triangle crosses the empty slot: {xs:?}"
+                );
+                right += 1;
             }
         }
         assert!(left > 0);

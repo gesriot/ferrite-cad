@@ -207,7 +207,8 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
 FcOcctStatus fc_occt_solid_properties(FcOcctSession *session, uint64_t shape,
-    size_t *count, double *minimum_volume, int32_t *valid, int32_t *free_shapes,
+    size_t *count, double *minimum_volume, int32_t *valid,
+    int32_t *free_shapes, int32_t *null_shape,
     FcOcctError *error) FC_OCCT_NOEXCEPT;
 
 /* Each family must have one native owning solid. No owner ordinals are returned.

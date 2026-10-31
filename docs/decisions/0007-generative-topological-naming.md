@@ -185,8 +185,8 @@ Use the sweep's direct `Shape`/`FirstShape`/`LastShape` associations for Extrude
 and Revolve, and the boolean/local-operation generated/modified lists plus
 `IsSame` result membership for Cut, Fillet and Chamfer. Membership corrects the
 known local builder `IsDeleted` answers about surviving edges/vertices; it is
-topological identity, not a geometric match. Filter history to the actual final
-solid, not discarded intermediate results.
+topological identity, not a geometric match. Filter history to the complete actual final
+result set, not discarded intermediate results.
 
 Reject reconstructing provenance from a mesh, rerunning an operation on demand
 or inferring unreported history. Default trait implementations and the mock
@@ -200,7 +200,7 @@ name sets and cardinalities.
 
 ### 8. Cache the B-Rep and its naming graph atomically
 
-Choose one derived cache entry containing the B-Rep, only the feature's owned
+Choose one derived cache entry containing the complete result set B-Rep, only the feature's owned
 derivation nodes, complete name-to-slot sets, ancestry sets and incident-face
 relations. Inherited ancestry rows must be non-empty. Each owned `generated`,
 `boundary` and `split-boundary-history` node requires an ancestry row; that row
@@ -227,7 +227,8 @@ insertion trusts digests computed by `intern`. Before publication, validate each
 owned node's operands and every result name against the owned nodes plus the prepared model
 graph. A missing operand, foreign lineage, duplicate owner, or invalid empty row
 rejects the whole entry. No repeated validation walk of an inherited graph is
-needed. Geometry and names are published together after the full incidence check.
+needed. Geometry and names are published together after the full incidence check and validation
+of every solid member, including finite positive volume and absence of free lower dimensions.
 Record determinism covers naming and incidence sections; B-Rep bytes may differ in
 numeric representation, such as signed zero, while remaining geometrically equal.
 

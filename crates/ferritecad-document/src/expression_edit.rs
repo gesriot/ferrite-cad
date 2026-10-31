@@ -225,6 +225,7 @@ impl EditChange {
     pub fn expression(&self) -> Option<&Expression> {
         match self {
             Self::SetExpression { expression, .. } => Some(expression),
+            Self::SetKeepSelection { .. } => None,
             _ => None,
         }
     }
@@ -481,7 +482,11 @@ fn expressions(
                 }
             }
         }
-        _ => {}
+        ObjectPayload::KeepSolids(_)
+        | ObjectPayload::DatumPlane(crate::DatumPlane::Fixed { .. })
+        | ObjectPayload::Body(_)
+        | ObjectPayload::Parameter(_)
+        | ObjectPayload::ImportedStep(_) => {}
     }
 }
 

@@ -206,6 +206,9 @@ impl GeometryKernel for Observed {
     ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
         self.inner.encode_shape_with(s, e)
     }
+    fn validate_solids(&mut self, shape: ShapeHandle) -> Result<()> {
+        self.inner.validate_solids(shape)
+    }
     fn decode_shape_with(
         &mut self,
         b: &BrepBlob,
