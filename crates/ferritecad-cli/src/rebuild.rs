@@ -157,7 +157,7 @@ fn report(
                 if let Some(names) = built.topology().feature(*id) {
                     // Every face this feature named, its own and the ones it
                     // carried forward, counted where the names live.
-                    write!(line, "solid, {} named faces", names.named_face_count())
+                    write!(line, "{} named faces", names.named_face_count())
                         .expect("writing to a String cannot fail");
                     if extrude.end_condition.support().is_some() {
                         write!(line, "; {}", extrude.end_condition)
@@ -178,12 +178,14 @@ fn report(
                         .len();
                     write!(
                         line,
-                        "solid, {} named faces; radius {} mm on {} edge(s) \
-                         from {} edge reference(s)",
+                        "{} named faces; radius {} mm on {} edge{} \
+                         from {} edge reference{}",
                         names.named_face_count(),
                         fillet.radius_mm.value(),
                         edge_count,
-                        fillet.edges.len()
+                        if edge_count == 1 { "" } else { "s" },
+                        fillet.edges.len(),
+                        if fillet.edges.len() == 1 { "" } else { "s" }
                     )
                     .expect("writing to a String cannot fail");
                 }
@@ -201,12 +203,14 @@ fn report(
                         .len();
                     write!(
                         line,
-                        "solid, {} named faces; distance {} mm on {} edge(s) \
-                         from {} edge reference(s)",
+                        "{} named faces; distance {} mm on {} edge{} \
+                         from {} edge reference{}",
                         names.named_face_count(),
                         chamfer.distance_mm.value(),
                         edge_count,
-                        chamfer.edges.len()
+                        if edge_count == 1 { "" } else { "s" },
+                        chamfer.edges.len(),
+                        if chamfer.edges.len() == 1 { "" } else { "s" }
                     )
                     .expect("writing to a String cannot fail");
                 }
@@ -229,6 +233,6 @@ fn report(
         writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
     }
 
-    out.push_str(&crate::topology::report(built, false)?);
+    out.push_str(&crate::topology::report(built, kernel, false)?);
     Ok(out)
 }

@@ -39,8 +39,8 @@ def main():
         feature = None
         for line in p.stdout.splitlines():
             fields = line.split()
-            if len(fields) == 2 and fields[0] == "feature":
-                feature = fields[1]
+            if line.startswith("  feature "):
+                feature = fields[1].removesuffix(";")
             elif len(fields) == 4 and fields[0].startswith("producer="):
                 row = dict(field.split("=", 1) for field in fields)
                 assert feature is not None and row["entities"] == "1", line

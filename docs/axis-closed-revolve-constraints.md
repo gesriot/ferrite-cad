@@ -26,8 +26,8 @@ def output_names(path):
     feature, names = None, []
     for line in text.splitlines():
         fields = line.split()
-        if len(fields) == 2 and fields[0] == "feature":
-            feature = fields[1]
+        if line.startswith("  feature "):
+            feature = fields[1].removesuffix(";")
         elif len(fields) == 4 and fields[0].startswith("producer="):
             row = dict(field.split("=", 1) for field in fields)
             assert row["producer"] == feature and len(row["digest"]) == 64, line

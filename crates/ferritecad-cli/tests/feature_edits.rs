@@ -402,10 +402,7 @@ fn named_edge_sets_add_replace_round_trip_and_refuse_atomically() {
             .expect("rebuild");
         assert!(rebuild.status.success(), "{rebuild:?}");
         let text = String::from_utf8(rebuild.stdout).expect("text");
-        assert!(
-            text.contains("on 4 edge(s) from 4 edge reference(s)"),
-            "{text}"
-        );
+        assert!(text.contains("on 4 edges from 4 edge references"), "{text}");
         drop(reopened);
         let original = std::fs::read(&replaced).expect("source bytes");
         let mut foreign = references[0];

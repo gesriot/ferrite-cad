@@ -327,7 +327,7 @@ checked = run(["validate", str(copy), "--json"])
 assert checked["ok"] and checked["result"]["valid"], checked
 rebuilt = run(["rebuild", str(copy), "--cold"])
 assert "2 segments, 1 hole(s)" in rebuilt, rebuilt
-assert "solid, 4 named faces" in rebuilt, rebuilt
+assert "4 named faces; 1 solid" in rebuilt, rebuilt
 assert "4 of 4 stored references resolved" in rebuilt, rebuilt
 named = run(["print-topology", str(copy)])
 for curve in (kept["outer_curve_id"], kept["inner_curve_id"]):

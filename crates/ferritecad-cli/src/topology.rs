@@ -20,7 +20,7 @@ pub fn print_topology(args: DocumentArgs) -> Result<ExitCode> {
     } else {
         EXIT_FAILED.into()
     };
-    let text = report(&built, true);
+    let text = report(&built, &mut kernel, true);
     built.release_all(&mut kernel);
     print!("{}", text?);
     Ok(status)
@@ -30,18 +30,7 @@ pub(crate) fn inspect_names(document: &Document) -> String {
     let result = (|| {
         let mut kernel = OcctKernel::new()?;
         let built = rebuild_cold(document, &mut kernel, &OperationContext::default())?;
-        let text = (|| -> Result<String> {
-            let mut text = String::new();
-            for (id, names) in &built.topology().features {
-                if let Some(shape) = names.shape() {
-                    let count = kernel.solid_count(shape)?;
-                    let noun = if count == 1 { "solid" } else { "solids" };
-                    writeln!(text, "feature {id}: {count} {noun}").expect("String write");
-                }
-            }
-            text.push_str(&report(&built, true)?);
-            Ok(text)
-        })();
+        let text = report(&built, &mut kernel, true);
         built.release_all(&mut kernel);
         text
     })();
@@ -52,11 +41,21 @@ pub(crate) fn inspect_names(document: &Document) -> String {
 ///
 /// `rebuild --cold` leaves the derivations out: they list every node of each
 /// name's graph, and a model of fifty bodies would print megabytes of them.
-pub(crate) fn report(built: &RebuildResult, described: bool) -> Result<String> {
+pub(crate) fn report(
+    built: &RebuildResult,
+    kernel: &mut impl GeometryKernel,
+    described: bool,
+) -> Result<String> {
     let model = built.topology();
     let mut text = String::from("topology names\n");
     for (feature, names) in &model.features {
-        writeln!(text, "  feature {feature}").expect("writing to a String cannot fail");
+        write!(text, "  feature {feature}").expect("String write");
+        if let Some(shape) = names.shape() {
+            let count = kernel.solid_count(shape)?;
+            let noun = if count == 1 { "solid" } else { "solids" };
+            write!(text, "; {count} {noun}").expect("String write");
+        }
+        text.push('\n');
         for (name, entities) in &names.bindings {
             let producer = model.producer(&name.digest).ok_or_else(|| {
                 CadError::topology(format!("name {} has no published producer", name.digest))
@@ -117,14 +116,14 @@ mod tests {
                 .iter()
                 .all(|event| event.outcome == CacheOutcome::Miss)
         );
-        let expected = report(&cold, true).expect("cold report");
+        let expected = report(&cold, kernel, true).expect("cold report");
         assert_eq!(expected.matches(" entities=1").count(), 26);
         cold.release_all(kernel);
         let (warm, hits) =
             rebuild_cached(&document, kernel, &mut cache, &context).expect("cached rebuild");
         assert!(warm.all_built());
         assert!(hits.iter().all(|event| event.outcome == CacheOutcome::Hit));
-        assert_eq!(report(&warm, true).expect("warm report"), expected);
+        assert_eq!(report(&warm, kernel, true).expect("warm report"), expected);
         warm.release_all(kernel);
     }
 

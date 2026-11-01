@@ -10,10 +10,12 @@ face witnesses; [ADR 0008](decisions/0008-multibody-results.md) defines the cont
 
 Extrude supports Blind and Symmetric in either normal direction for all four operations.
 Symmetric extends the specified distance on each side of the sketch plane.
-ThroughAll applies to Cut and Intersect: the target's bounds projected onto the sweep
-direction determine the far end plus a named 1 mm margin. The sketch plane may differ
-from the body's first plane. A target entirely behind the plane refuses with “nothing
-ahead”. NewBody and Add refuse ThroughAll in validation. Cached rebuilds use the target
+ThroughAll applies to Cut and Intersect: bounds over every solid of the complete predecessor,
+projected onto the chosen sweep direction, determine the far end plus a named 1 mm margin.
+A member behind the plane cannot shorten that extent. Other Bodies never participate.
+The sketch plane may differ from the body's first plane. A target entirely behind the plane
+refuses with “nothing ahead”. NewBody and Add refuse ThroughAll in validation. Cached rebuilds
+use the target
 key and saved intent without asking the kernel for bounds.
 
 Revolve supports full and partial turns around SketchX, SketchY or any main or
@@ -72,6 +74,8 @@ select all regions and continue through the shared transaction.
 All four Extrude operations also accept `up_to_face` and `up_to_vertex`.
 The `result` UUID names the feature whose result is consumed; the reference's
 `producer` is the feature that minted its name, which may be an earlier feature.
+Face and vertex references resolve across the whole supporting result, including separate
+solids. Solid membership does not relax surface orientation or full-profile coverage.
 The existing `reversed` flag fixes the direction. Neither condition changes direction
 or picks another entity to make a feature build. Revolve is unchanged; “up to next”
 remains separate work.
@@ -89,7 +93,10 @@ there are no sampled rays or centre-point coverage decisions. Every retained sol
 must be valid with finite positive volume. Separate regions give separate solids, as
 with Blind, and a new body retains all of them. The new far caps retain the ordinary
 sweep end-cap provenance, including region refinement; auxiliary geometry creates no
-names. Blind and a parallel face at the same height have identical names, including
+names. A periodic surface seam may split one ending cap into several faces. Their native
+outer-curve boundary witnesses use the existing split-boundary naming rule; an exact cap
+reference then refuses, while its explicit descendant family resolves all pieces.
+Blind and a parallel face at the same height have identical names, including
 edges consumed by Fillet.
 
 `up_to_vertex` projects the named vertex onto the fixed extrusion direction. The
@@ -229,6 +236,9 @@ body = facts["bodies"][0]["body_id"]
 top = reference(source, base, "face", "end cap, producer")
 plane, profile, boss = identity(), identity(), identity()
 roof_plane, roof_profile, roof = identity(), identity(), identity()
+roof_body, extra_profile, roof_set = identity(), identity(), identity()
+extra = sketch(extra_profile, roof_plane)
+extra["curves"][0]["geometry"]["center"]["x"] = mm(120)
 roof_sketch = sketch(roof_profile, roof_plane)
 roof_sketch["curves"][0]["geometry"]["radius"] = mm(10)
 boss_feature = extrusion(profile, "add")
@@ -244,13 +254,17 @@ edit(source, blind, [
     {"kind": "add_datum_plane", "object": roof_plane, "plane": {
         "kind": "offset", "from": plane, "distance": mm(20)}},
     roof_sketch,
-    {"kind": "add_body", "object": identity(), "feature_object": roof,
-     "feature": roof_feature}])
+    {"kind": "add_body", "object": roof_body, "feature_object": roof,
+     "feature": roof_feature}, extra,
+    {"kind": "add_feature", "object": roof_set, "body": roof_body,
+     "feature": extrusion(extra_profile, "add")}])
+results = call("inspect", blind, "--json")["result"]["feature_results"]
+assert next(r["solid_count"] for r in results if r["feature_id"] == roof_set) == 2
 face = reference(blind, roof, "face", "start cap, producer")
 vertex = reference(blind, roof, "vertex", "start cap, producer")
 cap = reference(blind, boss, "face", "end cap, producer")
 probe_plane = identity()
-condition = {"kind": "up_to_face", "result": roof, "face": face, "offset": mm(0)}
+condition = {"kind": "up_to_face", "result": roof_set, "face": face, "offset": mm(0)}
 ended = root / "ended.fcad"
 edit(blind, ended, [
     {"kind": "set_end_condition", "object": boss, "end_condition": condition},
@@ -276,8 +290,23 @@ edit(ended, offset, [{"kind": "set_expression", "object": boss,
 height(offset, 28, "up_to_face")
 vertex_end = root / "vertex.fcad"
 edit(offset, vertex_end, [{"kind": "set_end_condition", "object": boss,
-                         "end_condition": {"kind": "up_to_vertex", "result": roof,
+                         "end_condition": {"kind": "up_to_vertex", "result": roof_set,
                                            "vertex": vertex}}])
 height(vertex_end, 30, "up_to_vertex")
+through_profile, through_feature = identity(), identity()
+through = sketch(through_profile, roof_plane)
+through["curves"][0]["geometry"]["radius"] = mm(1)
+other = sketch(identity(), roof_plane)["curves"][0]
+other["geometry"]["radius"] = mm(1)
+other["geometry"]["center"]["x"] = mm(120)
+through["curves"].append(other)
+through_result = root / "through-set.fcad"
+cut = extrusion(through_profile, "cut")
+cut["end_condition"] = {"kind": "through_all"}
+edit(vertex_end, through_result, [through,
+    {"kind": "add_feature", "object": through_feature, "body": roof_body, "feature": cut}])
+results = call("inspect", through_result, "--json")["result"]["feature_results"]
+assert next(r["solid_count"] for r in results if r["feature_id"] == through_feature) == 2
+call("rebuild", through_result, "--cold")
 print("UP_TO_END_OK face, outward offset, vertex and cap height")
 ```

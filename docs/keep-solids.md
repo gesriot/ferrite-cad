@@ -67,8 +67,11 @@ references together. There is no new window selection form yet.
 - `kernel`: a null shape, invalid member, non-finite/non-positive member volume, or free lower
   dimensions outside solids. A positive total volume cannot hide an invalid member.
 
-Fillet/Chamfer on multiple solids still refuse with the observed count. Referenced ends
-and ThroughAll over whole sets, new selection forms and export evidence are later steps.
+Fillet/Chamfer can edit named edges in one or several retained solids. Referenced ends and
+Face datums resolve across the complete support result; ThroughAll covers all forward members
+of the predecessor with its existing margin. A later Add may merge the selected piece with new
+material and a Cut may split it again: the face witness keeps its existing meaning, not an old
+piece volume or ordinal. New window selection forms and export evidence remain separate work.
 
 ## Executable recipe
 
@@ -157,6 +160,20 @@ def count(path):
 
 
 assert count(all_pieces) == 2
+# A later edge edit consumes the set without requiring a piece selection first.
+plate_edges = {digest: {"producer": producer, "kind": "edge", "digest": digest, "selection": "one"}
+               for producer, digest in re.findall(
+                   rf"producer=({base}) kind=edge digest=([0-9a-f]{{64}}) entities=1",
+                   call("print-topology", all_pieces))}
+assert len(plate_edges) == 12
+rounded = root / "rounded.fcad"
+rounding = identity()
+edit(all_pieces, rounded, [{"kind": "add_feature", "object": rounding, "body": body,
+                          "feature": {"kind": "fillet", "edges": list(plate_edges.values()),
+                                      "radius": mm(0.5)}}])
+results = call("inspect", rounded, "--json")["result"]["feature_results"]
+assert next(r["solid_count"] for r in results if r["feature_id"] == rounding) == 2
+all_pieces = rounded
 selected = root / "selected.fcad"
 edit(all_pieces, selected, [{"kind": "set_keep_selection", "object": keep,
                             "selection": {"kind": "containing_faces", "faces": witnesses}}])

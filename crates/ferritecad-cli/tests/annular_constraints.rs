@@ -860,7 +860,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
         .output()
         .expect("rebuild");
     let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
-    assert!(text.contains("solid, 4 named faces"), "{text}");
+    assert!(text.contains("4 named faces; 1 solid"), "{text}");
     assert!(
         text.lines()
             .filter(|line| line.contains(" kind=face "))

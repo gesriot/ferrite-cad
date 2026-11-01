@@ -471,21 +471,34 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
   for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
     naming_link(record, 0, 1, 6, 2, it.Value());
   naming_link(record, 0, 1, 6, 2, until);
-  // As in naming_sweep, each region's far cap is refined by its outer loop; the
-  // far caps are now the end-surface pieces of the solid holding that region.
-  if (faces.size() > 1) {
+  // A periodic end surface may split one region's cap at its seam. Forward
+  // the actual outer-curve witnesses incident on every cap, including the
+  // start cap, without assuming that two caps means one region and vice versa.
+  TopTools_IndexedMapOfShape caps;
+  const size_t history_size = record.naming_history.size();
+  for (size_t i = 0; i < history_size; i += 6) {
+    const auto *row = record.naming_history.data() + i;
+    if (row[2] == 6 && row[3] == 2) caps.Add(record.sub_shapes[row[4]]);
+  }
+  if (caps.Extent() > 2) {
+    std::vector<size_t> outer_curves;
     size_t loop = 0, segment = 0;
     for (size_t r = 0; r < faces.size(); ++r) {
-      for (int i = 1; i <= selected.Extent(); ++i) {
-        TopTools_IndexedMapOfShape members;
-        TopExp::MapShapes(selected(i), TopAbs_FACE, members);
-        if (!members.Contains(sweep.FirstShape(faces[r]))) continue;
-        for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
-          if (members.Contains(it.Value()))
-            for (size_t k = 0; k < loops[loop]; ++k)
-              naming_link(record, 0, segment + k, 7, 2, it.Value());
-      }
+      for (size_t k = 0; k < loops[loop]; ++k) outer_curves.push_back(segment + k);
       for (size_t i = 0; i < regions[r]; ++i) segment += loops[loop++];
+    }
+    for (int c = 1; c <= caps.Extent(); ++c) {
+      TopTools_IndexedMapOfShape boundary;
+      TopExp::MapShapes(caps(c), TopAbs_EDGE, boundary);
+      for (const auto curve : outer_curves) {
+        bool incident = false;
+        for (size_t i = 0; i < history_size; i += 6) {
+          const auto *row = record.naming_history.data() + i;
+          if (row[1] == curve && row[2] == 3 && row[3] == 2 && row[5] == 1)
+            incident |= boundary.Contains(record.sub_shapes[row[4]]);
+        }
+        if (incident) naming_link(record, 0, curve, 7, 2, caps(c));
+      }
     }
   }
   return FC_OCCT_OK;
@@ -2347,11 +2360,9 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
     const ShapeRecord &source = found->second;
     TopTools_IndexedMapOfShape input_solids;
     TopExp::MapShapes(source.shape, TopAbs_SOLID, input_solids);
-    if (input_solids.Extent() != 1) {
-      write_error(out_error, "edge operations on a result with " +
-          std::to_string(input_solids.Extent()) + " solids are not supported yet");
-      return FC_OCCT_UNSUPPORTED;
-    }
+    TopTools_IndexedDataMapOfShapeListOfShape owners;
+    if (input_solids.Extent() > 1)
+      TopExp::MapShapesAndUniqueAncestors(source.shape, TopAbs_EDGE, TopAbs_SOLID, owners);
     std::vector<TopoDS_Edge> selected_edges;
     for (size_t i = 0; i < edge_count; ++i) {
       const uint64_t edge = edges[i];
@@ -2366,6 +2377,12 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
         write_error(out_error, "sub-shape " + std::to_string(edge) +
                                    " of shape " + std::to_string(target) +
                                    " is not an edge");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      if (owners.Contains(selected) && owners.FindFromKey(selected).Extent() > 1) {
+        write_error(out_error, "a selected edge belongs to " +
+            std::to_string(owners.FindFromKey(selected).Extent()) +
+            " solids; edge operations require one owning solid per edge");
         return FC_OCCT_INVALID_INPUT;
       }
       selected_edges.push_back(TopoDS::Edge(selected));
@@ -2417,11 +2434,6 @@ static FcOcctStatus edge_operation(bool chamfer, FcOcctSession *session,
             " produced a shape Open CASCADE reports as invalid; it "
             "is refused rather than returned");
     if (status != FC_OCCT_OK) return status;
-    if (facts.count != 1) {
-      write_error(out_error, "a " + what + " must leave exactly one solid, and this left " +
-                                 std::to_string(facts.count));
-      return FC_OCCT_KERNEL;
-    }
     const double removed = before.Mass() - facts.volume;
     if (!std::isfinite(removed)) {
       write_error(out_error, "the " + what + " produced a non-finite volume change");

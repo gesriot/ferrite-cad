@@ -7,6 +7,9 @@ use ferritecad_occt::OcctKernel;
 use ferritecad_types::ObjectId;
 use std::collections::BTreeMap;
 
+#[path = "support/set_consumers.rs"]
+mod set_consumers;
+
 fn native() -> bool {
     ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
 }
@@ -329,64 +332,97 @@ fn disconnected_sweeps_and_booleans_return_every_valid_member() {
 }
 
 #[test]
-fn edge_operation_on_a_set_refuses_with_its_solid_count() {
+fn edge_operations_on_one_or_both_pieces_preserve_names_geometry_and_cache() {
     if !native() {
         return;
     }
-    let root = tempfile::tempdir().expect("root");
-    let mut doc = Document::create(root.path().join("edge.fcad")).expect("document");
-    let p = plate(&mut doc).expect("plate");
-    let mut kernel = OcctKernel::new().expect("kernel");
-    let s = slot(&doc, &p, &mut kernel).expect("slot");
-    doc.write_changes(&s.changes).expect("slot");
-    let built = build(&doc, &mut kernel);
-    let name = *built.topology().features[&s.keep]
-        .bindings
-        .iter()
-        .find(|(name, members)| name.kind == SubShapeKind::Edge && members.len() == 1)
-        .expect("unique edge")
-        .0;
-    let edge = EntityReference::new(ReferenceMeaning {
-        producer: built.topology().producer(&name.digest).expect("producer"),
-        kind: EntityKind::Edge,
-        digest: name.digest,
-        selection: Selection::One,
-    });
-    built.release_all(&mut kernel);
     for chamfer in [false, true] {
-        let feature = ObjectId::new();
-        let payload = if chamfer {
-            ObjectPayload::Chamfer(Chamfer {
-                previous: s.keep,
-                edges: vec![edge],
-                distance_mm: Expression::constant(0.5).expect("size"),
-            })
-        } else {
-            ObjectPayload::Fillet(Fillet {
-                previous: s.keep,
-                edges: vec![edge],
-                radius_mm: Expression::constant(0.5).expect("size"),
-            })
-        };
-        doc.write(|w| {
-            w.put_object(feature, None, 0, None, &payload)?;
-            for dep in payload.dependencies(feature) {
-                w.add_dependency(dep)?;
+        for both in [false, true] {
+            let root = tempfile::tempdir().expect("root");
+            let mut doc = Document::create(root.path().join("edges.fcad")).expect("document");
+            let p = plate(&mut doc).expect("plate");
+            let edges = [0, 1].map(|corner| {
+                ferritecad_fixtures::feature_changes::plate_edge(&doc, p.body, corner)
+                    .expect("named original corner")
+            });
+            let mut kernel = OcctKernel::new().expect("kernel");
+            let s = slot(&doc, &p, &mut kernel).expect("slot");
+            doc.write_changes(&s.changes).expect("split plate");
+            let feature = ObjectId::new();
+            let selected = if both { edges.to_vec() } else { vec![edges[0]] };
+            let amount = Expression::constant(1.).expect("amount");
+            let addition = if chamfer {
+                FeatureAddition::Chamfer {
+                    edges: selected,
+                    distance_mm: amount,
+                }
+            } else {
+                FeatureAddition::Fillet {
+                    edges: selected,
+                    radius_mm: amount,
+                }
+            };
+            doc.write_changes(&[EditChange::AddFeature {
+                object: feature,
+                body: p.body,
+                name: None,
+                feature: addition,
+            }])
+            .expect("edge feature");
+            let built = build(&doc, &mut kernel);
+            let removed = if chamfer {
+                5.
+            } else {
+                10. * (1. - std::f64::consts::PI / 4.)
+            };
+            measure(
+                &built,
+                feature,
+                &mut kernel,
+                2,
+                22400. - removed * if both { 2. } else { 1. },
+            );
+            for (face, affected) in [(s.side, true), (s.other_side, both)] {
+                let faces = built
+                    .topology()
+                    .resolve(EntityKind::Face, feature, feature, &[face])
+                    .expect("piece witness survives");
+                let piece = kernel
+                    .keep_solids(
+                        built.shape(feature).expect("set"),
+                        &[ferritecad_kernel::SolidWitness {
+                            reference: face.id,
+                            faces,
+                        }],
+                        &OperationContext::default(),
+                    )
+                    .expect("named piece")
+                    .shape;
+                assert!(
+                    kernel
+                        .is_valid(piece)
+                        .expect("independent member BRepCheck")
+                );
+                assert_eq!(kernel.solid_count(piece).expect("count"), 1);
+                let volume = kernel.shape_stats(piece).expect("piece volume").1;
+                let expected = 11200. - if affected { removed } else { 0. };
+                assert!((volume - expected).abs() < 1e-6, "{volume} != {expected}");
+                kernel.release(piece);
             }
-            Ok(())
-        })
-        .expect("edge feature");
-        let built = rebuild_cold(&doc, &mut kernel, &OperationContext::default()).expect("repair");
-        assert_eq!(built.report().failed.len(), 1);
-        assert!(
-            built.report().failed[0]
-                .message
-                .contains("edge operations on a result with 2 solids are not supported yet")
-        );
-        built.release_all(&mut kernel);
-        // Keep separate chains to exercise both builders without introducing a fork.
-        doc.write(|w| w.remove_object(feature))
-            .expect("remove test consumer");
+            set_consumers::check_complete_history(&built, s.keep, feature, &mut kernel);
+            if !both {
+                set_consumers::check_untouched_piece(
+                    &built,
+                    s.keep,
+                    feature,
+                    s.other_side,
+                    &mut kernel,
+                );
+            }
+            warm(&doc, &built, &mut kernel);
+            built.release_all(&mut kernel);
+            assert_eq!(kernel.live_shape_count(), 0);
+        }
     }
 }
 

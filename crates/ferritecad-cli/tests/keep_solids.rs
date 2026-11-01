@@ -165,3 +165,102 @@ fn keep_solids_cli_publishes_both_pieces_then_selects_and_refuses_atomically() {
         assert_eq!(refused["error"]["kind"], "input");
     }
 }
+
+#[test]
+fn edge_sets_publish_both_members_report_counts_and_refuse_a_partial_edit() {
+    use ferritecad_types::ObjectId;
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("root");
+    let source = root.path().join("pieces.fcad");
+    let mut doc = Document::create(&source).expect("document");
+    let p = ferritecad_fixtures::result_sets::plate(&mut doc).expect("plate");
+    let edges = [0, 1].map(|corner| {
+        ferritecad_fixtures::feature_changes::plate_edge(&doc, p.body, corner)
+            .expect("named corner")
+    });
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let slot = ferritecad_fixtures::result_sets::slot(&doc, &p, &mut kernel).expect("slot");
+    doc.write_changes(&slot.changes).expect("split plate");
+    doc.close().expect("close");
+    for chamfer in [false, true] {
+        let feature = ObjectId::new();
+        let added = root.path().join(format!("added-{chamfer}.fcad"));
+        let amount = Expression::constant(1.).expect("amount");
+        edit(
+            &source,
+            &added,
+            &[EditChange::AddFeature {
+                object: feature,
+                body: p.body,
+                name: None,
+                feature: if chamfer {
+                    FeatureAddition::Chamfer {
+                        edges: edges.to_vec(),
+                        distance_mm: amount,
+                    }
+                } else {
+                    FeatureAddition::Fillet {
+                        edges: edges.to_vec(),
+                        radius_mm: amount,
+                    }
+                },
+            }],
+            true,
+        );
+        let facts = inspect(&added);
+        let row = facts["feature_results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .find(|r| r["feature_id"] == feature.to_string())
+            .expect("edge result");
+        assert_eq!(row["solid_count"], 2);
+        for command in [
+            vec!["rebuild", "--cold"],
+            vec!["inspect"],
+            vec!["print-topology"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_ferritecad"))
+                .args(command)
+                .arg(&added)
+                .output()
+                .expect("text command");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                text.contains(&format!("feature {feature}; 2 solids")),
+                "{text}"
+            );
+            assert!(!text.contains("1 solids"), "{text}");
+        }
+        let refused = root.path().join(format!("refused-{chamfer}.fcad"));
+        let response = edit(
+            &added,
+            &refused,
+            &[EditChange::constant(
+                feature,
+                if chamfer {
+                    ExpressionSlot::ChamferDistance
+                } else {
+                    ExpressionSlot::FilletRadius
+                },
+                1000.,
+            )
+            .expect("impossible amount")],
+            false,
+        );
+        assert_eq!(response["error"]["kind"], "kernel");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .expect("diagnostic")
+                .contains(&feature.to_string())
+        );
+    }
+}
