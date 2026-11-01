@@ -219,7 +219,7 @@ fn visible_count(source: &crate::sketch_facts::Source, expected: &str) {
     let mut navigation = ferritecad_ui::ModelNavigation::default();
     let mut output = None;
     for _ in 0..3 {
-        output = Some(context.run_ui(
+        let mut frame = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -230,7 +230,9 @@ fn visible_count(source: &crate::sketch_facts::Source, expected: &str) {
             |ui| {
                 ferritecad_ui::model_panel(ui, 0, &rows, &mut navigation, |_| vec![], Ok(()));
             },
-        ));
+        );
+        frame.textures_delta.clear();
+        output = Some(frame);
     }
     assert!(output.expect("frame").shapes.iter().any(|shape| {
         matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
