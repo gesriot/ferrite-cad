@@ -943,29 +943,52 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     );
     analytic_with_cache(&widened, Some((&cache, ferritecad_eval::CacheOutcome::Hit)));
 
-    // Removing concentricity leaves these circles disjoint: the pinned centre
-    // is far from the other circle's stored guess. NewBody still requires one
-    // solid, so the feature is refused and nothing is published.
+    // Removing concentricity leaves two disjoint circles: both swept members
+    // are published, while the source and all remaining constraints survive.
     let catalog = inspect(&widened);
-    let never = f.root.path().join("never.fcad");
-    let present = entries(f.root.path());
+    let separate = f.root.path().join("separate.fcad");
+    let source_before = std::fs::read(&widened).expect("source bytes");
     f.ask(&[json!(concentric)], &[]);
-    let split = reply(
-        f.edit_from(&widened, &catalog, &never)
+    reply(
+        f.edit_from(&widened, &catalog, &separate)
             .output()
             .expect("process"),
         OP,
-        2,
+        0,
     );
-    assert_eq!(split["error"]["kind"], "unsupported", "{split:?}");
+    assert_eq!(
+        std::fs::read(&widened).expect("source bytes"),
+        source_before
+    );
+    let separate_catalog = inspect(&separate);
+    let constraints = separate_catalog["sketches"][0]["constraints"]
+        .as_array()
+        .expect("constraints");
+    assert!(constraints.iter().any(|c| c["constraint_id"] == pin));
+    assert!(!constraints.iter().any(|c| c["constraint_id"] == concentric));
+    let separate_doc = Document::open_read_only(&separate).expect("published result");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let rebuilt =
+        ferritecad_eval::rebuild_cold(&separate_doc, &mut kernel, &OperationContext::default())
+            .expect("rebuild");
+    assert!(rebuilt.all_built(), "{:?}", rebuilt.report());
+    let body = separate_doc
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .expect("body");
+    let shape = rebuilt.shape(body.id).expect("both members");
+    assert_eq!(kernel.solid_count(shape).expect("members"), 2);
+    kernel.validate_solids(shape).expect("every member valid");
+    assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
     assert!(
-        split["error"]["message"]
-            .as_str()
-            .expect("diagnostic")
-            .contains("sweep into 2 separate solids, and a new body must be one solid"),
-        "{split:?}"
+        (kernel.shape_stats(shape).expect("volume").1
+            - PI * (6.75_f64.powi(2) + 3.5_f64.powi(2)) * 15.)
+            .abs()
+            < 1e-6
     );
-    assert_eq!(entries(f.root.path()), present, "a refusal left something");
+    rebuilt.release_all(&mut kernel);
 
     // Taking the pin off with it leaves both centres at the stored guess they
     // share, so the same removal publishes — and the freedom really came back,

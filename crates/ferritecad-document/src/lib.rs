@@ -86,3 +86,6 @@ pub use model_tree::{ModelRowId, ModelTree, ModelTreeRow};
 
 #[cfg(test)]
 mod test_changes;
+
+mod keep_solids;
+pub use keep_solids::{KeepSelection, KeepSolids};

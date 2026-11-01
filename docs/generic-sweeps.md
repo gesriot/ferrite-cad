@@ -2,11 +2,11 @@
 
 Both sweeps support NewBody, Add, Cut and Intersect. NewBody has no predecessor;
 other operations consume the saved `previous` feature. The kernel combines the target
-and the swept tool with Fuse, Cut or Common. A result must contain exactly one valid
-solid. Empty intersections, disconnected additions and cuts splitting the target are
-feature failures. A Cut that removes no material also fails.
-[ADR 0008](decisions/0008-multibody-results.md) will replace the one-solid limit with
-complete result sets and explicit selection of retained pieces.
+and the swept tool with Fuse, Cut or Common. A result contains the complete nonempty
+set of valid solids, each with finite positive volume. Disconnected additions and cuts
+splitting the target keep every piece. Empty intersections and a Cut that removes no
+material still refuse. [KeepSolids](keep-solids.md) explicitly selects pieces by named
+face witnesses; [ADR 0008](decisions/0008-multibody-results.md) defines the contract.
 
 Extrude supports Blind and Symmetric in either normal direction for all four operations.
 Symmetric extends the specified distance on each side of the sketch plane.
@@ -56,15 +56,15 @@ Each entry identifies a curve on a selected region's outer boundary; multiple en
 on one outer boundary select it once. Missing or construction curves and curves on
 holes refuse by identity. Reordering, moving or resizing a contour does not retarget
 its selection. The sweep produces one face per selected region, with complete curve
-history. NewBody and the final boolean result must still contain exactly one solid.
-A Cut or Intersect tool may contain several solids.
+history. NewBody, tools and final boolean results may contain several solids;
+no component is silently discarded.
 
 The edit JSON feature for `add_feature` or `add_body` accepts `"regions": ["curve-uuid"]`
 for either sweep. Omitting this CLI field selects all regions. To replace an existing
 selection use `{"kind":"set_regions","object":"feature-uuid","regions":["curve-uuid"]}`;
 `regions: []` selects all again. The stored field is required: regenerate fixtures,
 without a document migration or version branch. Cache keys include the selected
-profile; the `brep.generative.v1` archive layout is unchanged. Existing window forms
+profile; the `brep.generative.v2` archive stores the complete result set. Existing window forms
 select all regions and continue through the shared transaction.
 
 ## Referenced end conditions
@@ -87,7 +87,7 @@ and retains each solid containing a whole starting cap. No retained solid may to
 any surviving part of the auxiliary far cap. Bounds only size the auxiliary prism;
 there are no sampled rays or centre-point coverage decisions. Every retained solid
 must be valid with finite positive volume. Separate regions give separate solids, as
-with Blind, and a new body still needs one solid. The new far caps retain the ordinary
+with Blind, and a new body retains all of them. The new far caps retain the ordinary
 sweep end-cap provenance, including region refinement; auxiliary geometry creates no
 names. Blind and a parallel face at the same height have identical names, including
 edges consumed by Fillet.

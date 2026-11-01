@@ -134,3 +134,21 @@ checked against the complete candidate; graph cycles refuse publication.
 A plane, its sketch and its feature can be added together. Face resolution uses
 the minting producer, kind, digest and selection. A newly unbuildable plane refuses
 the edit just like a failed feature. See the complete [datum recipe](datum-planes.md).
+
+## KeepSolids
+
+Use `add_feature` on an existing Body with
+`"feature":{"kind":"keep_solids","selection":{"kind":"all"}}`.
+To select pieces, use `"selection":{"kind":"containing_faces","faces":[<face references>]}`.
+Replace an existing selection with
+`{"kind":"set_keep_selection","object":"<KeepSolids UUID>","selection":{"kind":"all"}}`.
+The ordinary reference format is `producer`, `kind: face`, `digest`, `selection`;
+CLI allocates the diagnostic identity for each new use. References resolve in the
+predecessor result before native containment is checked. Repeated witnesses select a
+solid once. A family spanning several solids refuses, even if another witness selects
+one of them. `All` always retains the complete set.
+
+A splitting Cut and KeepSolids may be added in one request. The shared transaction moves
+the Body tip and saves payloads/dependencies together. A lost dependent witness refuses
+publication; Undo/Redo restores the whole candidate. See the executable
+[KeepSolids recipe](keep-solids.md) and [ADR 0008](decisions/0008-multibody-results.md).

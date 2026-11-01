@@ -85,3 +85,17 @@ does not invalidate geometry.
 An edit may remove an unconsumed output name. The no-new-failed-features rule protects
 consumers. A known name without descendants refuses; an exact selection with several
 edges refuses, while an explicit all-descendants selection consumes the full set.
+
+## Solid result sets and KeepSolids
+
+A Body owns one predecessor chain and presents its entire tip result, without creating
+objects when rebuilt. Feature results are unordered sets of valid solids. The atomic
+`brep.generative.v2` record contains every member and complete elementary naming/incidence.
+
+`feature.keep_solids` stores `KeepSolids { previous, selection }` in the ordinary CBOR
+envelope. `selection` is `All` or `ContainingFaces(Vec<EntityReference>)`, encoded with
+`kind: all` or `kind: containing_faces` and `faces`. The vector is nonempty and Face-only.
+A `predecessor` dependency names `previous`. References retain their diagnostic UUIDs;
+the key uses sorted, deduplicated meanings and the predecessor result key. No solid index,
+new solid name kind or selected-piece document object is stored. See
+[KeepSolids](keep-solids.md) and [ADR 0008](decisions/0008-multibody-results.md).

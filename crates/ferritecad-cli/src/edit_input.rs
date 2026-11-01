@@ -9,6 +9,10 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Change {
+    SetKeepSelection {
+        object: ObjectId,
+        selection: Keep,
+    },
     AddDatumPlane {
         object: ObjectId,
         name: Option<String>,
@@ -90,6 +94,10 @@ pub(super) enum Change {
 impl Change {
     pub(super) fn into_edit(self) -> Result<EditChange> {
         Ok(match self {
+            Self::SetKeepSelection { object, selection } => EditChange::SetKeepSelection {
+                object,
+                selection: selection.into_selection()?,
+            },
             Self::AddDatumPlane {
                 object,
                 name,
@@ -499,6 +507,9 @@ impl End {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Feature {
+    KeepSolids {
+        selection: Keep,
+    },
     Extrude {
         profile: ObjectId,
         #[serde(default)]
@@ -528,6 +539,9 @@ impl Feature {
     fn into_feature(self) -> Result<ferritecad_document::FeatureAddition> {
         use ferritecad_document::FeatureAddition as F;
         Ok(match self {
+            Self::KeepSolids { selection } => F::KeepSolids {
+                selection: selection.into_selection()?,
+            },
             Self::Extrude {
                 profile,
                 regions,
@@ -645,6 +659,26 @@ impl Plane {
                 face: face.into_reference()?,
                 offset_mm: offset.expression(Dimension::Length)?,
             },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum Keep {
+    All,
+    ContainingFaces { faces: Vec<Reference> },
+}
+impl Keep {
+    fn into_selection(self) -> Result<ferritecad_document::KeepSelection> {
+        Ok(match self {
+            Self::All => ferritecad_document::KeepSelection::All,
+            Self::ContainingFaces { faces } => ferritecad_document::KeepSelection::ContainingFaces(
+                faces
+                    .into_iter()
+                    .map(Reference::into_reference)
+                    .collect::<Result<_>>()?,
+            ),
         })
     }
 }

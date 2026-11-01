@@ -177,6 +177,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
     let slots: Vec<_> = archived.entities.keys().copied().collect();
     let (shape, restored) = kernel.decode_shape_with(&archived.blob, &slots)?;
     let result = (|| {
+        kernel.validate_solid_structure(shape)?;
         if restored.len() != slots.len()
             || restored.iter().collect::<BTreeSet<_>>().len() != slots.len()
         {

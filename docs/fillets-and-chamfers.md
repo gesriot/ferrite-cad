@@ -4,6 +4,10 @@ Fillet rounds a nonempty set of named edges at one radius. Chamfer cuts them at
 one equal distance along their adjacent faces. Both consume `previous`, the saved
 predecessor result, and produce exactly one valid solid. Radius and distance must
 be finite and positive; Open CASCADE decides what fits the supplied geometry.
+A predecessor containing several solids currently refuses with its observed count:
+“edge operations on a result with N solids are not supported yet”. Select one with
+[KeepSolids](keep-solids.md); multi-solid edge operations are the next implementation
+step of [ADR 0008](decisions/0008-multibody-results.md).
 There is no rectangle classification, corner catalogue, minimum flat or limit on
 how many edge features a history may contain.
 

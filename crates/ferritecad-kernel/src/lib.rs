@@ -64,4 +64,6 @@ pub use result::{
     MeshVertices, OperationResult,
 };
 
-pub use naming::{NamingHistory, NamingInput, NamingOperation, NamingRelation, ShapeTopology};
+pub use naming::{
+    NamingHistory, NamingInput, NamingOperation, NamingRelation, ShapeTopology, SolidWitness,
+};

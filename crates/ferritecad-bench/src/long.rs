@@ -184,7 +184,19 @@ fn measure_case(
         if events.len() != case.features.len()
             || events.iter().any(|e| e.outcome != CacheOutcome::Hit)
         {
-            return Err("every feature must be an exact cache Hit".into());
+            let details = events
+                .iter()
+                .filter(|e| e.outcome != CacheOutcome::Hit)
+                .map(|e| {
+                    format!(
+                        "feature {}: {}",
+                        e.feature,
+                        e.detail.as_deref().unwrap_or("no exact cache hit")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!("every feature must be an exact cache Hit: {details}").into());
         }
         if Some(&signatures_of(&warm)) != expected.as_ref() {
             return Err("cache and cold names or ancestry disagree".into());

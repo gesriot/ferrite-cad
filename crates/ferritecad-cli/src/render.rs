@@ -207,6 +207,9 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             },
             r.operation
         ),
+        ObjectPayload::KeepSolids(keep) => {
+            format!("keep {}, previous {}", keep.selection, keep.previous)
+        }
         ObjectPayload::Body(b) => match b.tip_feature {
             Some(tip) => format!("tip feature {tip}"),
             None => "empty".to_owned(),

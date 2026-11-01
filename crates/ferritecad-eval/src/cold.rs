@@ -365,6 +365,7 @@ fn run<K: GeometryKernel + ?Sized>(
         let selection = match &object.payload {
             ObjectPayload::Extrude(e) => Some((e.profile, &e.regions)),
             ObjectPayload::Revolve(r) => Some((r.profile, &r.regions)),
+            ObjectPayload::KeepSolids(_) => None,
             _ => None,
         };
         if let Some((sketch_id, selected)) = selection
@@ -483,7 +484,6 @@ fn run<K: GeometryKernel + ?Sized>(
                         _ => unreachable!("sweep branch"),
                     };
                     let profile = profile.select(selected)?;
-                    let multiple_regions = profile.regions().len() > 1;
                     state.topology.select_profile(*id, &profile)?;
                     let target = previous
                         .map(|p| {
@@ -561,21 +561,9 @@ fn run<K: GeometryKernel + ?Sized>(
                         None => false,
                     };
                     if !restored {
-                        let tool = request.build(kernel, &scoped)?;
+                        let tool = request.build(kernel, &scoped, target.is_some())?;
                         state.owned.push(tool.shape);
                         context.check_cancelled()?;
-                        if matches!(request, SweepRequest::UpTo { .. }) {
-                            kernel.validate_solids(tool.shape)?;
-                        }
-                        if previous.is_none() && multiple_regions {
-                            let solids = kernel.solid_count(tool.shape)?;
-                            if solids != 1 {
-                                return Err(CadError::unsupported(format!(
-                                    "the selected regions sweep into {solids} separate solids, \
-                                     and a new body must be one solid"
-                                )));
-                            }
-                        }
                         let tool_names =
                             state
                                 .topology
@@ -608,6 +596,70 @@ fn run<K: GeometryKernel + ?Sized>(
                         };
                         state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, shape);
+                        if let Some(cache) = cache.as_deref_mut() {
+                            store(kernel, cache, key, *id, state, events);
+                        }
+                    }
+                    state.keys.insert(*id, key);
+                }
+
+                ObjectPayload::KeepSolids(keep) => {
+                    let witnesses = match &keep.selection {
+                        ferritecad_document::KeepSelection::All => Vec::new(),
+                        ferritecad_document::KeepSelection::ContainingFaces(faces) => {
+                            // Report every unresolved reference before testing native membership.
+                            state.topology.resolve(
+                                ferritecad_document::EntityKind::Face,
+                                *id,
+                                keep.previous,
+                                faces,
+                            )?;
+                            faces
+                                .iter()
+                                .map(|face| {
+                                    Ok(ferritecad_kernel::SolidWitness {
+                                        reference: face.id,
+                                        faces: state.topology.resolve(
+                                            ferritecad_document::EntityKind::Face,
+                                            *id,
+                                            keep.previous,
+                                            &[*face],
+                                        )?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>>>()?
+                        }
+                    };
+                    let key = crate::cache::keep_archive_key(
+                        kernel.identity(),
+                        &state.keys[&keep.previous],
+                        keep.cache_key(),
+                    );
+                    let key = state.topology.cache_key(*id, key);
+                    let restored = match cache.as_deref_mut() {
+                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                        None => false,
+                    };
+                    if !restored {
+                        let previous = &state.topology.features[&keep.previous];
+                        let target = state.shapes[&keep.previous];
+                        let result =
+                            kernel
+                                .keep_solids(target, &witnesses, &scoped)
+                                .map_err(|error| CadError::Context {
+                                    kind: error.kind(),
+                                    message: format!("KeepSolids {id}: {error}"),
+                                    source: Box::new(error),
+                                })?;
+                        state.owned.push(result.shape);
+                        let names = state.topology.name_operation(
+                            *id,
+                            result.shape,
+                            &[previous],
+                            kernel,
+                        )?;
+                        state.topology.insert_feature(*id, names)?;
+                        state.shapes.insert(*id, result.shape);
                         if let Some(cache) = cache.as_deref_mut() {
                             store(kernel, cache, key, *id, state, events);
                         }
@@ -1021,11 +1073,12 @@ impl SweepRequest {
         }
     }
     fn build(
-        &self,
+        self,
         kernel: &mut (impl GeometryKernel + ?Sized),
         context: &OperationContext,
+        boolean_tool: bool,
     ) -> Result<ferritecad_kernel::OperationResult> {
-        match self {
+        let request = match self {
             Self::UpTo {
                 profile,
                 reversed,
@@ -1033,18 +1086,15 @@ impl SweepRequest {
                 ..
             } => match end {
                 SurfaceEnd::Face { faces, offset } => {
-                    kernel.extrude_to_face(profile, *reversed, faces, *offset, context)
+                    return kernel.extrude_to_face(&profile, reversed, &faces, offset, context);
                 }
                 SurfaceEnd::Vertex(vertex) => {
                     let extent = crate::convert::vertex_extent(
                         *profile.plane(),
-                        *reversed,
-                        kernel.vertex_point(*vertex)?,
+                        reversed,
+                        kernel.vertex_point(vertex)?,
                     )?;
-                    kernel.extrude(
-                        &ferritecad_kernel::ExtrudeRequest::new(profile.clone(), extent, *reversed),
-                        context,
-                    )
+                    ferritecad_kernel::ExtrudeRequest::new(profile, extent, reversed)
                 }
             },
             Self::ThroughAll {
@@ -1053,14 +1103,19 @@ impl SweepRequest {
                 target,
             } => {
                 let n = profile.plane().normal();
-                let sign = if *reversed { -1. } else { 1. };
+                let sign = if reversed { -1. } else { 1. };
                 let direction = ferritecad_types::Vec3::new(n.x * sign, n.y * sign, n.z * sign)?;
-                let bounds = kernel.projected_bounds(*target, direction)?;
-                let request = through_all_request(profile.clone(), *reversed, bounds)?;
-                kernel.extrude(&request, context)
+                let bounds = kernel.projected_bounds(target, direction)?;
+                through_all_request(profile, reversed, bounds)?
             }
-            Self::Extrude(r) => kernel.extrude(r, context),
-            Self::Revolve(r) => kernel.revolve(r, context),
-        }
+            Self::Extrude(r) => r,
+            Self::Revolve(r) => return kernel.revolve(&r, context),
+        };
+        let request = if boolean_tool {
+            request.for_boolean_tool()
+        } else {
+            request
+        };
+        kernel.extrude(&request, context)
     }
 }

@@ -1519,3 +1519,15 @@ References use the common `id`, `producer`, `kind`, `digest`, `selection` fields
 No computed distance is stored. A Face datum on the resulting cap exposes its
 `computed.origin`. See [referenced sweep ends](generic-sweeps.md) for editing,
 resolution failures and cold/cached behaviour.
+
+## KeepSolids and result counts
+
+`inspect --json` includes `keep_solids`: each row has `feature_id`, `name`,
+`previous_feature_id` and `selection`. Selection is `{"kind":"all"}` or
+`{"kind":"containing_faces","faces":[<references>]}`. Each face reference includes
+its diagnostic `id`, `producer`, `kind`, `digest` and `selection`.
+`feature_results` lists each built feature's `feature_id` and `solid_count`, obtained
+from the native rebuild. It is empty when the native kernel is unavailable; failed
+features have no count row. Counts do not identify or order individual solids.
+The shared `edit` request accepts `keep_solids` additions and `set_keep_selection`;
+see [KeepSolids](keep-solids.md) for complete JSON and refusal categories.

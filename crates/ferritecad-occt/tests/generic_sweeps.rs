@@ -506,14 +506,14 @@ fn partial_turn_follows_the_directed_line_axis() {
 }
 
 #[test]
-fn invalid_results_fail_the_feature_with_a_reason() {
+fn disconnected_results_build_and_invalid_results_fail_with_a_reason() {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return;
     }
     for (case, reason) in [
-        ("empty", "one solid"),
-        ("disjoint", "one solid"),
-        ("split", "one solid"),
+        ("empty", "intersect result is empty"),
+        ("disjoint", ""),
+        ("split", ""),
         ("behind", "nothing ahead"),
         ("cross_axis", "cross the axis"),
     ] {
@@ -575,6 +575,18 @@ fn invalid_results_fail_the_feature_with_a_reason() {
         let mut kernel = OcctKernel::new().expect("kernel");
         let built =
             rebuild_cold(&d, &mut kernel, &OperationContext::default()).expect("opens for repair");
+        if matches!(case, "disjoint" | "split") {
+            assert!(built.all_built(), "{:?}", built.report());
+            let shape = built.shape(tip).expect("complete result");
+            assert_eq!(kernel.solid_count(shape).expect("members"), 2);
+            kernel.validate_solids(shape).expect("valid members");
+            assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
+            let expected = if case == "disjoint" { 1500. } else { 800. };
+            assert!((kernel.shape_stats(shape).expect("volume").1 - expected).abs() < 1e-6);
+            assert!(built.shape(base).is_some(), "independent result survives");
+            built.release_all(&mut kernel);
+            continue;
+        }
         let report = built.report();
         let failure = report
             .failed
@@ -586,6 +598,9 @@ fn invalid_results_fail_the_feature_with_a_reason() {
             "{case}: {}",
             failure.message
         );
+        if case == "empty" {
+            assert_eq!(failure.kind, "unsupported");
+        }
         assert!(built.shape(base).is_some(), "independent result survives");
         built.release_all(&mut kernel);
     }

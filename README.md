@@ -993,3 +993,13 @@ new copy: choose **Edit Sketch …** or use `edit` with the Sketch UUID,
 content version and ordered curve coordinates discovered by `inspect --json`.
 Object, curve and reference identities remain unchanged. See the
 [bounded editing contract and runnable recipe](docs/edit-transactions.md).
+
+## Complete solid results
+
+Sweeps and booleans retain their complete nonempty set of valid solids, including
+splitting Cuts and disconnected additions. [KeepSolids](docs/keep-solids.md) selects
+pieces explicitly through named face witnesses in the shared `edit` transaction.
+`All` retains the whole result; the existing scene renders all components of one Body.
+No piece is chosen by size, position or enumeration order. Multi-solid edge operations
+and new window selection forms follow separately under
+[ADR 0008](docs/decisions/0008-multibody-results.md).

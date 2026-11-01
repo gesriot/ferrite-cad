@@ -266,8 +266,12 @@ fn selection_refuses_missing_or_hole_curves_and_collapses_duplicates() {
     body(&mut d, tip);
     let mut kernel = OcctKernel::new().expect("kernel");
     let built = rebuild_cold(&d, &mut kernel, &OperationContext::default()).expect("report");
-    assert!(!built.all_built(), "multiple solids must fail");
+    assert!(built.all_built(), "{:?}", built.report());
+    let shape = built.shape(tip).expect("complete result");
+    kernel.validate_solids(shape).expect("every member valid");
+    assert_eq!(kernel.solid_count(shape).expect("member count"), 2);
     built.release_all(&mut kernel);
+    check(&d, tip, (200. - 4. * std::f64::consts::PI) * 5.);
     for selection in [selected, vec![hole_id], vec![StableEntityId::new()]] {
         let mut payload = d.object(tip).expect("read").expect("feature").payload;
         let ObjectPayload::Extrude(ref mut e) = payload else {

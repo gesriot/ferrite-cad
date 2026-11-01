@@ -37,6 +37,7 @@ pub enum ObjectKind {
     /// One edge of an earlier feature's result, cut away at equal distances
     /// along its two faces (§29A).
     Chamfer,
+    KeepSolids,
 }
 
 impl ObjectKind {
@@ -52,6 +53,7 @@ impl ObjectKind {
             Self::Revolve => "feature.revolve",
             Self::Fillet => "feature.fillet",
             Self::Chamfer => "feature.chamfer",
+            Self::KeepSolids => "feature.keep_solids",
         }
     }
 
@@ -68,6 +70,7 @@ impl ObjectKind {
             "feature.revolve" => Some(Self::Revolve),
             "feature.fillet" => Some(Self::Fillet),
             "feature.chamfer" => Some(Self::Chamfer),
+            "feature.keep_solids" => Some(Self::KeepSolids),
             _ => None,
         }
     }
@@ -76,7 +79,7 @@ impl ObjectKind {
     pub fn is_feature(self) -> bool {
         matches!(
             self,
-            Self::Extrude | Self::Revolve | Self::Fillet | Self::Chamfer
+            Self::Extrude | Self::Revolve | Self::Fillet | Self::Chamfer | Self::KeepSolids
         )
     }
 }
@@ -657,7 +660,8 @@ impl Sketch {
     }
 }
 
-/// A solid produced by the feature chain.
+/// A feature history exposing the whole solid set of its tip.
+/// Rebuild never creates document objects for disconnected pieces.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Body {
     /// The last feature that contributed to this body, or `None` while it is
@@ -1256,6 +1260,7 @@ pub enum ObjectPayload {
     Fillet(Fillet),
     /// One cut edge of an earlier result (§29A).
     Chamfer(Chamfer),
+    KeepSolids(crate::KeepSolids),
     /// A STEP file and the scene one reading of it produced.
     ImportedStep(ImportedStep),
 }
@@ -1279,7 +1284,12 @@ impl ObjectPayload {
             }
             Self::Revolve(r) => references.push((r.profile, R::Profile)),
             Self::Body(b) => references.extend(b.tip_feature.map(|tip| (tip, R::BodyTip))),
-            _ => {}
+            Self::Parameter(_)
+            | Self::DatumPlane(DatumPlane::Fixed { .. })
+            | Self::Fillet(_)
+            | Self::Chamfer(_)
+            | Self::KeepSolids(_)
+            | Self::ImportedStep(_) => {}
         }
         references.extend(
             self.previous_feature()
@@ -1306,6 +1316,7 @@ impl ObjectPayload {
             Self::Revolve(_) => ObjectKind::Revolve.as_str(),
             Self::Fillet(_) => ObjectKind::Fillet.as_str(),
             Self::Chamfer(_) => ObjectKind::Chamfer.as_str(),
+            Self::KeepSolids(_) => ObjectKind::KeepSolids.as_str(),
             Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
         }
     }
@@ -1327,6 +1338,7 @@ impl ObjectPayload {
             Self::Revolve(v) => Envelope::encode(name, v)?,
             Self::Fillet(v) => Envelope::encode(name, v)?,
             Self::Chamfer(v) => Envelope::encode(name, v)?,
+            Self::KeepSolids(v) => Envelope::encode(name, v)?,
             Self::ImportedStep(v) => Envelope::encode(name, v)?,
         };
         envelope.to_bytes()
@@ -1347,6 +1359,7 @@ impl ObjectPayload {
             ObjectKind::Revolve => Self::Revolve(envelope.decode()?),
             ObjectKind::Fillet => Self::Fillet(envelope.decode()?),
             ObjectKind::Chamfer => Self::Chamfer(envelope.decode()?),
+            ObjectKind::KeepSolids => Self::KeepSolids(envelope.decode()?),
             ObjectKind::ImportedStep => Self::ImportedStep(envelope.decode()?),
         };
         payload.validate()?;
@@ -1469,6 +1482,7 @@ impl ObjectPayload {
                 crate::entity_reference::validate_edges(&chamfer.edges)
             }
             Self::ImportedStep(imported) => imported.validate(),
+            Self::KeepSolids(keep) => keep.selection.validate(),
         }
     }
 
@@ -1483,7 +1497,12 @@ impl ObjectPayload {
             Self::Revolve(revolve) => revolve.previous,
             Self::Fillet(fillet) => Some(fillet.previous),
             Self::Chamfer(chamfer) => Some(chamfer.previous),
-            _ => None,
+            Self::KeepSolids(keep) => Some(keep.previous),
+            Self::Parameter(_)
+            | Self::DatumPlane(_)
+            | Self::Sketch(_)
+            | Self::Body(_)
+            | Self::ImportedStep(_) => None,
         }
     }
 }
