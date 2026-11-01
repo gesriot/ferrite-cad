@@ -3208,6 +3208,10 @@ mod tests {
     }
 
     impl GeometryKernel for RefusesMesh {
+        fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+            self.inner.solid_count(shape)
+        }
+
         /// Delegated: this double is about something else, and a cut it
         /// answered differently would be a second kernel.
         fn boolean(
