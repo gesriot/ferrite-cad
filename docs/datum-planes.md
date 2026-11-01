@@ -24,7 +24,9 @@ The frame follows these deterministic conventions:
 These conventions do not select a face by coordinates. Face selection uses the
 same resolver as [Fillet and Chamfer](fillets-and-chamfers.md): the producer is
 who minted the digest, which may precede the consumed result. `one` needs one
-surviving face. `all_descendants` explicitly accepts a family only when the kernel
+surviving face across the complete result set. Its owning solid supplies orientation;
+there is no first-piece selection. `all_descendants` explicitly accepts a family only when
+the kernel
 checks that every member is planar, lies in the same plane within linear tolerance,
 and has the same outward normal within angular tolerance.
 
@@ -143,13 +145,23 @@ if probe.returncode:
 facts = call("inspect", source, "--json")["result"]
 base = facts["features"][0]["feature_id"]
 body = facts["bodies"][0]["body_id"]
+base_plane = facts["sketches"][0]["plane_id"]
+detached_profile, support = identity(), identity()
+detached = sketch(detached_profile, base_plane)
+detached["curves"][0]["geometry"]["center"]["x"] = mm(75)
+set_source = root / "set.fcad"
+edit(source, set_source, [detached,
+    {"kind": "add_feature", "object": support, "body": body,
+     "feature": extrusion(detached_profile, "add")}])
+source = set_source
 lines = call("print-topology", source).splitlines()
 caps = []
 for i, line in enumerate(lines[:-1]):
-    match = re.search(r"producer=([0-9a-f-]+) kind=face digest=([0-9a-f]{64}) entities=1", line)
+    match = re.search(rf"producer=({base}) kind=face digest=([0-9a-f]{{64}}) entities=1", line)
     if match and "end cap, producer" in lines[i + 1]:
         caps.append({"producer": match[1], "kind": "face", "digest": match[2],
                      "selection": "one"})
+caps = list({face["digest"]: face for face in caps}.values())
 assert len(caps) == 1, lines
 face = caps[0]
 plane, profile, boss = identity(), identity(), identity()
@@ -157,7 +169,7 @@ offset, upper_profile = identity(), identity()
 added = root / "supported.fcad"
 edit(source, added, [
     {"kind": "add_datum_plane", "object": plane, "plane": {
-        "kind": "face", "result": base, "face": face, "offset": mm(0)}},
+        "kind": "face", "result": support, "face": face, "offset": mm(0)}},
     sketch(profile, plane),
     {"kind": "add_feature", "object": boss, "body": body,
      "feature": extrusion(profile, "add")},
@@ -167,6 +179,8 @@ edit(source, added, [
     {"kind": "add_body", "object": identity(), "feature_object": identity(),
      "feature": extrusion(upper_profile, "new_body")},
 ])
+results = call("inspect", added, "--json")["result"]["feature_results"]
+assert next(r["solid_count"] for r in results if r["feature_id"] == boss) == 2
 raised = root / "raised.fcad"
 edit(added, raised, [
     {"kind": "set_expression", "object": base, "slot": {"kind": "extrude_distance"},

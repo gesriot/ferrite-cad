@@ -644,8 +644,11 @@ Extrude, Revolve and booleans retain every valid solid in the result. `edit` add
 `KeepSolids` and replaces its All/ContainingFaces selection. Native containment uses
 existing face meanings; no ordinal or geometric ranking selects a piece. `inspect`
 reports selections and result counts; `rebuild` reports the same facts after evaluation.
+Fillet/Chamfer consume named edges across the whole set and retain untouched members. Face
+datums and referenced ends keep their geometric conditions; ThroughAll uses every predecessor
+solid, without searching other Bodies. `print-topology` also reports each result's solid count.
 The existing scene presents every component as one Body mesh. New selection forms and
-multi-solid edge/end consumers remain separate implementation steps of
+multibody export evidence remain separate implementation steps of
 [ADR 0008](decisions/0008-multibody-results.md). See the [recipe](keep-solids.md).
 
 [Sweeps]: generic-sweeps.md

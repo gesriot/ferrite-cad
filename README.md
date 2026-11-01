@@ -1000,6 +1000,8 @@ Sweeps and booleans retain their complete nonempty set of valid solids, includin
 splitting Cuts and disconnected additions. [KeepSolids](docs/keep-solids.md) selects
 pieces explicitly through named face witnesses in the shared `edit` transaction.
 `All` retains the whole result; the existing scene renders all components of one Body.
-No piece is chosen by size, position or enumeration order. Multi-solid edge operations
-and new window selection forms follow separately under
+No piece is chosen by size, position or enumeration order. Fillet/Chamfer can edit either or
+several members atomically; Face datums and referenced sweep ends use the complete support
+result. ThroughAll bounds include every predecessor member in the chosen direction.
+New window selection forms and multibody export evidence follow separately under
 [ADR 0008](docs/decisions/0008-multibody-results.md).

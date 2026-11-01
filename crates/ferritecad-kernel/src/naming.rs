@@ -83,7 +83,7 @@ impl NamingOperation {
 #[derive(Debug, Clone, Default)]
 pub struct NamingHistory {
     pub operation: Option<NamingOperation>,
-    /// Outer-boundary curve witnesses for caps of a multi-region sweep.
+    /// Incident outer-curve witnesses when regions or surface seams produce several caps.
     pub cap_boundaries: BTreeMap<SubShapeHandle, BTreeSet<StableEntityId>>,
     pub relations: BTreeSet<(NamingInput, NamingRelation, Option<SubShapeHandle>)>,
 }

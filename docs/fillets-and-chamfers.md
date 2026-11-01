@@ -2,12 +2,11 @@
 
 Fillet rounds a nonempty set of named edges at one radius. Chamfer cuts them at
 one equal distance along their adjacent faces. Both consume `previous`, the saved
-predecessor result, and produce exactly one valid solid. Radius and distance must
-be finite and positive; Open CASCADE decides what fits the supplied geometry.
-A predecessor containing several solids currently refuses with its observed count:
-“edge operations on a result with N solids are not supported yet”. Select one with
-[KeepSolids](keep-solids.md); multi-solid edge operations are the next implementation
-step of [ADR 0008](decisions/0008-multibody-results.md).
+predecessor result, and retain the complete nonempty set of valid solids. Radius and distance
+must be finite and positive; Open CASCADE decides what fits the supplied geometry.
+References may select edges of one or several members. Unaffected solids and their names
+pass through unchanged. [KeepSolids](keep-solids.md) is an explicit selection, not a prerequisite
+for an edge operation. See [ADR 0008](decisions/0008-multibody-results.md).
 There is no rectangle classification, corner catalogue, minimum flat or limit on
 how many edge features a history may contain.
 
@@ -36,8 +35,9 @@ digest values. An `edit` addition supplies a Body and a new feature identity:
 For Chamfer replace `fillet`/`radius` with `chamfer`/`distance`. Replace an existing
 set using `set_edges` with `object` and `edges`. Empty sets and repeated meanings
 are input errors. `inspect --json` reports the references and their diagnostic
-UUIDs. `rebuild` reports the amount, resolved edge count and reference count. Numeric changes
-use the existing `fillet_radius` and `chamfer_distance` expression slots.
+UUIDs. `rebuild` reports the amount, resolved edge count and reference count. `inspect`,
+`rebuild` and `print-topology` also report the result count as “1 solid” or “2 solids”.
+Numeric changes use the existing `fillet_radius` and `chamfer_distance` expression slots.
 
 Resolution checks every reference before building. Its topology error names the
 consuming feature and every unresolved reference, with one of these reasons:
@@ -62,8 +62,13 @@ The radius/distance editors, unsaved exports and Save/Save As remain available.
 Replacing a saved edge set is available through CLI; viewport multiselect and
 window edge-set editing are separate work.
 
-All selected edges enter one kernel builder. Complete Modified/Generated/Deleted
-history includes vertex junction faces. Names follow the common operation path;
+All selected edges enter one kernel builder over the complete result. Every requested edge
+must generate a face, and every resulting solid is checked once for validity and finite
+positive volume, with no free lower-dimensional shapes. One failed edge refuses the whole
+feature without publishing a partial result. An edge shared by several solids refuses as input:
+“a selected edge belongs to 2 solids; edge operations require one owning solid per edge”.
+Complete Kept/Modified/Generated/Deleted history includes vertex junction faces. Names follow
+the common operation path;
 cold and cached rebuilds preserve the same meanings. The document format is
 unstable: regenerate fixtures after changing payloads, without migration code.
 
@@ -127,21 +132,54 @@ def edit(path, target, changes, code=0):
                 "--output", target, "--json", code=code)
 
 
-for kind, amount in [("fillet", "radius"), ("chamfer", "distance")]:
-    feature = identity()
-    added = root / (kind + ".fcad")
-    edit(source, added, [{"kind": "add_feature", "object": feature, "body": body,
-                         "name": kind, "feature": {"kind": kind, "edges": edges,
-                                                   amount: {"value": 0.5, "unit": "mm"}}}])
-    reordered = root / (kind + "-reordered.fcad")
-    edit(added, reordered, [{"kind": "set_edges", "object": feature,
-                            "edges": list(reversed(edges))}])
-    call("rebuild", reordered, "--cold")
-    before = reordered.read_bytes()
-    refused = root / (kind + "-duplicate.fcad")
-    result = edit(reordered, refused, [{"kind": "set_edges", "object": feature,
-                                       "edges": [edges[0], edges[0]]}], code=2)
-    assert result["error"]["kind"] == "input", result
-    assert reordered.read_bytes() == before and not refused.exists()
+profile, addition = identity(), identity()
+plane = facts["sketches"][0]["plane_id"]
+points = [(70, 0), (80, 0), (80, 10), (70, 10)]
+curves = []
+for start, end in zip(points, points[1:] + points[:1]):
+    curves.append({"id": identity(), "construction": False, "geometry": {
+        "kind": "line", "start": {"x": {"value": start[0], "unit": "mm"},
+                                  "y": {"value": start[1], "unit": "mm"}},
+        "end": {"x": {"value": end[0], "unit": "mm"},
+                "y": {"value": end[1], "unit": "mm"}}}})
+pieces = root / "pieces.fcad"
+edit(source, pieces, [
+    {"kind": "add_sketch", "object": profile, "plane": plane,
+     "curves": curves, "constraints": []},
+    {"kind": "add_feature", "object": addition, "body": body, "feature": {
+        "kind": "extrude", "profile": profile, "operation": "add", "reversed": False,
+        "end_condition": {"kind": "blind", "distance": {"value": 10, "unit": "mm"}}}}])
+set_edges = {digest: {"producer": producer, "kind": "edge", "digest": digest, "selection": "one"}
+             for producer, digest in re.findall(
+                 r"producer=([0-9a-f-]+) kind=edge digest=([0-9a-f]{64}) entities=1",
+                 call("print-topology", pieces))}
+assert len(set_edges) == 24
+
+for source, edges, solids in [(source, edges, 1), (pieces, list(set_edges.values()), 2)]:
+    for kind, amount in [("fillet", "radius"), ("chamfer", "distance")]:
+        feature = identity()
+        added = root / (kind + f"-{solids}.fcad")
+        edit(source, added, [{"kind": "add_feature", "object": feature, "body": body,
+                             "name": kind, "feature": {"kind": kind, "edges": edges,
+                                                       amount: {"value": 0.5, "unit": "mm"}}}])
+        results = call("inspect", added, "--json")["result"]["feature_results"]
+        assert next(r["solid_count"] for r in results if r["feature_id"] == feature) == solids
+        noun = "solid" if solids == 1 else "solids"
+        assert f"feature {feature}; {solids} {noun}" in call("print-topology", added)
+        reordered = root / (kind + f"-reordered-{solids}.fcad")
+        edit(added, reordered, [{"kind": "set_edges", "object": feature,
+                                "edges": list(reversed(edges))}])
+        text = call("rebuild", reordered, "--cold")
+        assert f"on {len(edges)} edges from {len(edges)} edge references" in text
+        if solids == 1:
+            one = root / (kind + "-one-edge.fcad")
+            edit(added, one, [{"kind": "set_edges", "object": feature, "edges": edges[:1]}])
+            assert "on 1 edge from 1 edge reference" in call("rebuild", one, "--cold")
+        before = reordered.read_bytes()
+        refused = root / (kind + f"-duplicate-{solids}.fcad")
+        result = edit(reordered, refused, [{"kind": "set_edges", "object": feature,
+                                           "edges": [edges[0], edges[0]]}], code=2)
+        assert result["error"]["kind"] == "input", result
+        assert reordered.read_bytes() == before and not refused.exists()
 print("NAMED_EDGES_OK both operations, replacement and atomic duplicate refusal")
 ```

@@ -7,14 +7,15 @@ from pathlib import Path
 import sys
 
 KEYS = ("target", "reversed", "operation")
-COUNTS = ("faces", "edges", "vertices", "ambiguous")
+COUNTS = ("faces", "edges", "vertices", "ambiguous", "solids")
+IDENTITIES = ("names",)
 NUMBERS = ("low", "high", "length", "volume")
 
 
 def read(path):
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream, delimiter="\t")
-        if reader.fieldnames != [*KEYS, *NUMBERS, *COUNTS]:
+        if reader.fieldnames != [*KEYS, *NUMBERS, *COUNTS, *IDENTITIES]:
             raise ValueError(f"{path}: unknown measurement schema")
         rows = {}
         for row in reader:
@@ -25,6 +26,7 @@ def read(path):
             if not all(math.isfinite(v) for v in values.values()):
                 raise ValueError(f"{path}: nonfinite measurement")
             values.update({k: int(row[k]) for k in COUNTS})
+            values.update({k: row[k] for k in IDENTITIES})
             rows[key] = values
     if not rows:
         raise ValueError(f"{path}: empty corpus")
@@ -50,11 +52,11 @@ def main():
                 actual = rows[case][key]
                 # Compare geometric measurements at sub-tolerance precision;
                 # topology and ambiguity cardinalities must agree exactly.
-                equal = (actual == value if key in COUNTS else
+                equal = (actual == value if key in (*COUNTS, *IDENTITIES) else
                          math.isclose(actual, value, rel_tol=1e-10, abs_tol=1e-8))
                 if not equal:
                     raise ValueError(f"{identity} {case} {key}: {actual} != {value}")
-    print("ThroughAll bounds, tool lengths, volume and topology "
+    print("ThroughAll bounds, tool lengths, volume, topology and set names "
           "agree across platforms and runtimes")
 
 

@@ -7,6 +7,9 @@ use ferritecad_occt::OcctKernel;
 use ferritecad_types::{ObjectId, StableEntityId, Transform};
 use std::collections::BTreeMap;
 
+#[path = "support/set_sweeps.rs"]
+mod set_sweeps;
+
 fn put(d: &mut Document, payload: ObjectPayload) -> ObjectId {
     let id = ObjectId::new();
     d.write(|w| {
@@ -614,7 +617,7 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
     use ferritecad_types::Vec3;
     let mut facts = String::from(concat!(
         "target\treversed\toperation\tlow\thigh\tlength\tvolume\t",
-        "faces\tedges\tvertices\tambiguous\n",
+        "faces\tedges\tvertices\tambiguous\tsolids\tnames\n",
     ));
     for revolved in [false, true] {
         for reversed in [false, true] {
@@ -731,7 +734,7 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
                 let names = built.topology().feature(tip).expect("names");
                 use ferritecad_kernel::SubShapeKind;
                 facts.push_str(&format!(
-                    "{}\t{}\t{:?}\t{:.12}\t{:.12}\t{:.12}\t{:.12}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{:?}\t{:.12}\t{:.12}\t{:.12}\t{:.12}\t{}\t{}\t{}\t{}\t{}\t-\n",
                     if revolved { "revolve" } else { "symmetric" },
                     reversed,
                     operation,
@@ -742,12 +745,14 @@ fn through_all_projects_rotated_planes_over_symmetric_and_revolved_targets() {
                     names.topology.entities(SubShapeKind::Face).count(),
                     names.topology.entities(SubShapeKind::Edge).count(),
                     names.topology.entities(SubShapeKind::Vertex).count(),
-                    names.ambiguous().count()
+                    names.ambiguous().count(),
+                    k.solid_count(shape).expect("solid count")
                 ));
                 built.release_all(&mut k);
             }
         }
     }
+    set_sweeps::append_measurements(&mut facts);
     if let Some(directory) = std::env::var_os("FCAD_SWEEP_ARTIFACTS") {
         use std::io::Write;
         let path = std::path::PathBuf::from(directory).join("through-all.tsv");
