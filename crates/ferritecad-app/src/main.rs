@@ -41,6 +41,7 @@ mod exports;
 mod feature_facts;
 mod fillets;
 mod journal;
+mod keep_solids;
 mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
@@ -4238,10 +4239,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 request.changes,
                             );
                         }
-                        if let Some(request) = self.creates.sketch.fillets.take_apply_request() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
-                        if let Some(request) = self.creates.sketch.fillets.take_add_request() {
+                        for request in self.creates.sketch.edge_and_piece_requests() {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_chamfer_request() {
@@ -4259,12 +4257,6 @@ impl ApplicationHandler<AppEvent> for App {
                                 request.expected,
                                 request.changes,
                             );
-                        }
-                        if let Some(request) = self.creates.sketch.chamfers.take_apply_request() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
-                        if let Some(request) = self.creates.sketch.chamfers.take_add_request() {
-                            self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.create_new(content);

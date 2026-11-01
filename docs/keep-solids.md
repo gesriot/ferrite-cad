@@ -54,7 +54,7 @@ and each built feature's solid count. Text `inspect` and `rebuild` describe the 
 in words. A splitting Cut and KeepSolids can share one request. The common transaction
 rejects any newly failed dependent feature, leaving the source and destination unchanged.
 An already broken saved document opens for repair. Undo/Redo restores payloads, tip and
-references together. There is no new window selection form yet.
+references together. The window commands below use this same transaction.
 
 - `input`: empty face list, a non-face reference, missing predecessor or invalid request.
 - `topology`: deleted/unknown/split exact reference, or a family with zero or several owners.
@@ -71,7 +71,31 @@ Fillet/Chamfer can edit named edges in one or several retained solids. Reference
 Face datums resolve across the complete support result; ThroughAll covers all forward members
 of the predecessor with its existing margin. A later Add may merge the selected piece with new
 material and a Cut may split it again: the face witness keeps its existing meaning, not an old
-piece volume or ordinal. New window selection forms and export evidence remain separate work.
+piece volume or ordinal.
+
+## Window interaction and export
+
+The model tree shows one Body with “1 solid” or “2 solids”, and the viewport draws all
+components in one mesh. Select a named face in the viewport, expand **Keep solid pieces**,
+and press **Keep selected piece** on the Body. This adds KeepSolids. On an existing
+KeepSolids row the same button replaces its witness; **All** restores the entire predecessor.
+The reference uses the face name's original producer, even after later features retain it.
+The commands refuse a stale scene or a face without a single stored meaning. A piece without
+an unambiguous witness cannot be selected individually; another witness or All is required.
+
+A broken saved selection opens with its feature and reference diagnostic in the model tree.
+The last built predecessor remains visible for repair. Select a surviving face and replace the
+witness, or choose All. The transaction refuses every newly failing dependent and publishes
+nothing on failure. Undo/Redo restores the payload and Body tip together. Save and Save As
+publish the session's current document; a piece command does not write the source file.
+
+FBX writes one geometry definition and one occurrence keyed by the Body UUID, with every
+component present once. STL writes all components of the selected Body to one file. Neither
+format creates per-piece identities or accepts a solid ordinal. The pinned independent FBX
+reader checks identity, connectivity, winding and total volume against singleton and split-body
+STL exports. Native STEP test writing uses one product and placement containing all solids;
+read-back checks count, validity and volumes. There is no product STEP export command, and
+imported STEP assembly identities keep their existing contract.
 
 ## Executable recipe
 
@@ -160,6 +184,11 @@ def count(path):
 
 
 assert count(all_pieces) == 2
+# One Body exports every component to each file, without a component selector.
+for command, suffix in [("export-fbx", "fbx"), ("export-stl", "stl")]:
+    target = root / ("all-pieces." + suffix)
+    call(command, all_pieces, "--output", target, "--json")
+    assert target.is_file() and target.stat().st_size > 84
 # A later edge edit consumes the set without requiring a piece selection first.
 plate_edges = {digest: {"producer": producer, "kind": "edge", "digest": digest, "selection": "one"}
                for producer, digest in re.findall(

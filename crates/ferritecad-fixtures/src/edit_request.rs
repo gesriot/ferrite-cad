@@ -172,7 +172,7 @@ pub fn edges_json(edges: &[ferritecad_document::EntityReference]) -> Vec<Value> 
         .iter()
         .map(|edge| {
             let meaning = edge.meaning;
-            json!({"producer":meaning.producer, "kind":meaning.kind,
+            json!({"id": edge.id, "producer":meaning.producer, "kind":meaning.kind,
             "digest":meaning.digest.to_string(), "selection":meaning.selection})
         })
         .collect()

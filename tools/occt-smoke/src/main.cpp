@@ -722,6 +722,78 @@ void Step6_ReadStepXde(StepResult& r, const std::string& path, StepMeta& meta)
   r.pass = true;
 }
 
+void StepResultSetRoundTrip(StepResult& r)
+{
+  for (int count : {1, 2}) {
+    TopoDS_Compound whole;
+    BRep_Builder builder;
+    builder.MakeCompound(whole);
+    builder.Add(whole, BRepPrimAPI_MakeBox(28.0, 40.0, 10.0).Shape());
+    if (count == 2) {
+      builder.Add(whole, BRepPrimAPI_MakeBox(gp_Pnt(32.0, 0.0, 0.0),
+                                           28.0, 40.0, 10.0).Shape());
+    }
+    const Handle(TDocStd_Document) doc = NewXdeDocument();
+    const auto shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    const TDF_Label body = shapes->AddShape(whole, Standard_False);
+    TDataStd_Name::Set(body, TCollection_ExtendedString("Body result set"));
+    const ScopedTempPath tmp(UniqueRoundTripPath());
+    STEPCAFControl_Writer writer;
+    writer.SetNameMode(Standard_True);
+    if (!writer.Transfer(doc, STEPControl_AsIs) ||
+        writer.Write(tmp.path().string().c_str()) != IFSelect_RetDone) {
+      throw std::runtime_error("native result-set STEP write failed");
+    }
+    const Handle(TDocStd_Document) restored = NewXdeDocument();
+    STEPCAFControl_Reader reader;
+    reader.SetNameMode(Standard_True);
+    if (reader.ReadFile(tmp.path().string().c_str()) != IFSelect_RetDone ||
+        !reader.Transfer(restored)) {
+      throw std::runtime_error("native result-set STEP read failed");
+    }
+    const auto read_shapes = XCAFDoc_DocumentTool::ShapeTool(restored->Main());
+    TDF_LabelSequence roots;
+    read_shapes->GetFreeShapes(roots);
+    if (roots.Length() != 1 || read_shapes->IsAssembly(roots.Value(1))) {
+      throw std::runtime_error("one Body became several products or an assembly");
+    }
+    Handle(TDataStd_Name) name;
+    if (!roots.Value(1).FindAttribute(TDataStd_Name::GetID(), name) ||
+        name->Get() != TCollection_ExtendedString("Body result set")) {
+      throw std::runtime_error("Body product identity was lost");
+    }
+    const TopoDS_Shape read = read_shapes->GetShape(roots.Value(1));
+    TopTools_IndexedMapOfShape members;
+    TopExp::MapShapes(read, TopAbs_SOLID, members);
+    if (members.Extent() != count) {
+      throw std::runtime_error("STEP lost or duplicated a solid component");
+    }
+    bool left_seen = false;
+    bool right_seen = false;
+    for (int i = 1; i <= members.Extent(); ++i) {
+      GProp_GProps volume;
+      BRepGProp::VolumeProperties(members(i), volume);
+      if (!BRepCheck_Analyzer(members(i)).IsValid() ||
+          std::abs(volume.Mass() - 11200.0) > 1e-6) {
+        throw std::runtime_error("STEP changed a component's validity or volume");
+      }
+      const gp_Pnt centre = volume.CentreOfMass();
+      if (centre.Distance(gp_Pnt(14.0, 20.0, 5.0)) < 1e-6 && !left_seen) {
+        left_seen = true;
+      } else if (centre.Distance(gp_Pnt(46.0, 20.0, 5.0)) < 1e-6 && !right_seen) {
+        right_seen = true;
+      } else {
+        throw std::runtime_error("STEP moved or duplicated a component");
+      }
+    }
+    if (!left_seen || right_seen != (count == 2)) {
+      throw std::runtime_error("STEP changed the singleton or split-body placement");
+    }
+  }
+  r.pass = true;
+  r.detail = "singleton and two-solid result: one product/placement, all volumes preserved";
+}
+
 void Step7_StepWriteReadRoundTrip(StepResult& r,
                                   const std::string& input_path,
                                   const StepMeta& original)
@@ -1332,7 +1404,7 @@ int main(int argc, char** argv)
   SharedGeom geom;
   StepMeta step_meta;
   std::vector<StepResult> results;
-  results.reserve(10);
+  results.reserve(11);
 
   results.push_back(RunStep(1, "box_volume", [&](StepResult& r) {
     Step1_BoxVolume(r, geom);
@@ -1368,6 +1440,10 @@ int main(int argc, char** argv)
   }));
   results.push_back(RunStep(10, "vertex_archive", [&](StepResult& r) {
     Step10_NamedVertexArchive(r);
+  }));
+
+  results.push_back(RunStep(11, "result_set_step", [&](StepResult& r) {
+    StepResultSetRoundTrip(r);
   }));
 
   // Summary table.

@@ -11,6 +11,9 @@ pub(crate) fn update(
     apply: [bool; 2],
     add: [bool; 2],
 ) {
+    editor
+        .keep_solids
+        .update(scene, sessions, can_begin && !editor.active());
     let selected = (|| {
         let current = sessions.export_source().ok_or("no open document")?;
         let shown = scene

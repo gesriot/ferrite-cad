@@ -1332,6 +1332,7 @@ mod tests {
     mod cut;
     mod datum_planes;
     mod fillet;
+    mod keep_solids;
     mod new_document;
     mod recovery;
     mod tabs;

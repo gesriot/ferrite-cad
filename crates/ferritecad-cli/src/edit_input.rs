@@ -589,6 +589,7 @@ impl Feature {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Reference {
+    id: Option<StableEntityId>,
     producer: ObjectId,
     kind: ferritecad_document::EntityKind,
     digest: String,
@@ -596,14 +597,15 @@ pub(super) struct Reference {
 }
 impl Reference {
     fn into_reference(self) -> Result<ferritecad_document::EntityReference> {
-        Ok(ferritecad_document::EntityReference::new(
-            ferritecad_document::ReferenceMeaning {
+        Ok(ferritecad_document::EntityReference {
+            id: self.id.unwrap_or_else(StableEntityId::new),
+            meaning: ferritecad_document::ReferenceMeaning {
                 producer: self.producer,
                 kind: self.kind,
                 digest: self.digest.parse()?,
                 selection: self.selection,
             },
-        ))
+        })
     }
 }
 

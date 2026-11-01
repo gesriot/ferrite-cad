@@ -1003,5 +1003,8 @@ pieces explicitly through named face witnesses in the shared `edit` transaction.
 No piece is chosen by size, position or enumeration order. Fillet/Chamfer can edit either or
 several members atomically; Face datums and referenced sweep ends use the complete support
 result. ThroughAll bounds include every predecessor member in the chosen direction.
-New window selection forms and multibody export evidence follow separately under
+In the window, select a face and use **Keep solid pieces → Keep selected piece** or **All**.
+The tree reports the solid count; selection, repair, Undo/Redo and Save use the shared session.
+FBX and STL keep all components under one Body identity; native STEP test writing verifies
+one product and placement with multiple solids. See
 [ADR 0008](docs/decisions/0008-multibody-results.md).
