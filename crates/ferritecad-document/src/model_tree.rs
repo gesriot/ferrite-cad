@@ -20,6 +20,8 @@ pub struct ModelTreeRow {
     pub name: String,
     pub kind: String,
     pub note: String,
+    /// Evaluated scene fact; the stored-only projection has no solid count.
+    pub solid_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -141,5 +143,6 @@ fn row(
         name: object.name.clone().unwrap_or_else(|| "Unnamed".into()),
         kind,
         note: note.into(),
+        solid_count: None,
     }
 }

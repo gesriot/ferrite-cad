@@ -1095,6 +1095,7 @@ impl prepare::LoadSink for Picture {
                         .filter(|row| row.id.0 == *body)
                     {
                         row.note = format!("{count} {noun}; {}", row.note);
+                        row.solid_count = Some(count);
                     }
                 }
             }

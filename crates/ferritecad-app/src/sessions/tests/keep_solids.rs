@@ -212,6 +212,31 @@ fn count(sessions: &Sessions) -> usize {
     n
 }
 
+fn visible_count(source: &crate::sketch_facts::Source, expected: &str) {
+    let context = egui::Context::default();
+    let rows = crate::workspace::model_rows(Some(source));
+    // No selected row or hover: this must be text in the tree itself.
+    let mut navigation = ferritecad_ui::ModelNavigation::default();
+    let mut output = None;
+    for _ in 0..3 {
+        output = Some(context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360., 900.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                ferritecad_ui::model_panel(ui, 0, &rows, &mut navigation, |_| vec![], Ok(()));
+            },
+        ));
+    }
+    assert!(output.expect("frame").shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
+    }));
+}
+
 #[test]
 fn native_face_piece_commands_match_cli_repair_history_and_save() {
     if !native() {
@@ -242,6 +267,7 @@ fn native_face_piece_commands_match_cli_repair_history_and_save() {
     );
     let mut scene = picture(&sessions, &mut renderer);
     let source = scene.edit_source.as_ref().expect("source").clone();
+    visible_count(&source, "2 solids");
     assert!(
         source
             .model_tree
@@ -294,6 +320,7 @@ fn native_face_piece_commands_match_cli_repair_history_and_save() {
     }
     let mut scene = picture(&sessions, &mut renderer);
     let source = scene.edit_source.as_ref().expect("source").clone();
+    visible_count(&source, "1 solid");
     assert!(
         source
             .model_tree
