@@ -157,7 +157,7 @@ fn report(
                 if let Some(names) = built.topology().feature(*id) {
                     // Every face this feature named, its own and the ones it
                     // carried forward, counted where the names live.
-                    write!(line, "solid, {} named faces", names.named_face_count())
+                    write!(line, "{} named faces", names.named_face_count())
                         .expect("writing to a String cannot fail");
                     if extrude.end_condition.support().is_some() {
                         write!(line, "; {}", extrude.end_condition)

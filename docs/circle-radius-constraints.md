@@ -329,7 +329,7 @@ assert after["sketches"][0]["circle_edit"]["available"] is False
 checked = run(["validate", str(sized), "--json"])
 assert checked["ok"] and checked["result"]["valid"], checked
 rebuilt = run(["rebuild", str(sized), "--cold"])
-assert "solid, 3 named faces" in rebuilt, rebuilt
+assert "3 named faces; 1 solid" in rebuilt, rebuilt
 assert "3 of 3 stored references resolved" in rebuilt, rebuilt
 named = run(["print-topology", str(sized)])
 assert f"extrude side from segment {curve}" in named, named

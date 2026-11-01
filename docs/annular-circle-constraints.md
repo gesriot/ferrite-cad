@@ -364,7 +364,7 @@ assert after["sketches"][0]["circle_edit"]["available"] is False
 checked = run(["validate", str(sized), "--json"])
 assert checked["ok"] and checked["result"]["valid"], checked
 rebuilt = run(["rebuild", str(sized), "--cold"])
-assert "solid, 4 named faces" in rebuilt, rebuilt
+assert "4 named faces; 1 solid" in rebuilt, rebuilt
 assert "4 of 4 stored references resolved" in rebuilt, rebuilt
 named = run(["print-topology", str(sized)])
 for curve in (boundary, bore):

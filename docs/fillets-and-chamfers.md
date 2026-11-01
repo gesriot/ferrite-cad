@@ -68,9 +68,8 @@ positive volume, with no free lower-dimensional shapes. One failed edge refuses 
 feature without publishing a partial result. An edge shared by several solids refuses as input:
 “a selected edge belongs to 2 solids; edge operations require one owning solid per edge”.
 Complete Kept/Modified/Generated/Deleted history includes vertex junction faces. Names follow
-the common operation path;
-cold and cached rebuilds preserve the same meanings. The document format is
-unstable: regenerate fixtures after changing payloads, without migration code.
+the common operation path; cold and cached rebuilds preserve the same meanings. The document
+format is unstable: regenerate fixtures after changing payloads, without migration code.
 
 ## Executable recipe
 

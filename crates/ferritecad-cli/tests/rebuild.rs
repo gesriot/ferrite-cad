@@ -92,7 +92,7 @@ fn a_cold_rebuild_reports_what_the_document_produced() {
         report.contains("4 objects evaluated, 1 shape built"),
         "{report}"
     );
-    assert!(report.contains("solid, 6 named faces"), "{report}");
+    assert!(report.contains("6 named faces; 1 solid"), "{report}");
     assert!(report.contains("4 segments"), "{report}");
     assert!(
         report
@@ -295,7 +295,7 @@ fn the_duration_guard_knows_a_timing_from_a_target_triple() {
         "  kernel occt 8.0.1 (bridge 7e12b8f0 x86_64-pc-windows-msvc)",
         "  4 objects evaluated, 1 shape built",
         "  019fe39c-0c09-78a1-80d3-905a79570e50  Profile  sketch  4 segments",
-        "  Extrude1  feature.extrude  solid, 6 named faces",
+        "  Extrude1  feature.extrude  6 named faces; 1 solid",
         "    face 54bb0bfef95da512d4d0863114bc61579cf6bed1299a206eac64706bedca054c entities=1",
         r"rebuilt C:\Users\RUNNER~1\AppData\Local\Temp\.tmpfETos3\plate.fcad",
     ] {
