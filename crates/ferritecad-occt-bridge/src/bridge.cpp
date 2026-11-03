@@ -250,8 +250,10 @@ void naming_sweep(ShapeRecord &record, Sweep &sweep,
     const TopoDS_Shape cap[] = {sweep.FirstShape(faces[r]), sweep.LastShape(faces[r])};
     for (size_t end = 0; end < 2; ++end) {
       naming_link(record, 0, end, 6, 2, cap[end]);
-      for (size_t i = 0; i < loop_segment_counts[loop]; ++i)
-        naming_link(record, 0, segment + i, 7, 2, cap[end]);
+      if (faces.size() > 1) {
+        for (size_t i = 0; i < loop_segment_counts[loop]; ++i)
+          naming_link(record, 0, segment + i, 7, 2, cap[end]);
+      }
     }
     for (size_t i = 0; i < region_loop_counts[r]; ++i)
       segment += loop_segment_counts[loop++];
@@ -369,6 +371,7 @@ void name_limited_sweep(ShapeRecord &record, BRepPrimAPI_MakePrism &prism,
     const auto *row = record.naming_history.data() + i;
     if (row[2] == 6 && row[3] == 2) caps.Add(record.sub_shapes[row[4]]);
   }
+  if (caps.Extent() <= 2) return;
   std::vector<size_t> outer_curves;
   size_t loop = 0, segment = 0;
   for (size_t r = 0; r < faces.size(); ++r) {
@@ -520,9 +523,6 @@ void add_survivors(BRepAlgoAPI_BuilderAlgo &split, const TopoDS_Shape &source,
 }
 
 constexpr const char *next_coverage = "nothing next ahead of the sketch plane covers the profile";
-constexpr const char *next_transition =
-    "the target's next boundary does not close the profile without a new transition face; "
-    "choose an end face with up_to_face";
 
 FcOcctStatus up_to_next(ShapeRecord &record, const TopoDS_Shape &input,
     const TopoDS_Shape &target, const gp_Ax3 &frame, double sign,
@@ -627,9 +627,11 @@ FcOcctStatus up_to_next(ShapeRecord &record, const TopoDS_Shape &input,
       write_error(error, "the split returned an end face without target history");
       return FC_OCCT_KERNEL;
     }
-    if (!next_boundary::forward_patch(TopoDS::Face(f.Current()), dir)) {
-      write_error(error, next_transition);
-      return FC_OCCT_INVALID_INPUT;
+    std::string reason;
+    const auto status = next_boundary::check_patch(TopoDS::Face(f.Current()), dir, reason);
+    if (status != FC_OCCT_OK) {
+      write_error(error, reason);
+      return status;
     }
     ends.Add(f.Current());
   }

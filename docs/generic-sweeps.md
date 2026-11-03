@@ -173,9 +173,10 @@ witness set. They share one name with five bindings. Selection `one` refuses tha
 ambiguous name, while `all_descendants` returns all five faces. The roof has its own
 outer-curve witnesses. A final boolean can distinguish tool faces through target history.
 
-The current draft certifies planar, cylindrical, spherical and conical end patches.
-Certification on general trimmed curved faces is still open. Without a proof the draft
-returns a kernel error before publishing an extrusion.
+Up to next supports planar, cylindrical, conical and spherical end faces. A toroidal,
+B-spline, Bézier, revolved, extruded, offset or other surface outside these four kinds
+refuses as `unsupported` before publication. The message names the surface and suggests
+`up_to_face`. Parallel walls use the kernel's angular tolerance.
 
 Set `"end_condition": {"kind": "up_to_next"}` in a `set_end_condition` edit.
 A mixed starting side refuses with “the profile starts partly inside and partly outside

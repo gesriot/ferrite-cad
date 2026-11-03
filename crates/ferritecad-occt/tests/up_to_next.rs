@@ -553,3 +553,128 @@ fn first_exit_cavity_mixed_side_and_missing_coverage() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn a_toroidal_end_refuses_without_changing_its_predecessor() -> Result<()> {
+    use ferritecad_kernel::{RevolveAxis, RevolveRequest, RevolveTurn};
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let mut kernel = OcctKernel::new()?;
+    let context = OperationContext::default();
+    let circle = ferritecad_fixtures::datum_planes::circle(ObjectId::new(), [10., 8.], 3.)?;
+    let axial = SketchPlane::new(Point3::ORIGIN, Vec3::X, Vec3::new(0., -1., 0.)?)?;
+    let profile = ferritecad_eval::profile_from_sketch(&circle, ObjectId::new(), axial)?.profile;
+    let torus = kernel
+        .revolve(
+            &RevolveRequest::new(profile, RevolveAxis::PlaneY, RevolveTurn::Full),
+            &context,
+        )?
+        .shape;
+    let tool = rectangle(ObjectId::new(), [9., -1.], [11., 1.])?;
+    let profile =
+        ferritecad_eval::profile_from_sketch(&tool, ObjectId::new(), SketchPlane::world_xy())?
+            .profile;
+    let before = kernel.encode_shape(torus)?;
+    let count = kernel.live_shape_count();
+    let error = kernel
+        .extrude_to_next(&profile, false, torus, &context)
+        .expect_err("torus");
+    assert_eq!(
+        error.kind(),
+        ferritecad_types::ErrorKind::Unsupported,
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains(concat!(
+            "up to next supports planar, cylindrical, conical and spherical end faces, ",
+            "not a toroidal face; choose an end face with up_to_face"
+        )),
+        "{error}"
+    );
+    assert_eq!(kernel.encode_shape(torus)?.bytes(), before.bytes());
+    assert_eq!(kernel.live_shape_count(), count);
+    Ok(())
+}
+
+fn tilted_step(round: bool, gap: bool, tilt: f64, azimuth: f64) -> Result<()> {
+    let (sin_tilt, cos_tilt) = tilt.to_radians().sin_cos();
+    let (sin_az, cos_az) = azimuth.to_radians().sin_cos();
+    let normal = Vec3::new(sin_tilt * cos_az, sin_tilt * sin_az, cos_tilt)?;
+    let x_axis = Vec3::new(cos_tilt * cos_az, cos_tilt * sin_az, -sin_tilt)?;
+    let plane = |height: f64| {
+        SketchPlane::new(
+            Point3::new(
+                11. + height * normal.x,
+                -7. + height * normal.y,
+                3. + height * normal.z,
+            )?,
+            x_axis,
+            normal,
+        )
+    };
+    let profile = |sketch, z| -> Result<_> {
+        Ok(ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane(z)?)?.profile)
+    };
+    let context = OperationContext::default();
+    let mut kernel = OcctKernel::new()?;
+    let roof = profile(rectangle(ObjectId::new(), [-2., -2.], [12., 10.])?, 8.)?;
+    let lower = if round {
+        ferritecad_fixtures::datum_planes::circle(ObjectId::new(), [5., 4.], 2.)?
+    } else {
+        rectangle(ObjectId::new(), [-2., -2.], [5., 10.])?
+    };
+    let mut extrude = |profile, depth| -> Result<_> {
+        Ok(kernel
+            .extrude(
+                &ExtrudeRequest::new(profile, ExtrudeExtent::blind(depth)?, false),
+                &context,
+            )?
+            .shape)
+    };
+    let roof = extrude(roof, 2.)?;
+    let shelf = extrude(profile(lower, 3.)?, if gap { 1. } else { 5. })?;
+    let target = kernel
+        .boolean(
+            &BooleanRequest::new(BooleanKind::Fuse, roof, shelf)?,
+            &context,
+        )?
+        .shape;
+    let tool = profile(rectangle(ObjectId::new(), [0., 0.], [10., 8.])?, 0.)?;
+    let end = kernel.extrude_to_next(&tool, false, target, &context);
+    if gap {
+        let error = end.expect_err("the cell extends behind the shelf");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+        assert!(
+            error.to_string().contains("without a new transition face"),
+            "{error}"
+        );
+    } else {
+        let shape = end?.shape;
+        assert!(kernel.is_valid(shape)?);
+        let expected = if round {
+            640. - 20. * std::f64::consts::PI
+        } else {
+            440.
+        };
+        assert!((kernel.shape_stats(shape)?.1 - expected).abs() < 1e-6);
+    }
+    Ok(())
+}
+
+#[test]
+fn tilted_planar_step_keeps_its_wall_and_refuses_a_shelf_gap() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    tilted_step(false, false, 39., 31.)?;
+    tilted_step(false, true, 39., 31.)
+}
+
+#[test]
+fn tilted_cylindrical_wall_parallel_to_the_sweep_keeps_its_volume() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    tilted_step(true, false, 37., 29.)
+}

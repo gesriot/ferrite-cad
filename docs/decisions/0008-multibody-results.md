@@ -252,6 +252,8 @@ not the nearest solid centroid, a sampled ray or the first enumerated member.
 Any ambiguity or incomplete coverage refuses. Detailed surface construction
 belongs to 11c, after multibody consumers are ready.
 The [up-to-next end](../generic-sweeps.md#up-to-next) must close without a new transition face.
+The end supports planes, cylinders, cones and spheres, and reports `unsupported` for other
+surface kinds with a suggestion to choose an end face with `up_to_face`.
 
 **Scene and export.** Keep one native Body definition, one placement and one
 mesh containing all of its solid components. Keep face/edge/vertex partitions
