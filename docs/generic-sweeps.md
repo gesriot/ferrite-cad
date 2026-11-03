@@ -147,6 +147,28 @@ The window draws the evaluated shape. Its existing Cut editor shows
 “this feature's end condition is edited through `edit`” for these conditions.
 Viewport creation of referenced end conditions is separate work.
 
+## Up to next
+
+The design for `up_to_next` takes the first forward hit on the complete `previous` result
+at each point of the profile. Add, Cut and Intersect have a target. NewBody has none.
+The whole profile must start on the same side of the target and have a boundary ahead in
+the direction set by `reversed`. Other Bodies never supply that boundary.
+
+A step can end the extrusion when the target supplies both levels and the wall joining them.
+For example, above a 10 × 8 mm profile, a ceiling 3 mm away over one half and 8 mm away
+over the other bounds a 440 mm³ tool. If the lower shelf is only 1 mm thick and the roof
+extends over it, the connected space above the shelf adds another 160 mm³. Stopping at the
+first hit would require a new wall in that space. Tool names derive from the sweep inputs.
+Projecting a shelf edge to create and name that wall would require different provenance.
+
+> the target's next boundary does not close the profile without a new transition face;
+> choose an end face with up_to_face
+
+Use `up_to_face` to choose an explicit terminating surface in that case.
+
+The end condition is pending implementation. On a step wholly inside the profile, some
+end faces have no edge derived from an outer profile curve to witness their names.
+
 ## Executable referenced-end recipe
 
 Set `FERRITECAD` to the built CLI. Face and vertex identities below come from their
