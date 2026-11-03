@@ -1256,3 +1256,20 @@ if [ -n "${FCAD_CHAMFER_SESSION_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CHAMFER_SESSION_UFBX_EXECUTED"
 fi
+
+# Complete native Body sets, including the unchanged singleton contract.
+if [ -n "${FCAD_MULTIBODY_FBX_DIR:-}" ]; then
+    python="$(command -v python3 || command -v python || true)"
+    [ -n "$python" ] || { echo "error: no Python interpreter for the Body-set check" >&2; exit 1; }
+    for name in single split selected; do
+        "$reader" --identity "$(native "$FCAD_MULTIBODY_FBX_DIR/$name.fbx")" \
+            > "$work/set-$name-id.txt"
+        "$reader" --triangles "$(native "$FCAD_MULTIBODY_FBX_DIR/$name.fbx")" \
+            > "$work/set-$name-mesh.txt"
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$(native "$FCAD_MULTIBODY_FBX_DIR/$name.stl")" "$(native "$work/set-$name-mesh.txt")"
+        "$python" "$(native "$root/tools/fbx/check-result-set.py")" \
+            "$(native "$FCAD_MULTIBODY_FBX_DIR/$name.json")" "$(native "$work/set-$name-id.txt")" \
+            "$(native "$work/set-$name-mesh.txt")"
+    done
+fi

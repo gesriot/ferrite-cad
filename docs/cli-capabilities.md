@@ -647,8 +647,12 @@ reports selections and result counts; `rebuild` reports the same facts after eva
 Fillet/Chamfer consume named edges across the whole set and retain untouched members. Face
 datums and referenced ends keep their geometric conditions; ThroughAll uses every predecessor
 solid, without searching other Bodies. `print-topology` also reports each result's solid count.
-The existing scene presents every component as one Body mesh. New selection forms and
-multibody export evidence remain separate implementation steps of
-[ADR 0008](decisions/0008-multibody-results.md). See the [recipe](keep-solids.md).
+The scene presents every component as one Body mesh and the tree reports its solid count.
+Select a face and use **Keep solid pieces → Keep selected piece** to add or replace KeepSolids;
+**All** restores its predecessor. Broken witnesses open for repair through the same commands.
+Undo/Redo and Save/Save As use the shared transaction. FBX retains one Body definition and
+placement, while STL contains all components in one file. Native STEP test writing verifies
+one product with multiple solids; no product STEP exporter is added.
+See [ADR 0008](decisions/0008-multibody-results.md) and the [recipe](keep-solids.md).
 
 [Sweeps]: generic-sweeps.md

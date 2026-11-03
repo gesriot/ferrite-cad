@@ -293,23 +293,7 @@ fn model(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         return;
     };
     let source = view.scene.edit_source;
-    let rows: Vec<_> = source
-        .map(|source| {
-            source
-                .model_tree
-                .rows
-                .iter()
-                .map(|row| ModelRow {
-                    key: row.id,
-                    parent: row.parent,
-                    depth: row.depth,
-                    name: &row.name,
-                    kind: &row.kind,
-                    note: &row.note,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let rows = model_rows(source);
     answers.chosen.model = ferritecad_ui::model_panel(
         ui,
         *tab,
@@ -322,6 +306,27 @@ fn model(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         },
         available,
     );
+}
+
+pub(crate) fn model_rows(source: Option<&ExtrudeEditSource>) -> Vec<ModelRow<'_>> {
+    source
+        .map(|source| {
+            source
+                .model_tree
+                .rows
+                .iter()
+                .map(|row| ModelRow {
+                    key: row.id,
+                    parent: row.parent,
+                    depth: row.depth,
+                    name: &row.name,
+                    kind: &row.kind,
+                    note: &row.note,
+                    solid_count: row.solid_count,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The Actions and Details panel's contents.

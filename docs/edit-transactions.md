@@ -81,8 +81,9 @@ A Fillet feature payload is:
 A Chamfer uses `"kind":"chamfer"` and `"distance"` instead of `"radius"`.
 Both use `add_feature` with an explicit new object and Body. `print-topology`
 prints the producer and digest; use `selection: "all_descendants"` only when all
-surviving descendants are intended. Diagnostic reference UUIDs are assigned by the
-request parser and do not affect the meaning or cache key. Replace the set with
+surviving descendants are intended. An optional `id` preserves a diagnostic reference UUID
+when replaying a window transaction; without it the parser assigns a fresh UUID. It does not
+affect the meaning or cache key. Replace the set with
 `{"kind":"set_edges","object":"<feature UUID>","edges":[<references>]}`.
 An empty set, duplicate meanings or a non-edge kind is invalid input. The kernel
 decides geometric validity; see [Fillet and Chamfer](fillets-and-chamfers.md).
@@ -143,7 +144,8 @@ To select pieces, use `"selection":{"kind":"containing_faces","faces":[<face ref
 Replace an existing selection with
 `{"kind":"set_keep_selection","object":"<KeepSolids UUID>","selection":{"kind":"all"}}`.
 The ordinary reference format is `producer`, `kind: face`, `digest`, `selection`;
-CLI allocates the diagnostic identity for each new use. References resolve in the
+CLI allocates the diagnostic identity for each new use unless its optional `id` is supplied.
+References resolve in the
 predecessor result before native containment is checked. Repeated witnesses select a
 solid once. A family spanning several solids refuses, even if another witness selects
 one of them. `All` always retains the complete set.

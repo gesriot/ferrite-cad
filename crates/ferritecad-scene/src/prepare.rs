@@ -485,6 +485,15 @@ where
                         SceneItem::Body(object.id),
                         Seen {
                             name: object.name.clone(),
+                            solids: built
+                                .shape(object.id)
+                                .map(|shape| kernel.solid_count(shape))
+                                .transpose()?
+                                .map(u32::try_from)
+                                .transpose()
+                                .map_err(|_| {
+                                    CadError::kernel("solid count exceeds scene capacity")
+                                })?,
                             ..Seen::default()
                         },
                     )?;

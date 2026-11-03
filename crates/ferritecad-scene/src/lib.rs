@@ -1075,9 +1075,30 @@ impl prepare::LoadSink for Picture {
                 item: prepared.item.clone(),
                 name: prepared.name.clone(),
                 source_file: prepared.source_file.clone(),
-                solids: prepared.solids,
+                // This catalogue field records imported provenance. Native counts
+                // belong to the evaluated model tree below.
+                solids: match prepared.item {
+                    SceneItem::Body(_) => None,
+                    SceneItem::Imported(_) => prepared.solids,
+                },
                 geometry_omission: prepared.omission.clone(),
             });
+        }
+        if let Some(source) = &mut self.edit_source {
+            for entry in definitions {
+                if let (SceneItem::Body(body), Some(count)) = (&entry.item, entry.solids) {
+                    let noun = if count == 1 { "solid" } else { "solids" };
+                    for row in source
+                        .model_tree
+                        .rows
+                        .iter_mut()
+                        .filter(|row| row.id.0 == *body)
+                    {
+                        row.note = format!("{count} {noun}; {}", row.note);
+                        row.solid_count = Some(count);
+                    }
+                }
+            }
         }
         Ok(LoadedScene {
             rebuild_facts: self.rebuild_facts,
@@ -3188,6 +3209,10 @@ mod tests {
     }
 
     impl GeometryKernel for RefusesMesh {
+        fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+            self.inner.solid_count(shape)
+        }
+
         /// Delegated: this double is about something else, and a cut it
         /// answered differently would be a second kernel.
         fn boolean(
@@ -4508,6 +4533,10 @@ mod tests {
     }
 
     impl GeometryKernel for StopsAfterBuilding {
+        fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+            self.inner.solid_count(shape)
+        }
+
         /// Delegated: this double is about something else, and a cut it
         /// answered differently would be a second kernel.
         fn boolean(
@@ -4868,6 +4897,10 @@ mod tests {
     }
 
     impl GeometryKernel for ReversesFaces {
+        fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+            self.inner.solid_count(shape)
+        }
+
         /// Delegated: this double is about something else, and a cut it
         /// answered differently would be a second kernel.
         fn boolean(

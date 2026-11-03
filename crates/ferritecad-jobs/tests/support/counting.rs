@@ -183,6 +183,14 @@ impl CountingMock {
     }
 }
 impl GeometryKernel for CountingMock {
+    fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
+        if !self.live.contains(&shape) {
+            return Err(CadError::input("unknown counting shape"));
+        }
+        // This work-counting double represents each live shape as one solid.
+        Ok(1)
+    }
+
     fn projected_bounds(
         &mut self,
         shape: ShapeHandle,

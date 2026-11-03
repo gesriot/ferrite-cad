@@ -58,6 +58,7 @@ pub struct ModelRow<'a> {
     pub name: &'a str,
     pub kind: &'a str,
     pub note: &'a str,
+    pub solid_count: Option<u32>,
 }
 
 /// Pure navigation plus an explicitly addressed request. `edits_for` supplies the
@@ -139,6 +140,10 @@ pub fn model_panel(
                             .clicked()
                         {
                             navigation.selected = Some(row.key);
+                        }
+                        if let Some(count) = row.solid_count {
+                            let noun = if count == 1 { "solid" } else { "solids" };
+                            ui.small(format!("{count} {noun}"));
                         }
                     });
                 });

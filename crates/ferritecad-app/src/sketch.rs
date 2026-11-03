@@ -135,6 +135,7 @@ pub(crate) struct Editor {
     /// §28A: the single-edge fillet form, beside the cut one for the same
     /// reason: it adds to a Body's history and reads its own catalogue.
     pub(crate) fillets: crate::fillets::Editor,
+    pub(crate) keep_solids: crate::keep_solids::Commands,
     /// §29A: the single-edge chamfer forms, beside the fillet one for the same
     /// reason: they add to a Body's history (or change its one number) and read
     /// their own catalogue.
@@ -250,6 +251,18 @@ fn record_gestures<T: Clone + PartialEq>(
 }
 
 impl Editor {
+    pub(crate) fn edge_and_piece_requests(&mut self) -> impl Iterator<Item = EditRequest> + use<> {
+        [
+            self.fillets.take_apply_request(),
+            self.fillets.take_add_request(),
+            self.chamfers.take_apply_request(),
+            self.chamfers.take_add_request(),
+            self.keep_solids.take_request(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     pub(crate) fn editing_saved_vertices(&self) -> bool {
         self.editing.is_some()
     }
@@ -948,6 +961,7 @@ impl Editor {
                 .choices(ui, can_begin, path, source, accepted);
             self.cuts.choices(ui, can_begin, path, source);
             self.fillets.choices(ui, can_begin, path, source);
+            self.keep_solids.draw(ui, path, source);
             self.chamfers.choices(ui, can_begin, path, source);
         }
         if self.active() {
