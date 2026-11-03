@@ -82,6 +82,7 @@ pub struct ModelNaming {
     pub(crate) planes: BTreeMap<ObjectId, ObjectId>,
     sweeps: BTreeMap<ObjectId, NamingOperation>,
     roots: BTreeMap<ObjectId, BTreeSet<NamingInput>>,
+    outer_curves: BTreeMap<ObjectId, BTreeSet<StableEntityId>>,
     pub(crate) previous: BTreeMap<ObjectId, ObjectId>,
     pub features: BTreeMap<ObjectId, FeatureNaming>,
 }
@@ -298,6 +299,12 @@ impl ModelNaming {
         {
             return Err(CadError::topology("selected profile has a foreign curve"));
         }
+        let outer = profile
+            .regions()
+            .iter()
+            .flat_map(|r| r.outer.segments())
+            .map(|s| s.label);
+        self.outer_curves.insert(owner, outer.collect());
         saved.retain(|input| match input {
             NamingInput::Curve(c) | NamingInput::CurveEnd { curve: c, .. } => curves.contains(c),
             _ => false,
@@ -368,15 +375,7 @@ impl ModelNaming {
                 return Err(CadError::topology("extrusion provenance is missing a cap"));
             }
         }
-        derive(
-            shape,
-            owner,
-            self.planes.get(&owner).copied(),
-            &self.derivations,
-            inputs,
-            kernel,
-            history,
-        )
+        derive(shape, owner, self, inputs, kernel, history)
     }
 
     /// Publishes a feature's names after checking its graph against the model.
@@ -589,8 +588,7 @@ fn retain_names(
 fn derive(
     shape: ShapeHandle,
     owner: ObjectId,
-    plane: Option<ObjectId>,
-    inherited: &Derivations,
+    model: &ModelNaming,
     inputs: &[&FeatureNaming],
     kernel: &mut (impl GeometryKernel + ?Sized),
     history: ferritecad_kernel::NamingHistory,
@@ -599,7 +597,15 @@ fn derive(
     let operation = history
         .operation
         .ok_or_else(|| CadError::topology("operation history has no operator identity"))?;
-    validate_history(shape, &topology, &history, inputs)?;
+    let plane = model.planes.get(&owner).copied();
+    let inherited = &model.derivations;
+    validate_history(
+        shape,
+        &topology,
+        &history,
+        inputs,
+        model.outer_curves.get(&owner),
+    )?;
     if operation == NamingOperation::KeepSolids {
         return retain_names(topology, &history, inputs);
     }
@@ -913,6 +919,7 @@ fn validate_history(
     topology: &ShapeTopology,
     history: &ferritecad_kernel::NamingHistory,
     inputs: &[&FeatureNaming],
+    outer_curves: Option<&BTreeSet<StableEntityId>>,
 ) -> Result<()> {
     let bad = || CadError::topology("incomplete or contradictory operation provenance");
     if topology.adjacent_faces.is_empty() {
@@ -941,34 +948,28 @@ fn validate_history(
                 .flatten()
         })
         .collect();
-    if caps.len() > 2
-        && history
-            .cap_boundaries
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            != caps
-    {
-        return Err(bad());
-    }
-    for (face, curves) in &history.cap_boundaries {
-        if !caps.contains(face) || curves.is_empty() || !inputs.is_empty() {
+    if caps.len() > 2 || !history.cap_boundaries.is_empty() {
+        let outer = outer_curves.ok_or_else(bad)?;
+        if !inputs.is_empty() {
             return Err(bad());
         }
-        for curve in curves {
-            if !history.relations.iter().any(|(input, relation, output)| {
-                *input == NamingInput::Curve(*curve)
-                    && *relation == NamingRelation::Generated
-                    && output.is_some_and(|edge| {
-                        edge.kind() == SubShapeKind::Edge
-                            && topology
-                                .adjacent_faces
-                                .get(&edge)
-                                .is_some_and(|f| f.contains(face))
-                    })
-            }) {
-                return Err(bad());
+        let mut expected: BTreeMap<_, BTreeSet<_>> =
+            caps.iter().map(|&face| (face, BTreeSet::new())).collect();
+        for &(input, relation, output) in &history.relations {
+            if let (NamingInput::Curve(curve), NamingRelation::Generated, Some(edge)) =
+                (input, relation, output)
+                && edge.kind() == SubShapeKind::Edge
+                && outer.contains(&curve)
+            {
+                for face in topology.adjacent_faces.get(&edge).ok_or_else(bad)? {
+                    if let Some(witnesses) = expected.get_mut(face) {
+                        witnesses.insert(curve);
+                    }
+                }
             }
+        }
+        if expected != history.cap_boundaries {
+            return Err(bad());
         }
     }
     let source: BTreeSet<_> = inputs

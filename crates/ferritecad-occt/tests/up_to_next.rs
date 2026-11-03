@@ -201,3 +201,355 @@ fn compare_end_orientation_and_outer_curve_witnesses_on_shelves_and_steps() -> R
     }
     Ok(())
 }
+
+#[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
+mod naming;
+
+#[test]
+fn the_interior_step_has_five_bindings_for_one_end_name() -> Result<()> {
+    use ferritecad_document::{EntityKind, EntityReference, ReferenceMeaning, Selection};
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let mut kernel = OcctKernel::new()?;
+    let context = OperationContext::default();
+    let profile = ferritecad_eval::profile_from_sketch(
+        &rectangle(ObjectId::new(), [0., 0.], [10., 8.])?,
+        ObjectId::new(),
+        SketchPlane::world_xy(),
+    )?
+    .profile;
+    let roof = block(&mut kernel, [-2., -2.], [12., 10.], 8., 10.)?;
+    let owner = ObjectId::new();
+    for (min, max, top, tool_volume, add_volume) in [
+        ([-2., -2.], [5., 10.], 4., 0., 0.),
+        ([-2., -2.], [5., 10.], 8., 440., 1196.),
+        ([3., 2.], [7., 6.], 8., 560., 976.),
+    ] {
+        let lower = block(&mut kernel, min, max, 3., top)?;
+        let target = kernel
+            .boolean(
+                &BooleanRequest::new(BooleanKind::Fuse, lower, roof)?,
+                &context,
+            )?
+            .shape;
+        let before = kernel.encode_shape(target)?;
+        let tool = kernel.extrude_to_next(&profile, false, target, &context);
+        if top == 4. {
+            let error = tool.expect_err("the air gap needs a new transition face");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+            assert!(error.to_string().contains(concat!(
+                "the target's next boundary does not close the profile without a new ",
+                "transition face; choose an end face with up_to_face"
+            )));
+            assert_eq!(before.bytes(), kernel.encode_shape(target)?.bytes());
+            continue;
+        }
+        let tool = tool?;
+        let history = kernel.naming_history(tool.shape)?;
+        let named = naming::bind(&mut kernel, owner, &profile, &tool)?;
+        let feature = &named.features[&owner];
+        let ends: BTreeSet<_> = history
+            .relations
+            .iter()
+            .filter(|(input, _, _)| *input == NamingInput::Cap { end: true })
+            .filter_map(|(_, _, output)| *output)
+            .collect();
+        let empty: BTreeSet<_> = ends
+            .iter()
+            .copied()
+            .filter(|e| history.cap_boundaries[e].is_empty())
+            .collect();
+        if tool_volume == 560. {
+            assert_eq!(ends.len(), 6);
+            assert_eq!(empty.len(), 5);
+            let inner = feature.entities[empty.first().expect("an inner face")];
+            assert_eq!(feature.bindings[&inner], empty);
+            let roof = ends.difference(&empty).next().expect("one roof");
+            assert_eq!(
+                feature.bindings[&feature.entities[roof]],
+                BTreeSet::from([*roof])
+            );
+            let mut reference = EntityReference::new(ReferenceMeaning {
+                producer: owner,
+                kind: EntityKind::Face,
+                digest: inner.digest,
+                selection: Selection::One,
+            });
+            let one = named
+                .resolve(EntityKind::Face, owner, owner, &[reference])
+                .expect_err("an exact reference cannot select one of five faces");
+            assert!(one.to_string().contains("split into 5 faces"));
+            reference.meaning.selection = Selection::AllDescendants;
+            let all = named.resolve(EntityKind::Face, owner, owner, &[reference])?;
+            assert_eq!(all.into_iter().collect::<BTreeSet<_>>(), empty);
+        } else {
+            assert_eq!(ends.len(), 3);
+            assert!(empty.is_empty());
+            assert!(
+                ends.iter()
+                    .all(|face| feature.bindings[&feature.entities[face]].len() == 1)
+            );
+        }
+        let add = kernel.boolean(
+            &BooleanRequest::new(BooleanKind::Fuse, target, tool.shape)?,
+            &context,
+        )?;
+        for (shape, volume) in [(tool.shape, tool_volume), (add.shape, add_volume)] {
+            assert!(kernel.is_valid(shape)?);
+            assert_eq!(kernel.solid_count(shape)?, 1);
+            assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn interior_step_add_and_intersect_keep_cold_names_after_restore() -> Result<()> {
+    use ferritecad_document::*;
+    use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
+    use ferritecad_fixtures::result_sets::{extrusion, plate};
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    for (operation, volume) in [
+        (SolidOperation::Add, 976.),
+        (SolidOperation::Intersect, 560.),
+    ] {
+        let dir = tempfile::tempdir().expect("model directory");
+        let mut doc = Document::create(dir.path().join("step.fcad"))?;
+        let datum = plate(&mut doc)?.plane;
+        let [
+            body,
+            base,
+            step,
+            start,
+            level,
+            base_sk,
+            step_sk,
+            profile,
+            feature,
+        ] = std::array::from_fn(|_| ObjectId::new());
+        let (bottom, height, modify) = match operation {
+            SolidOperation::Add => (8., 2., SolidOperation::Add),
+            SolidOperation::Intersect => (-2., 10., SolidOperation::Cut),
+            _ => unreachable!("the two fixtures"),
+        };
+        let plane = |object, distance| -> Result<EditChange> {
+            Ok(EditChange::AddDatumPlane {
+                object,
+                name: None,
+                plane: DatumPlane::Offset {
+                    from: datum,
+                    distance_mm: Expression::constant(distance)?,
+                },
+            })
+        };
+        let sketch = |object, plane, min, max| -> Result<EditChange> {
+            Ok(EditChange::AddSketch {
+                object,
+                name: None,
+                sketch: rectangle(plane, min, max)?,
+            })
+        };
+        doc.write_changes(&[
+            plane(start, bottom)?,
+            plane(level, 3.)?,
+            sketch(base_sk, start, [-2., -2.], [12., 10.])?,
+            EditChange::AddBody {
+                object: body,
+                name: None,
+                feature_object: base,
+                feature_name: None,
+                feature: extrusion(base_sk, SolidOperation::NewBody, height)?,
+            },
+            sketch(step_sk, level, [3., 2.], [7., 6.])?,
+            EditChange::AddFeature {
+                object: step,
+                name: None,
+                body,
+                feature: extrusion(step_sk, modify, 5.)?,
+            },
+            sketch(profile, datum, [0., 0.], [10., 8.])?,
+            EditChange::AddFeature {
+                object: feature,
+                name: None,
+                body,
+                feature: FeatureAddition::Extrude {
+                    profile,
+                    regions: Vec::new(),
+                    operation,
+                    reversed: false,
+                    end_condition: EndCondition::UpToNext,
+                },
+            },
+        ])?;
+        let mut kernel = OcctKernel::new()?;
+        let context = OperationContext::default();
+        let cold = rebuild_cold(&doc, &mut kernel, &context)?;
+        assert!(cold.all_built(), "{:?}", cold.report());
+        let shape = cold.shape(feature).expect("final feature");
+        assert!(kernel.is_valid(shape)?);
+        assert_eq!(kernel.solid_count(shape)?, 1);
+        assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+        let names = &cold.topology().features[&feature];
+        let expected = naming::signature(names);
+        if operation == SolidOperation::Intersect {
+            let model = cold.topology();
+            let target = cold.shape(step).expect("target");
+            let history = kernel.naming_history(shape)?;
+            let mut end_faces = BTreeSet::new();
+            for &(source, _, output) in &history.relations {
+                if let (NamingInput::SubShape(face), Some(piece)) = (source, output)
+                    && face.shape() == target
+                    && face.kind() == SubShapeKind::Face
+                    && piece.kind() == SubShapeKind::Face
+                {
+                    end_faces.insert(piece);
+                }
+            }
+            assert_eq!(end_faces.len(), 6);
+            for face in &end_faces {
+                let name = names.entities[face];
+                let description = model.describe(feature, name)?;
+                assert!(description.contains(&format!("; {} = merge", name.digest)));
+                assert_eq!(names.bindings[&name].len(), 1);
+            }
+        }
+        let mut cache = CacheStore::open(
+            dir.path().join("cache"),
+            doc.meta().document_id,
+            kernel.identity().id(),
+            kernel.identity().version(),
+        )?;
+        for expected_event in [CacheOutcome::Miss, CacheOutcome::Hit] {
+            let (restored, events) = rebuild_cached(&doc, &mut kernel, &mut cache, &context)?;
+            assert!(restored.all_built(), "{:?}", restored.report());
+            assert!(events.iter().all(|event| event.outcome == expected_event));
+            assert_eq!(
+                naming::signature(&restored.topology().features[&feature]),
+                expected
+            );
+            let shape = restored.shape(feature).expect("restored feature");
+            assert!(kernel.is_valid(shape)?);
+            assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+            restored.release_all(&mut kernel);
+        }
+        cold.release_all(&mut kernel);
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn certify_the_entire_trimmed_curved_end() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let context = OperationContext::default();
+    let mut kernel = OcctKernel::new()?;
+    let plane = SketchPlane::new(Point3::new(5., -2., 10.)?, Vec3::X, Vec3::Y)?;
+    let profile = ferritecad_eval::profile_from_sketch(
+        &rectangle(ObjectId::new(), [0., 0.], [10., 8.])?,
+        ObjectId::new(),
+        SketchPlane::world_xy(),
+    )?
+    .profile;
+    for radius in [8., 3.] {
+        let sketch = ferritecad_fixtures::datum_planes::circle(ObjectId::new(), [0., 0.], radius)?;
+        let section =
+            ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)?.profile;
+        let cylinder = kernel
+            .extrude(
+                &ExtrudeRequest::new(section, ExtrudeExtent::blind(12.)?, false),
+                &context,
+            )?
+            .shape;
+        let roof = block(&mut kernel, [-2., -2.], [12., 10.], 22., 24.)?;
+        let target = kernel
+            .boolean(
+                &BooleanRequest::new(BooleanKind::Fuse, cylinder, roof)?,
+                &context,
+            )?
+            .shape;
+        let end = kernel.extrude_to_next(&profile, false, target, &context);
+        if radius == 3. {
+            let error = end.expect_err("the narrow cylinder turns away before the complete roof");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input, "{error}");
+            assert!(error.to_string().contains("without a new transition face"));
+        } else {
+            let shape = end?.shape;
+            assert!(kernel.is_valid(shape)?);
+            let arc_area =
+                5. * (radius * radius - 25.).sqrt() + radius * radius * (5. / radius).asin();
+            assert!((kernel.shape_stats(shape)?.1 - 8. * (100. - arc_area)).abs() < 1e-5);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn first_exit_cavity_mixed_side_and_missing_coverage() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let mut kernel = OcctKernel::new()?;
+    let context = OperationContext::default();
+    let plate = block(&mut kernel, [0., 0.], [10., 10.], 0., 10.)?;
+    let void = block(&mut kernel, [2., 2.], [8., 8.], 2., 5.)?;
+    let hollow = kernel
+        .boolean(
+            &BooleanRequest::new(BooleanKind::Cut, plate, void)?,
+            &context,
+        )?
+        .shape;
+    let profile = |min, max, z| -> Result<_> {
+        Ok(ferritecad_eval::profile_from_sketch(
+            &rectangle(ObjectId::new(), min, max)?,
+            ObjectId::new(),
+            SketchPlane::new(Point3::new(0., 0., z)?, Vec3::X, Vec3::Z)?,
+        )?
+        .profile)
+    };
+    for (target, depth, remaining) in [(plate, 10., 840.), (hollow, 5., 812.)] {
+        let p = profile([3., 3.], [7., 7.], 10.)?;
+        let end = kernel.extrude_to_next(&p, true, target, &context)?.shape;
+        let cut = kernel
+            .boolean(
+                &BooleanRequest::new(BooleanKind::Cut, target, end)?,
+                &context,
+            )?
+            .shape;
+        for (shape, volume) in [(end, 16. * depth), (cut, remaining)] {
+            assert!(kernel.is_valid(shape)?);
+            assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+        }
+    }
+    for (z, min, max, message) in [
+        (
+            4.,
+            [8., 2.],
+            [12., 6.],
+            "the profile starts partly inside and partly outside the target",
+        ),
+        (
+            -2.,
+            [8., 2.],
+            [12., 6.],
+            "nothing next ahead of the sketch plane covers the profile",
+        ),
+        (
+            12.,
+            [2., 2.],
+            [6., 6.],
+            "nothing next ahead of the sketch plane covers the profile",
+        ),
+    ] {
+        let error = kernel
+            .extrude_to_next(&profile(min, max, z)?, false, plate, &context)
+            .expect_err("side or coverage must refuse");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+        assert!(error.to_string().contains(message), "{error}");
+    }
+    Ok(())
+}

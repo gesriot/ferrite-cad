@@ -148,6 +148,19 @@ pub trait GeometryKernel {
         ))
     }
 
+    /// Limit a sweep to the first forward boundary of its complete predecessor.
+    fn extrude_to_next(
+        &mut self,
+        _profile: &crate::Profile,
+        _reversed: bool,
+        _target: ShapeHandle,
+        _context: &OperationContext,
+    ) -> Result<OperationResult> {
+        Err(ferritecad_types::CadError::unsupported(
+            "this kernel does not extrude up to next",
+        ))
+    }
+
     /// Turns a planar profile about an axis in its plane into a solid.
     ///
     /// The result names, through its history, the one face each profile

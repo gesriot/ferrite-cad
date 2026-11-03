@@ -73,9 +73,11 @@ corners. It does not use an already named output edge, avoiding a naming cycle.
 When a sweep has several regions, their caps share the root
 `(feature, start|end cap, plane)`. Refine each cap with the canonical set of
 curve roots on that region's outer boundary, using the same historical-boundary
-witness expression as split faces. Hole boundaries are not cap witnesses. A
-sweep with one region has nothing to distinguish and retains its existing cap
-names, including when that region contains holes.
+witness expression as split faces. Hole boundaries are not cap witnesses.
+A cap piece touching no outer curve has an empty witness set and shares its name with
+other pieces of the same provenance and empty set as described below.
+An unsplit pair of caps on one region retains its existing names, including when
+that region contains holes.
 
 If both provenance and these witnesses still coincide, retain one name with
 multiple bindings. The open slot's periodic tool wall and some boundaries in

@@ -604,6 +604,9 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                     ferritecad_document::EndCondition::Symmetric { distance: d } => {
                         serde_json::json!({"kind":"symmetric", "distance":distance(d.value())})
                     }
+                    ferritecad_document::EndCondition::UpToNext => {
+                        serde_json::json!({"kind":"up_to_next"})
+                    }
                     ferritecad_document::EndCondition::ThroughAll => {
                         serde_json::json!({"kind":"through_all"})
                     }

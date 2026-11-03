@@ -1512,6 +1512,7 @@ otherwise `computed` is null. See [datum planes](datum-planes.md) for edit reque
 
 ### Referenced extrusion ends
 
+`{"kind":"up_to_next"}` reports a first-hit end on the complete predecessor.
 `inspect.result.features[].end_condition` uses `kind: "up_to_face"`, `result`,
 `face` and a unitful `offset`, or `kind: "up_to_vertex"`, `result` and `vertex`.
 References use the common `id`, `producer`, `kind`, `digest`, `selection` fields;

@@ -201,3 +201,65 @@ fn deleting_a_consumed_pocket_floor_refuses_without_publishing() {
     assert_eq!(std::fs::read(source).expect("unchanged"), before);
     assert!(!destination.exists());
 }
+
+#[test]
+fn switch_a_cut_to_next_and_back_through_undo_and_redo() -> ferritecad_types::Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let mut doc = ferritecad_fixtures::open_plate(root.path())?;
+    let body = ferritecad_fixtures::feature_changes::body(&doc)?;
+    let blind = EndCondition::Blind {
+        distance: Expression::constant(3.)?,
+    };
+    let cut = ferritecad_fixtures::feature_changes::circular_tool(
+        &doc,
+        body,
+        [15., 15.],
+        2.,
+        blind.clone(),
+    )?;
+    doc.write_changes(&cut.changes)?;
+    let path = doc.path().to_owned();
+    doc.close()?;
+    let mut session = DocumentSession::open(&path)?;
+    let mut kernel = OcctKernel::new()?;
+    let context = OperationContext::default();
+    session.current().load_scene(
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &TessellationParams::default(),
+        &context,
+    )?;
+    let condition = |session: &DocumentSession| -> ferritecad_types::Result<EndCondition> {
+        let object = Document::open_read_only(session.current().path())?
+            .object(cut.feature)?
+            .expect("Cut");
+        let ObjectPayload::Extrude(e) = object.payload else {
+            unreachable!("Cut")
+        };
+        Ok(e.end_condition)
+    };
+    for next in [EndCondition::UpToNext, blind] {
+        let before = condition(&session)?;
+        let version = session.current().version();
+        let step = session.begin_step().edit(
+            vec![EditChange::SetEndCondition {
+                object: cut.feature,
+                end_condition: next.clone(),
+            }],
+            version,
+            &mut kernel,
+            |_, _| unreachable!("no imports"),
+            &context,
+        )?;
+        session.commit_step(step)?;
+        assert_eq!(condition(&session)?, next);
+        session.commit_move(session.begin_undo().expect("undo"))?;
+        assert_eq!(condition(&session)?, before);
+        session.commit_move(session.begin_redo().expect("redo"))?;
+        assert_eq!(condition(&session)?, next);
+    }
+    Ok(())
+}
