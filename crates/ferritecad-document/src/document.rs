@@ -73,6 +73,25 @@ pub struct ObjectRecord {
 }
 
 impl ObjectRecord {
+    /// The input to evaluating a datum, sketch, body or parameter after its values
+    /// have been verified. Formula spelling and parameter names are bound separately.
+    pub fn evaluated_payload_hash(&self) -> Result<ContentHash> {
+        if let ObjectPayload::Parameter(parameter) = &self.payload {
+            let mut h = ferritecad_types::CanonicalHasher::new("parameter.value");
+            h.str(parameter.dimension.base_unit().symbol());
+            h.f64(parameter.expression.value())?;
+            return Ok(h.finish());
+        }
+        let mut has_expression = false;
+        crate::expression_edit::read_expressions(&self.payload, |_, _| has_expression = true);
+        if !has_expression {
+            return Ok(self.payload_hash);
+        }
+        let mut payload = self.payload.clone();
+        crate::expression_edit::expressions(&mut payload, |_, expr| expr.source.clear());
+        Ok(ContentHash::of_bytes(&payload.encode()?))
+    }
+
     pub(crate) fn storage_bytes(&self) -> &[u8] {
         &self.storage_bytes
     }

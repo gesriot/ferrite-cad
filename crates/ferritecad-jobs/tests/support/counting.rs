@@ -2,29 +2,27 @@
 //! A topology-only kernel double: count work without measuring geometry or time.
 use ferritecad_kernel::*;
 use ferritecad_types::{CadError, Result, Transform};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 #[derive(Debug)]
-pub struct CountingMock {
+pub struct TopologyMock {
     identity: KernelIdentity,
     session: SessionId,
     next: u64,
     pub live: BTreeSet<ShapeHandle>,
-    pub extrude_count: usize,
-    pub revolve_count: usize,
     pub refuse_mesh: bool,
     topology: BTreeMap<ShapeHandle, ShapeTopology>,
     histories: BTreeMap<ShapeHandle, NamingHistory>,
 }
-impl CountingMock {
+impl TopologyMock {
     pub fn new() -> Self {
         Self {
             identity: KernelIdentity::new("counting", "1", "test").expect("identity"),
             session: SessionId::new(),
             next: 0,
             live: BTreeSet::new(),
-            extrude_count: 0,
-            revolve_count: 0,
             refuse_mesh: false,
             topology: BTreeMap::new(),
             histories: BTreeMap::new(),
@@ -182,7 +180,7 @@ impl CountingMock {
         }
     }
 }
-impl GeometryKernel for CountingMock {
+impl GeometryKernel for TopologyMock {
     fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {
         if !self.live.contains(&shape) {
             return Err(CadError::input("unknown counting shape"));
@@ -226,7 +224,6 @@ impl GeometryKernel for CountingMock {
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
-        self.extrude_count += 1;
         Ok(self.sweep(request.profile(), NamingOperation::Extrude))
     }
     fn revolve(
@@ -235,7 +232,6 @@ impl GeometryKernel for CountingMock {
         context: &OperationContext,
     ) -> Result<OperationResult> {
         context.check_cancelled()?;
-        self.revolve_count += 1;
         Ok(self.sweep(request.profile(), NamingOperation::Revolve))
     }
     fn boolean(
@@ -329,5 +325,181 @@ impl GeometryKernel for CountingMock {
         self.live.remove(&shape);
         self.topology.remove(&shape);
         self.histories.remove(&shape);
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Calls {
+    pub extrude_count: usize,
+    pub boolean: usize,
+    pub fillet: usize,
+    pub chamfer: usize,
+    pub revolve_count: usize,
+    pub restore: usize,
+    pub tessellate: usize,
+    pub queries: usize,
+    pub identity: usize,
+    pub released: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Extrude,
+    BetweenNodes,
+    Mesh,
+}
+
+pub trait Occupancy {
+    fn population(&self) -> usize;
+}
+impl Occupancy for TopologyMock {
+    fn population(&self) -> usize {
+        self.live.len()
+    }
+}
+impl Occupancy for ferritecad_occt::OcctKernel {
+    fn population(&self) -> usize {
+        self.live_shape_count()
+    }
+}
+
+pub type CountingMock = Counting<TopologyMock>;
+
+#[derive(Debug)]
+pub struct Counting<K> {
+    pub inner: K,
+    pub calls: Cell<Calls>,
+    pub stop: Option<Stop>,
+    pub remaining: Rc<Cell<usize>>,
+    cancel: Option<CancelToken>,
+    pub extrude_count: usize,
+    pub revolve_count: usize,
+}
+
+impl CountingMock {
+    pub fn new() -> Self {
+        Self::wrap(TopologyMock::new())
+    }
+}
+
+impl<K> std::ops::Deref for Counting<K> {
+    type Target = K;
+    fn deref(&self) -> &K {
+        &self.inner
+    }
+}
+impl<K> std::ops::DerefMut for Counting<K> {
+    fn deref_mut(&mut self) -> &mut K {
+        &mut self.inner
+    }
+}
+
+impl<K> Counting<K> {
+    pub fn wrap(inner: K) -> Self {
+        Self {
+            inner,
+            calls: Cell::default(),
+            stop: None,
+            remaining: Rc::default(),
+            cancel: None,
+            extrude_count: 0,
+            revolve_count: 0,
+        }
+    }
+
+    fn count(&self, f: impl FnOnce(&mut Calls)) {
+        let mut counts = self.calls.get();
+        f(&mut counts);
+        self.calls.set(counts);
+    }
+}
+
+macro_rules! forward {
+    ($count:ident, $name:ident($($arg:ident: $ty:ty),*) -> $out:ty) => {
+        fn $name(&mut self,$($arg:$ty),*) -> $out {
+            self.count(|c| c.$count += 1);
+            self.inner.$name($($arg),*)
+        }
+    };
+}
+
+impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
+    fn identity(&self) -> &KernelIdentity {
+        self.count(|c| c.identity += 1);
+        self.inner.identity()
+    }
+    fn extrude(&mut self, r: &ExtrudeRequest, ctx: &OperationContext) -> Result<OperationResult> {
+        self.extrude_count += 1;
+        self.count(|c| c.extrude_count += 1);
+        if self.stop == Some(Stop::Extrude) {
+            let cancel = ctx.cancel().clone();
+            let inner = ctx
+                .clone()
+                .with_progress(ProgressSink::new(move |_| cancel.cancel()));
+            return self.inner.extrude(r, &inner);
+        }
+        self.inner.extrude(r, ctx)
+    }
+    fn tessellate(
+        &mut self,
+        s: ShapeHandle,
+        p: &TessellationParams,
+        ctx: &OperationContext,
+    ) -> Result<Mesh> {
+        self.count(|c| c.tessellate += 1);
+        let mesh = self.inner.tessellate(s, p, ctx)?;
+        if self.stop == Some(Stop::Mesh) {
+            // The mesher polls the token but does not emit intermediate progress.
+            // Cancel at the return boundary of a successful native mesh.
+            ctx.cancel().cancel();
+        }
+        Ok(mesh)
+    }
+    fn naming_history(&mut self, s: ShapeHandle) -> Result<NamingHistory> {
+        self.count(|c| c.queries += 1);
+        let history = self.inner.naming_history(s)?;
+        if let Some(token) = self.cancel.take() {
+            token.cancel();
+        }
+        Ok(history)
+    }
+    fn boolean(&mut self, r: &BooleanRequest, ctx: &OperationContext) -> Result<OperationResult> {
+        self.count(|c| c.boolean += 1);
+        if self.stop == Some(Stop::BetweenNodes) {
+            self.cancel = Some(ctx.cancel().clone());
+        }
+        self.inner.boolean(r, ctx)
+    }
+    fn revolve(
+        &mut self,
+        request: &RevolveRequest,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        self.revolve_count += 1;
+        self.count(|c| c.revolve_count += 1);
+        self.inner.revolve(request, context)
+    }
+    forward!(queries, support_plane(faces: &[SubShapeHandle], context: &OperationContext)
+        -> Result<FacePlane>);
+    forward!(queries, projected_bounds(shape: ShapeHandle, direction: ferritecad_types::Vec3)
+        -> Result<[f64; 2]>);
+    forward!(fillet, fillet_edges(request: &FilletRequest, context: &OperationContext)
+        -> Result<OperationResult>);
+    forward!(chamfer, chamfer_edges(request: &ChamferRequest, context: &OperationContext)
+        -> Result<OperationResult>);
+    forward!(queries, shape_topology(shape: ShapeHandle) -> Result<ShapeTopology>);
+    forward!(queries, solid_count(shape: ShapeHandle) -> Result<usize>);
+    forward!(queries, transform(shape: ShapeHandle, placement: &Transform, ctx: &OperationContext)
+        -> Result<OperationResult>);
+    forward!(queries, encode_shape_with(shape: ShapeHandle, entities: &[SubShapeHandle])
+        -> Result<(BrepBlob, Vec<ArchiveSlot>)>);
+    forward!(restore, decode_shape_with(blob: &BrepBlob, slots: &[ArchiveSlot])
+        -> Result<(ShapeHandle, Vec<SubShapeHandle>)>);
+    forward!(queries, encode_shape(shape: ShapeHandle) -> Result<BrepBlob>);
+    forward!(restore, decode_shape(blob: &BrepBlob) -> Result<ShapeHandle>);
+    fn release(&mut self, shape: ShapeHandle) {
+        self.count(|c| c.released += 1);
+        self.inner.release(shape);
+        self.remaining.set(self.inner.population());
     }
 }

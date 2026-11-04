@@ -69,9 +69,13 @@ pub(crate) type Observe<'a, K> = dyn FnMut(
     ) -> Result<ferritecad_scene::LoadedScene>
     + 'a;
 
+pub(crate) type Evaluate<'a, K> =
+    dyn FnMut(&Document, &mut K, &OperationContext) -> Result<ferritecad_scene::LoadedScene> + 'a;
+
 pub(crate) struct EditRun<'a, K: ?Sized> {
     pub(crate) baseline: Option<&'a ferritecad_eval::RebuildFacts>,
     pub(crate) observe: Option<&'a mut Observe<'a, K>>,
+    pub(crate) evaluate: Option<&'a mut Evaluate<'a, K>>,
     pub(crate) scene: Option<ferritecad_scene::LoadedScene>,
 }
 
@@ -79,6 +83,7 @@ impl<K: ?Sized> EditRun<'_, K> {
     fn standalone() -> Self {
         Self {
             baseline: None,
+            evaluate: None,
             observe: None,
             scene: None,
         }
@@ -134,13 +139,27 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     context.progress().report(0.4);
     context.check_cancelled()?;
     document.write_changes(changes)?;
-    let (_, mut checked) = checked_rebuild(
-        &document,
-        kernel,
-        &phase(context, 0.4, 0.9),
-        Some(baseline_unbuilt),
-        run.observe.as_deref_mut(),
-    )?;
+    let evaluating = phase(context, 0.4, 0.9);
+    let mut checked = if let Some(evaluate) = run.evaluate.as_deref_mut() {
+        let scene = evaluate(&document, kernel, &evaluating)?;
+        Checked {
+            rebuild: scene.rebuild.clone(),
+            version: Some(DocumentVersion {
+                document_id: document.meta().document_id,
+                content: document.content_version()?,
+            }),
+            scene: Some(scene),
+        }
+    } else {
+        checked_rebuild(
+            &document,
+            kernel,
+            &evaluating,
+            Some(baseline_unbuilt),
+            run.observe.as_deref_mut(),
+        )?
+        .1
+    };
     run.scene = checked.scene.take();
     let completed = complete(checked)?;
     document.close()?;
