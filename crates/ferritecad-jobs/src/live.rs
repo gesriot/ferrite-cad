@@ -173,7 +173,7 @@ where
             scene,
             meshes: meshes.expect("prepared candidate meshes"),
         };
-        self.pending(Change::Edit(step), picture)
+        self.pending(Change::Edit(step), picture, context)
     }
 
     pub fn undo(&mut self, context: &OperationContext) -> Result<PendingRevision<'_, K, R>> {
@@ -207,10 +207,15 @@ where
             context,
             Target::History(&self.picture),
         )?;
-        self.pending(Change::Move(target), picture)
+        self.pending(Change::Move(target), picture, context)
     }
 
-    fn pending(&mut self, change: Change, picture: Picture) -> Result<PendingRevision<'_, K, R>> {
+    fn pending(
+        &mut self,
+        change: Change,
+        picture: Picture,
+        context: &OperationContext,
+    ) -> Result<PendingRevision<'_, K, R>> {
         let snapshot = match &change {
             Change::Edit(step) => step.snapshot(),
             Change::Move(target) => target.snapshot(),
@@ -227,6 +232,7 @@ where
         Ok(PendingRevision {
             owner: self,
             next: Some((change, picture)),
+            cancel: context.cancel().clone(),
         })
     }
 }
@@ -248,6 +254,7 @@ enum Change {
 pub struct PendingRevision<'a, K: GeometryKernel, R> {
     owner: &'a mut LiveDocument<K, R>,
     next: Option<(Change, Picture)>,
+    cancel: ferritecad_kernel::CancelToken,
 }
 
 impl<K: GeometryKernel, R> PendingRevision<'_, K, R> {
@@ -263,6 +270,7 @@ impl<K: GeometryKernel, R> PendingRevision<'_, K, R> {
     }
 
     pub fn commit_step(mut self) -> Result<StepCommit> {
+        self.cancel.check()?;
         let (change, picture) = self.next.take().expect("pending revision");
         let outcome = match change {
             Change::Edit(step) => self.owner.session.commit_step(step)?,
@@ -284,3 +292,7 @@ impl<K: GeometryKernel, R> Drop for PendingRevision<'_, K, R> {
         self.owner.model.discard(&mut self.owner.kernel);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/live_model/suite.rs"]
+mod tests;

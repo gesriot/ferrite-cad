@@ -127,7 +127,13 @@ impl LiveModel {
             Some(unbuilt) => built.require_no_new_failures(unbuilt, kernel)?,
             None => built,
         };
-        Ok(self.candidate.insert(built))
+        self.candidate = Some(built);
+        Ok(self.prepared())
+    }
+
+    /// The candidate being staged for display in its owning kernel session.
+    pub fn prepared(&self) -> &RebuildResult {
+        self.candidate.as_ref().expect("prepared revision")
     }
 
     pub fn accept(&mut self, kernel: &mut (impl GeometryKernel + ?Sized)) {
