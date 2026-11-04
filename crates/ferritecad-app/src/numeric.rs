@@ -35,14 +35,13 @@ impl App {
             return;
         }
         let proxy = self.proxy.clone();
-        self.sessions.begin_apply(|ticket, generation, cancel| {
-            sessions::spawn_apply(expected, ticket, changes, cancel.clone(), move |result| {
+        self.sessions
+            .apply(expected, changes, move |generation, result| {
                 let _ = proxy.send_event(AppEvent::Applied {
                     generation,
                     result: Box::new(result),
                 });
-            })
-        });
+            });
         self.input.request_redraw();
     }
 

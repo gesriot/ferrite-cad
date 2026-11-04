@@ -26,7 +26,9 @@
 //! the generation — so an answer meant for another tab, for a tab that was closed or
 //! for an older operation of this tab changes nothing and releases nothing.
 
+mod owner;
 mod presentation;
+pub(crate) use owner::{OpenTab, Target};
 #[cfg(test)]
 pub(crate) mod test_open;
 
@@ -39,7 +41,9 @@ use ferritecad_jobs::{
     DocumentSession, Move, ProducedStep, SaveFailure, SaveFailureKind, SavePlan, SaveTarget, Saved,
     StepCommit, StepTicket,
 };
-use ferritecad_kernel::{CancelToken, OperationContext, TessellationParams};
+#[cfg(test)]
+use ferritecad_kernel::TessellationParams;
+use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_scene::LoadedScene;
 use ferritecad_types::{CadError, ErrorKind, Result};
 
@@ -159,7 +163,7 @@ enum Staged {
 pub(crate) enum Bind {
     /// An Open, New or Recover: the session the picture was read from becomes a
     /// new tab, shown; the tab that was shown stays open, hidden (§30O).
-    Open(Box<DocumentSession>),
+    Open(Box<OpenTab>),
     /// An Apply, Undo or Redo: the staged version becomes current.
     Staged,
     /// §30O: the hidden tab this switch generation was showing becomes the shown
@@ -219,6 +223,7 @@ pub(crate) struct Sessions {
     /// Which tab this is (§30O). Made with the value, never reused.
     tab: TabId,
     session: Option<DocumentSession>,
+    owner: Option<owner::Owner>,
     operation: Option<Operation>,
     reserved: Option<Reserved>,
     issued: u64,
@@ -546,7 +551,8 @@ impl Sessions {
 
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
-    pub(crate) fn adopt(&mut self, session: DocumentSession) {
+    pub(crate) fn adopt(&mut self, opened: impl Into<OpenTab>) {
+        let OpenTab { session, owner } = opened.into();
         self.reserved = None;
         // Whatever was in flight belonged to the document being replaced: its
         // answer must not be applied to this one (a Save's checkpoint above all).
@@ -559,6 +565,7 @@ impl Sessions {
             }
         }
         self.reap();
+        self.owner = owner;
         self.session = Some(session);
         self.register();
         self.after_save = None;
@@ -568,11 +575,41 @@ impl Sessions {
 
     // --- Apply -----------------------------------------------------------
 
-    /// Starts the edit. `spawn` is handed the ticket and the generation to label its
-    /// answer with.
+    pub(crate) fn apply(
+        &mut self,
+        expected: ferritecad_document::DocumentVersion,
+        changes: Vec<ferritecad_document::EditChange>,
+        deliver: impl FnOnce(Address, Result<ProducedStep>) + Send + 'static,
+    ) -> Option<Address> {
+        let port = self.owner.as_ref()?.port.clone();
+        self.start_apply(|ticket, address, token| {
+            port.edit(
+                address,
+                ticket,
+                expected,
+                changes,
+                token.clone(),
+                move |result| {
+                    deliver(address, result);
+                },
+            );
+            None
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_apply(
         &mut self,
         spawn: impl FnOnce(StepTicket, Address, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<Address> {
+        self.start_apply(|ticket, address, cancel| Some(spawn(ticket, address, cancel)))
+    }
+
+    /// Starts the edit. `spawn` is handed the ticket and the generation to label its
+    /// answer with.
+    fn start_apply(
+        &mut self,
+        spawn: impl FnOnce(StepTicket, Address, &CancelToken) -> Option<JoinHandle<()>>,
     ) -> Option<Address> {
         if self.busy() {
             return None;
@@ -587,7 +624,7 @@ impl Sessions {
             generation,
             kind: Kind::Apply,
             cancel,
-            worker: Some(worker),
+            worker,
             staged: None,
             kept: None,
             ready_scene: None,
@@ -614,6 +651,7 @@ impl Sessions {
     /// The shared end of an edit or checkpoint worker's answer, once it is known
     /// to belong to the operation in flight.
     fn finish_step(&mut self, result: Result<ProducedStep>) -> Edited {
+        let address = self.address(self.operation.as_ref().expect("in flight").generation);
         let operation = self.operation.as_mut().expect("the answer's operation");
         if let Some(worker) = operation.worker.take() {
             let _ = worker.join();
@@ -623,11 +661,13 @@ impl Sessions {
         let mut step = match result {
             Ok(step) if !cancelled => step,
             Ok(_) => {
+                self.resolve(address, false);
                 self.operation = None;
                 self.status = "Cancelled; nothing was changed.".to_owned();
                 return Edited::Failed;
             }
             Err(error) => {
+                self.resolve(address, false);
                 self.operation = None;
                 self.status = if error.kind() == ErrorKind::Cancellation {
                     "Cancelled; nothing was changed.".to_owned()
@@ -650,6 +690,7 @@ impl Sessions {
         };
         let session = self.session.as_ref().expect("an operation has a session");
         if !session.changes_model(&step) {
+            self.resolve(address, false);
             self.operation = None;
             self.status = "No change: the model is already like that.".to_owned();
             return Edited::NoChange;
@@ -660,6 +701,41 @@ impl Sessions {
         Edited::Show(path)
     }
 
+    pub(crate) fn draw_staged(
+        &mut self,
+        address: Address,
+        deliver: impl FnOnce(Result<LoadedScene>) + Send + 'static,
+    ) {
+        if self.addressed(address).is_none() {
+            return;
+        }
+        let op = self.operation.as_mut().expect("addressed operation");
+        if let Some(scene) = op.ready_scene.take() {
+            return deliver(Ok(scene));
+        }
+        let target = match op.staged.as_ref() {
+            Some(Staged::Move(request)) => owner::Target::History(request.clone()),
+            Some(Staged::Step(step)) => owner::Target::Restore(step.lease()),
+            None => return,
+        };
+        if let Some(owner) = &self.owner {
+            owner.port.draw(address, target, op.cancel.clone(), deliver);
+        } else {
+            deliver(Err(CadError::input("the tab has no document evaluator")));
+        }
+    }
+
+    fn resolve(&self, address: Address, accept: bool) {
+        if let Some(owner) = &self.owner {
+            owner.port.finish(address, accept);
+        }
+    }
+
+    pub(crate) fn switch_picture(&self) -> Option<(owner::Port, Arc<ferritecad_jobs::Snapshot>)> {
+        Some((self.owner.as_ref()?.port.clone(), self.export_source()?))
+    }
+
+    #[cfg(test)]
     /// Delivers an Apply picture directly; history navigation still starts a scene worker.
     pub(crate) fn stage_picture(
         &mut self,
@@ -894,6 +970,12 @@ impl Sessions {
         if let Some(op) = &self.operation {
             op.cancel.check()?;
         }
+        let address = self.address(
+            self.operation
+                .as_ref()
+                .ok_or_else(|| CadError::input("no change is waiting to be shown"))?
+                .generation,
+        );
         let session = self
             .session
             .as_mut()
@@ -909,6 +991,7 @@ impl Sessions {
             },
             Staged::Move(request) => session.commit_move(request)?,
         }
+        self.resolve(address, true);
         self.record();
         Ok(())
     }
@@ -924,6 +1007,7 @@ impl Sessions {
         if let Some(worker) = operation.worker {
             let _ = worker.join();
         }
+        self.resolve(address, false);
         self.status = match (&shown, operation.kind) {
             (Ok(()), Kind::Apply) => "Applied. Undo is available; Save writes the file.".to_owned(),
             (Ok(()), Kind::Checkpoint(CheckpointKind::Create)) => {
@@ -1075,6 +1159,7 @@ impl Sessions {
             };
             recorder.finish(ending);
         }
+        self.owner = None;
         self.session = None;
         self.register();
     }
@@ -1115,6 +1200,7 @@ fn spawn<T: Send + 'static>(
 }
 
 /// Apply one expression transaction on the worker that owns the kernel session.
+#[cfg(test)]
 pub(crate) fn spawn_apply(
     expected: ferritecad_document::DocumentVersion,
     ticket: StepTicket,
@@ -1197,6 +1283,7 @@ pub(crate) fn spawn_kept_facts(
 }
 
 /// The picture of one private version, read cold exactly as Open reads a file.
+#[cfg(test)]
 pub(crate) fn spawn_scene(
     path: PathBuf,
     cancel: CancelToken,
@@ -1237,7 +1324,7 @@ pub(crate) fn spawn_save(
 }
 
 /// A slot a worker fills with the session it opened, and the event reads out.
-pub(crate) type Opened = Arc<Mutex<Option<DocumentSession>>>;
+pub(crate) type Opened = Arc<Mutex<Option<OpenTab>>>;
 
 /// What a creation does on its worker (§30L): the new document is made in a
 /// candidate session's own private directory by the shared creation route, and
@@ -1248,22 +1335,24 @@ pub(crate) fn create_for_view(
     root: &Path,
     content: ferritecad_jobs::NewDocument,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
-    let session = DocumentSession::create_document_in(
-        root,
-        ferritecad_jobs::HistoryLimits::default(),
-        content,
-        ferritecad_occt::OcctKernel::new,
-        context,
-    )?;
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
-        context,
-    )?;
-    Ok((scene, session))
+) -> Result<(LoadedScene, OpenTab)> {
+    let root = root.to_owned();
+    owner::start(context, move |context| {
+        let mut kernel = ferritecad_occt::OcctKernel::new()?;
+        let session = DocumentSession::create_in(&root, Default::default(), |path| {
+            ferritecad_jobs::create_document_in_kernel(
+                ferritecad_jobs::CreateDocumentRequest::new(
+                    path,
+                    content,
+                    "choose a different name",
+                ),
+                &mut kernel,
+                context,
+            )
+            .map(|_| ())
+        })?;
+        Ok((session, kernel))
+    })
 }
 
 /// What a Recover does on its worker (§30M): the record is claimed and checked,
@@ -1275,7 +1364,7 @@ pub(crate) fn recover_for_view(
     store: &ferritecad_jobs::RecoveryStore,
     record: ferritecad_jobs::RecordId,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
+) -> Result<(LoadedScene, OpenTab)> {
     // Waits, off the event loop, only for a reader of the record, and stops when the
     // window cancels (§30S).
     let claim = store
@@ -1283,14 +1372,9 @@ pub(crate) fn recover_for_view(
         .map_err(CadError::from)?;
     let session =
         DocumentSession::recover_in(root, ferritecad_jobs::HistoryLimits::default(), claim)?;
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
-        context,
-    )?;
-    Ok((scene, session))
+    owner::start(context, move |_| {
+        Ok((session, ferritecad_occt::OcctKernel::new()?))
+    })
 }
 
 /// What an Open does on its worker: the file is read once, into a new session's
@@ -1302,19 +1386,13 @@ pub(crate) fn open_for_view(
     root: &Path,
     path: &Path,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
+) -> Result<(LoadedScene, OpenTab)> {
     let session = DocumentSession::open_in(root, path, ferritecad_jobs::HistoryLimits::default())?;
     // The kernel is made and dropped inside the worker: an Open CASCADE session
     // belongs to the thread that opened it.
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        // How this kernel re-reads a STEP file the document stores.
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
-        context,
-    )?;
-    Ok((scene, session))
+    owner::start(context, move |_| {
+        Ok((session, ferritecad_occt::OcctKernel::new()?))
+    })
 }
 
 #[cfg(test)]
@@ -1333,6 +1411,7 @@ mod tests {
     mod datum_planes;
     mod fillet;
     mod keep_solids;
+    mod live_view;
     mod new_document;
     mod parameters;
     mod recovery;
@@ -2533,12 +2612,64 @@ mod tests {
         )
         .object;
         let private = tempfile::tempdir().expect("private");
+        let session = DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+            .expect("private session");
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&reads);
+        let (initial, opened) = owner::start_with(
+            &OperationContext::default(),
+            move |_| Ok((session, ferritecad_occt::OcctKernel::new()?)),
+            move |kernel, bytes| {
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                kernel.import_step(bytes)
+            },
+        )
+        .expect("mixed tab opens");
+        let version = opened.current().version();
         let mut sessions = Sessions::default();
-        sessions.adopt(
-            crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
-                .expect("session"),
-        );
-        let scene = apply_native(&mut sessions, feature, 12.0);
+        sessions.adopt(opened);
+        let (send, receive) = mpsc::channel();
+        let address = sessions
+            .apply(
+                version,
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        12.,
+                    )
+                    .expect("height"),
+                ],
+                move |_, step| send.send(step).expect("answer"),
+            )
+            .expect("start");
+        assert!(matches!(
+            sessions.finish_apply(address, receive.recv().expect("reply")),
+            Edited::Show(_)
+        ));
+        let (send, receive) = mpsc::channel();
+        sessions.draw_staged(address, move |scene| send.send(scene).expect("picture"));
+        let scene = receive.recv().expect("reply").expect("mixed picture");
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let current = sessions.staged_path(address).expect("version");
+        let cold = ferritecad_scene::snapshot_of(
+            &current,
+            &mut kernel,
+            |k, b| k.import_step(b),
+            &Default::default(),
+            &OperationContext::default(),
+        )
+        .expect("cold picture");
+        assert_eq!(scene, cold);
+        let import = initial
+            .catalogue
+            .iter()
+            .position(|entry| entry.source_file.is_some())
+            .expect("imported definition");
+        assert!(initial.mesh_keys[import].is_some());
+        assert_eq!(initial.mesh_keys[import], scene.mesh_keys[import]);
+        sessions.commit_staged().expect("commit");
+        assert!(sessions.finish_scene(address, Ok(())));
         assert!(
             scene
                 .catalogue
@@ -4388,10 +4519,15 @@ mod tests {
         let (root, path, source) = crate::fillets::tests::plate();
         let mut sessions = Sessions::default();
         let private = tempfile::tempdir().expect("private");
-        sessions.adopt(
-            crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
-                .expect("a document opens into a session without a kernel"),
-        );
+        let session = DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+            .expect("private session");
+        let (_, opened) = owner::start_with(
+            &OperationContext::default(),
+            move |_| Ok((session, MockKernel::new())),
+            |_, _| unreachable!("no imports in this test"),
+        )
+        .expect("a document opens into a session without a kernel");
+        sessions.adopt(opened);
         let before = private_files(&sessions);
         let feature = ferritecad_fixtures::expression_slot(
             &source,
@@ -4400,22 +4536,18 @@ mod tests {
         .object;
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(
-                    ticket.source().version(),
-                    ticket,
-                    vec![
-                        ferritecad_document::EditChange::constant(
-                            feature,
-                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                            30.0,
-                        )
-                        .expect("height"),
-                    ],
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
-            })
+            .apply(
+                sessions.export_source().expect("open tab").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        30.0,
+                    )
+                    .expect("height"),
+                ],
+                move |_, result| tx.send(result).expect("deliver"),
+            )
             .expect("started");
         let result = rx.recv().expect("answer");
         assert_eq!(

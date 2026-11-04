@@ -243,7 +243,7 @@ enum AppEvent {
         result: Box<Result<LoadedScene>>,
         /// The session the reading was made from, when it was an Open: the model
         /// shown and the model Save writes are one reading of the file.
-        session: Option<Box<ferritecad_jobs::DocumentSession>>,
+        session: Option<Box<sessions::OpenTab>>,
     },
     /// An Apply's edit has finished: a private version, or why not.
     Applied {
@@ -324,7 +324,7 @@ enum AppEvent {
     /// §30M: a recovered document and its picture, or why not.
     Recovered {
         generation: recoveries::RecoverGeneration,
-        result: Box<Result<(LoadedScene, ferritecad_jobs::DocumentSession)>>,
+        result: Box<Result<(LoadedScene, sessions::OpenTab)>>,
     },
     /// §30M: the crash copy of the open document was written (or not).
     RecoveryChanged,
@@ -5190,17 +5190,15 @@ impl App {
             return false;
         }
         let proxy = self.proxy.clone();
-        let started = self.tabs.begin_switch(
+        let started = self.tabs.begin_live_switch(
             &mut self.sessions,
             tab,
             after,
-            |path, generation, cancel| {
-                sessions::spawn_scene(path, cancel.clone(), move |result| {
-                    let _ = proxy.send_event(AppEvent::TabShown {
-                        generation,
-                        result: Box::new(result),
-                    });
-                })
+            move |generation, result| {
+                let _ = proxy.send_event(AppEvent::TabShown {
+                    generation,
+                    result: Box::new(result),
+                });
             },
         );
         if let Err(reason) = &started {
@@ -6104,6 +6102,11 @@ impl App {
             return loaded.map(|_| ());
         };
 
+        let mut loaded = loaded;
+        let mesh_keys = loaded
+            .as_mut()
+            .map(|s| std::mem::take(&mut s.mesh_keys))
+            .unwrap_or_default();
         let renderer = &mut live.renderer;
         let committed = present(
             &mut live.scene,
@@ -6119,12 +6122,8 @@ impl App {
             loaded,
             bind,
             |snapshot, drawings| {
-                // Both halves of one upload, and both before anything is
-                // committed. The drawings ride on the prepared picture, so a
-                // window cannot end up drawing this document's model beside the
-                // last document's sketches, and a device that refuses either
-                // leaves the whole arrival uncommitted.
-                let prepared = renderer.prepare(snapshot)?;
+                // Both the model buffers and sketch drawings must be ready before commit.
+                let prepared = renderer.prepare_keyed(snapshot, &mesh_keys)?;
                 renderer.prepare_sketches(prepared, drawings)
             },
         );
@@ -6855,6 +6854,7 @@ mod tests {
 
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
+            mesh_keys: Vec::new(),
             rebuild_facts: None,
             rebuild: Default::default(),
             edit_source: None,

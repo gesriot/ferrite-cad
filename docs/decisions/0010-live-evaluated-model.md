@@ -36,6 +36,18 @@ baseline. Undo and Redo use the same evaluator on their target snapshots. Commit
 and its prepared scene together. Cancellation between nodes, during a kernel operation or while
 preparing a mesh discards the candidate. A failed display upload can also discard it.
 
-The headless live document is used through a mutable owner and returns scene data, reports and
-facts. Kernel handles stay inside it. The window's per-tab owner thread and incremental GPU
-uploads belong to the next slice. Cold CLI rebuilds remain the reference.
+## Window
+
+Each open tab owns one evaluation thread. Open, Recover and New construct the kernel there.
+The window owns the document session, its accepted private file, history and save checkpoint.
+Apply sends an edit ticket. Undo and Redo identify their target with a history move. A reply
+carries a tab and generation, a scene and the facts needed to publish it. Kernel handles stay
+on the evaluation thread. After upload the window commits the file and accepts the matching
+candidate. A refused upload or cancelled operation discards the candidate. Closing the tab
+stops and joins its evaluator.
+
+A definition's device buffers hold local face, edge and vertex numbers. Each draw supplies the
+three offsets for the current scene. The renderer shares buffers by result and tessellation
+parameters while a prepared scene owns them. An imported definition uses the stored source
+hash, its definition key and tessellation parameters. A new revision checks the stored assembly
+against the bound reading and takes placement identities from the current document.

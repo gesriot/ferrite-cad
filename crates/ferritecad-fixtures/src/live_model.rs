@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
+use crate::feature_changes::{base_profile, circular_tool};
 use ferritecad_document::{
     Document, EditChange, EndCondition, Expression, ExpressionSlot, FeatureAddition, SolidOperation,
 };
-use ferritecad_fixtures::feature_changes::{base_profile, circular_tool};
 use ferritecad_types::{Dimension, ObjectId, Result, StableEntityId};
 use std::path::Path;
 
+#[derive(Debug)]
 pub struct Model {
     pub late: ObjectId,
     pub early: ObjectId,
@@ -15,7 +16,7 @@ pub struct Model {
 }
 
 pub fn write(path: &Path) -> Result<Model> {
-    let chain = ferritecad_fixtures::write_fillet_chain(path, 1.5)?;
+    let chain = crate::write_fillet_chain(path, 1.5)?;
     let mut doc = Document::open(path)?;
     let mut last = chain.second;
     // Distinct pockets leave every earlier history and both corner rounds visible.

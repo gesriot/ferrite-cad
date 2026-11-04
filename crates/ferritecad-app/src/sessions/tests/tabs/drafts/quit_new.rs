@@ -229,7 +229,7 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
                     .and_then(|session| {
                         Ok(crate::creates::Candidate {
                             scene: mock_scene(session.current().path())?,
-                            session,
+                            session: session.into(),
                         })
                     });
                     tx.send(result).expect("answer");

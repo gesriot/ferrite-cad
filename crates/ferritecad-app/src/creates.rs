@@ -34,7 +34,9 @@
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use ferritecad_jobs::{DocumentSession, NewDocument, PlateSize};
+#[cfg(test)]
+use ferritecad_jobs::DocumentSession;
+use ferritecad_jobs::{NewDocument, PlateSize};
 use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_scene::LoadedScene;
 use ferritecad_types::{ErrorKind, Result};
@@ -56,7 +58,7 @@ const CREATE_CANCELLED: &str = "New document cancelled; nothing changed";
 /// accepts together, or drops together (its private directory with it).
 pub(crate) struct Candidate {
     pub(crate) scene: LoadedScene,
-    pub(crate) session: DocumentSession,
+    pub(crate) session: crate::sessions::OpenTab,
 }
 
 impl std::fmt::Debug for Candidate {
@@ -843,7 +845,10 @@ pub(crate) mod tests {
             &ferritecad_kernel::TessellationParams::default(),
             context,
         )?;
-        Ok(Candidate { scene, session })
+        Ok(Candidate {
+            scene,
+            session: session.into(),
+        })
     }
 
     /// Drives one creation the way the event loop does, with the real work

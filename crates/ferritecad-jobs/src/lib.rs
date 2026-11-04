@@ -54,7 +54,7 @@ mod publish;
 mod recovery;
 mod save;
 mod session;
-pub use live::{LiveDocument, PendingRevision};
+pub use live::{LiveDocument, LiveEvaluator, PendingRevision};
 mod stl;
 mod validate;
 
@@ -75,7 +75,7 @@ pub use validate::{ValidatedDocument, validate_document};
 
 pub use create::{
     CreateDocumentRequest, CreatedAnnulus, CreatedDocument, NewDocument, PlateSize,
-    create_document, create_document_with_kernel,
+    create_document, create_document_in_kernel, create_document_with_kernel,
 };
 pub use edit::{EditRequest, EditedDocument, edit_copy, read_extrude_source};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};

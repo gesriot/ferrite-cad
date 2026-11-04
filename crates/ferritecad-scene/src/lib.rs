@@ -70,6 +70,8 @@ use serde::{Deserialize, Serialize};
 /// document can store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedScene {
+    /// Device-independent upload keys in packed mesh order. Omitted geometry has no key.
+    pub mesh_keys: Vec<Option<ContentHash>>,
     /// Facts from the rebuild that supplied this picture; absent for unstored scenes.
     pub rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     pub rebuild: ferritecad_eval::RebuildReport,
@@ -783,7 +785,14 @@ pub fn snapshot_of<K>(
 where
     K: GeometryKernel + ?Sized,
 {
-    prepare::load(path, kernel, read_step, params, context, Picture::new())
+    prepare::load(
+        path,
+        kernel,
+        read_step,
+        params,
+        context,
+        Picture::new(*params),
+    )
 }
 
 /// Tessellates a checked rebuild in the kernel session that owns its shapes.
@@ -803,12 +812,15 @@ pub fn snapshot_from_rebuild<K: GeometryKernel + ?Sized>(
         read_step,
         params,
         context,
-        Picture::new(),
+        Picture::new(*params),
     )
 }
 
 /// What a picture keeps from one reading of a document.
 struct Picture<'a> {
+    params: TessellationParams,
+    body_results: BTreeMap<ObjectId, ContentHash>,
+    source_hashes: BTreeMap<ferritecad_types::ImportedSourceId, ContentHash>,
     meshes: Option<(&'a BodyMeshes, &'a mut BodyMeshes)>,
     rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     rebuild: ferritecad_eval::RebuildReport,
@@ -838,8 +850,11 @@ struct Picture<'a> {
 }
 
 impl Picture<'_> {
-    fn new() -> Self {
+    fn new(params: TessellationParams) -> Self {
         Self {
+            params,
+            body_results: BTreeMap::new(),
+            source_hashes: BTreeMap::new(),
             meshes: None,
             rebuild_facts: None,
             rebuild: Default::default(),
@@ -987,6 +1002,19 @@ impl prepare::LoadSink for Picture<'_> {
     ) -> Result<()> {
         self.rebuild_facts = Some(ferritecad_eval::RebuildFacts::of(document, built)?);
         self.rebuild = built.report();
+        for object in objects {
+            match &object.payload {
+                ObjectPayload::Body(body) => {
+                    if let Some(key) = body.tip_feature.and_then(|tip| built.result_key(tip)) {
+                        self.body_results.insert(object.id, key);
+                    }
+                }
+                ObjectPayload::ImportedStep(step) => {
+                    self.source_hashes.insert(step.source, step.source_hash);
+                }
+                _ => {}
+            }
+        }
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
@@ -1046,6 +1074,10 @@ impl prepare::LoadSink for Picture<'_> {
             });
         }
         Ok(())
+    }
+
+    fn import_drawings(&mut self) -> Option<(&BodyMeshes, &mut BodyMeshes)> {
+        self.meshes.as_mut().map(|(old, next)| (*old, &mut **next))
     }
 
     fn cached_body(&self, id: ObjectId, key: Option<ContentHash>) -> Option<Arc<BodyDrawing>> {
@@ -1161,7 +1193,31 @@ impl prepare::LoadSink for Picture<'_> {
                 }
             }
         }
+        let mesh_keys = catalogue
+            .iter()
+            .map(|entry| {
+                if entry.geometry_omission.is_some() {
+                    return None;
+                }
+                let mut hash = CanonicalHasher::new("viewport.definition.mesh");
+                self.params.feed(&mut hash);
+                match &entry.item {
+                    SceneItem::Body(body) => {
+                        hash.field("body")
+                            .bytes(&body.to_bytes())
+                            .hash(self.body_results.get(body)?);
+                    }
+                    SceneItem::Imported(definition) => {
+                        hash.field("step")
+                            .hash(self.source_hashes.get(&definition.source())?)
+                            .str(definition.definition_key());
+                    }
+                }
+                Some(hash.finish())
+            })
+            .collect();
         Ok(LoadedScene {
+            mesh_keys,
             rebuild_facts: self.rebuild_facts,
             rebuild: self.rebuild,
             edit_source: self.edit_source,

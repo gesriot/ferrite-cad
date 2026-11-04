@@ -26,7 +26,7 @@ impl Window {
 
     /// What the reading worker answers: on the mock kernel, or the production
     /// `open_for_view` (Open CASCADE, or its refusal in a build without it).
-    fn reading(&self, path: &Path) -> Result<(LoadedScene, DocumentSession)> {
+    fn reading(&self, path: &Path) -> Result<(LoadedScene, OpenTab)> {
         match self.drawn {
             Drawn::Native => open_for_view(self.private.path(), path, &OperationContext::default()),
             Drawn::Mock => {
@@ -36,7 +36,7 @@ impl Window {
                     HistoryLimits::default(),
                 )?;
                 let scene = self.picture(session.current().path())?;
-                Ok((scene, session))
+                Ok((scene, session.into()))
             }
         }
     }
@@ -49,7 +49,7 @@ impl Window {
         loads: &mut Loads,
         restores: &mut Restores,
         generation: LoadGeneration,
-        read: Result<(LoadedScene, DocumentSession)>,
+        read: Result<(LoadedScene, OpenTab)>,
         upload: Result<()>,
     ) -> bool {
         let awaited = loads.accepted_path(generation).is_some();

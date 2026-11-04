@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 #[path = "../support/counting.rs"]
 mod counting;
-#[path = "fixture.rs"]
-mod fixture;
+use ferritecad_fixtures::live_model as fixture;
 #[path = "../../../ferritecad-fixtures/tests/support/naming.rs"]
 mod naming;
 #[path = "operations.rs"]
@@ -42,7 +41,7 @@ fn compare<K: Oracle, R>(pending: &mut PendingRevision<Counting<K>, R>) -> Resul
     let mut kernel = K::fresh()?;
     let ctx = OperationContext::default();
     let cold = ferritecad_eval::rebuild_cold(&doc, &mut kernel, &ctx)?;
-    let built = pending.owner.model.prepared();
+    let built = pending.owner.evaluator.model.prepared();
     assert_eq!(built.order(), cold.order());
     assert_eq!(built.report(), cold.report());
     assert_eq!(
@@ -56,6 +55,7 @@ fn compare<K: Oracle, R>(pending: &mut PendingRevision<Counting<K>, R>) -> Resul
         );
         let volume = pending
             .owner
+            .evaluator
             .kernel
             .inner
             .volume(built.shape(*id).expect("live feature"))?;
@@ -106,7 +106,7 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
         "{:?}",
         live.scene().rebuild
     );
-    let initial = live.kernel.calls.take();
+    let initial = live.evaluator.kernel.calls.take();
     assert_eq!(
         (
             initial.extrude_count,
@@ -117,7 +117,7 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
         (33, 30, 2, 3)
     );
     let features = 35;
-    assert_eq!(live.kernel.inner.live_shape_count(), features);
+    assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
     let parameter = |object: ObjectId, value: &str| EditChange::SetParameter {
         object,
         expression: value.into(),
@@ -157,7 +157,7 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
                 _ => live.redo(&context)?,
             };
             assert_eq!(ferritecad_sketch_solver::native_solves() - before, 0);
-            let calls = step.owner.kernel.calls.take();
+            let calls = step.owner.evaluator.kernel.calls.take();
             assert_eq!(
                 (
                     calls.extrude_count,
@@ -181,13 +181,13 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
             }
             // Boolean tools are unpublished. Completed feature results remain shared.
             assert_eq!(
-                step.owner.kernel.inner.live_shape_count(),
+                step.owner.evaluator.kernel.inner.live_shape_count(),
                 features + expected.0 + expected.2
             );
             compare(&mut step)?;
             step.commit_step()?;
-            assert_eq!(live.kernel.inner.live_shape_count(), features);
-            live.kernel.calls.take();
+            assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
+            live.evaluator.kernel.calls.take();
         }
     }
     let scene = live.scene().clone();
@@ -195,11 +195,11 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
     let edit = parameter(case.late, "5 mm");
     let candidate = live.apply(version, vec![edit.clone()], &context)?;
     assert_eq!(
-        candidate.owner.kernel.inner.live_shape_count(),
+        candidate.owner.evaluator.kernel.inner.live_shape_count(),
         features + 1
     );
     drop(candidate);
-    assert_eq!(live.kernel.inner.live_shape_count(), features);
+    assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
     let interrupted = OperationContext::default();
     let candidate = live.apply(version, vec![edit.clone()], &interrupted)?;
     interrupted.cancel().cancel();
@@ -212,9 +212,9 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
     );
     assert_eq!(live.session().current().version(), version);
     assert_eq!(live.scene(), &scene);
-    assert_eq!(live.kernel.inner.live_shape_count(), features);
+    assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
     for stop in [Stop::Extrude, Stop::BetweenNodes, Stop::Mesh] {
-        live.kernel.stop = Some(stop);
+        live.evaluator.kernel.stop = Some(stop);
         let err = live
             .apply(version, vec![edit.clone()], &OperationContext::default())
             .err()
@@ -222,9 +222,9 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
         assert_eq!(err.kind(), ErrorKind::Cancellation, "{err}");
         assert_eq!(live.scene(), &scene);
         assert_eq!(live.session().current().version(), version);
-        assert_eq!(live.kernel.inner.live_shape_count(), features);
+        assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
     }
-    live.kernel.stop = None;
+    live.evaluator.kernel.stop = None;
     let refused = live
         .apply(version, vec![parameter(case.early, "0 mm")], &context)
         .err()
@@ -247,16 +247,16 @@ fn native_reused_plate_and_cut_suffix_match_fresh_scenes() -> Result<()> {
         "{refusal}"
     );
     assert_eq!(live.scene(), &scene);
-    assert_eq!(live.kernel.inner.live_shape_count(), features);
-    live.kernel.calls.take();
+    assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
+    live.evaluator.kernel.calls.take();
     live.apply(version, vec![edit], &context)?.commit_step()?;
-    let calls = live.kernel.calls.get();
+    let calls = live.evaluator.kernel.calls.get();
     assert_eq!(
         (calls.extrude_count, calls.boolean, calls.tessellate),
         (1, 1, 1)
     );
-    assert_eq!(live.kernel.inner.live_shape_count(), features);
-    let remaining = live.kernel.remaining.clone();
+    assert_eq!(live.evaluator.kernel.inner.live_shape_count(), features);
+    let remaining = live.evaluator.kernel.remaining.clone();
     drop(live);
     assert_eq!(remaining.get(), 0);
     Ok(())
@@ -390,12 +390,12 @@ fn native_support_and_solved_sketch_follow_input_keys() -> Result<()> {
             0,
         ),
     ] {
-        live.kernel.calls.take();
+        live.evaluator.kernel.calls.take();
         let before = ferritecad_sketch_solver::native_solves();
         let mut step = live.apply(live.session().current().version(), vec![edit], &ctx)?;
         assert_eq!(ferritecad_sketch_solver::native_solves() - before, solves);
         if solves == 0 {
-            assert_eq!(step.owner.kernel.calls.take(), Calls::default());
+            assert_eq!(step.owner.evaluator.kernel.calls.take(), Calls::default());
         }
         compare(&mut step)?;
         step.commit_step()?;

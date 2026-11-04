@@ -316,7 +316,7 @@ fn a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record() 
     let session = DocumentSession::recover_in(f.private.path(), HistoryLimits::default(), claim)
         .expect("recovered");
     // The window binds it exactly as it binds an Open.
-    s.bind(Bind::Open(Box::new(session))).expect("bound");
+    s.bind(Bind::Open(Box::new(session.into()))).expect("bound");
     written(&s);
     assert_eq!(s.title(), "*plate.fcad (recovered) — FerriteCAD");
     assert!(s.untitled() && s.recovered() && s.dirty() && !s.can_undo());

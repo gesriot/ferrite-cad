@@ -769,7 +769,7 @@ impl StepTicket {
         })
     }
 
-    fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
+    pub(crate) fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
         if expected != self.source.version() {
             return Err(CadError::input(
                 "the document changed after this form was opened; open it again to edit the current version",
@@ -876,7 +876,7 @@ impl StepTicket {
 /// file and changes nothing else.
 #[derive(Debug)]
 pub struct ProducedStep {
-    scene: Option<Box<ferritecad_scene::LoadedScene>>,
+    pub(crate) scene: Option<Box<ferritecad_scene::LoadedScene>>,
     generation: u64,
     base: Arc<Snapshot>,
     snapshot: Arc<Snapshot>,
@@ -886,6 +886,10 @@ impl ProducedStep {
     /// The picture made from the candidate's checked rebuild, consumed once by the UI.
     pub fn take_scene(&mut self) -> Option<ferritecad_scene::LoadedScene> {
         self.scene.take().map(|scene| *scene)
+    }
+
+    pub fn lease(&self) -> Arc<Snapshot> {
+        Arc::clone(&self.snapshot)
     }
 
     pub fn snapshot(&self) -> &Snapshot {
@@ -910,7 +914,7 @@ impl ProducedStep {
 }
 
 /// An Undo or Redo that has been asked for and not yet shown.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Move {
     generation: u64,
     index: usize,

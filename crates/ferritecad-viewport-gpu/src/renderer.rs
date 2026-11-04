@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! The device, the targets and one pass over a snapshot.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 
-use ferritecad_types::{CadError, Result};
+use ferritecad_types::{CadError, ContentHash, Result};
 use ferritecad_viewport::{
     Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, PixelRect, RenderSnapshot,
     SketchDrawing, SketchStyle, VERTEX_FLOATS, VertexPickId, Visibility,
@@ -157,7 +158,7 @@ struct SketchUniform {
 /// Ninety-six bytes, and the shader's `Draw` must come to the same number: a
 /// uniform binding whose size disagrees with the shader's view of it is
 /// rejected when the pipeline is created, which is at least a loud place to
-/// find out. See the note in `shader.wgsl` about why the padding is three
+/// find out. See the note in `shader.wgsl` about why the pick bases are three
 /// scalars and not a `vec3<u32>`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -165,7 +166,7 @@ struct DrawUniform {
     transform: [f32; 16],
     colour: [f32; 4],
     pick: u32,
-    padding: [u32; 3],
+    pick_bases: [u32; 3],
 }
 
 /// What every draw in one frame is drawn against.
@@ -306,6 +307,8 @@ pub struct Renderer {
     /// property of the device and not a constant anyone may assume.
     draw_stride: u64,
     geometry_uploads: u64,
+    geometry_bytes: u64,
+    resident: HashMap<ContentHash, Weak<GpuMesh>>,
     /// How many times drawings have been put on this device. Counted apart
     /// from the meshes because they are a different channel with a different
     /// life: see [`Renderer::sketch_uploads`].
@@ -572,6 +575,8 @@ impl Renderer {
             globals,
             draw_stride,
             geometry_uploads: 0,
+            geometry_bytes: 0,
+            resident: HashMap::new(),
             sketch_uploads: 0,
             grid_shader,
             grid_pipeline_layout,
@@ -1446,6 +1451,11 @@ impl Renderer {
         self.geometry_uploads
     }
 
+    /// Bytes allocated for uploaded geometry, including alignment and empty buffers.
+    pub fn geometry_bytes(&self) -> u64 {
+        self.geometry_bytes
+    }
+
     /// How many times this renderer has put a document's drawings on the
     /// device.
     ///
@@ -1493,6 +1503,20 @@ impl Renderer {
     /// The result belongs to this renderer. Another one will refuse it – see
     /// [`Self::render`].
     pub fn prepare(&mut self, snapshot: Arc<RenderSnapshot>) -> Result<PreparedSnapshot> {
+        self.prepare_keyed(snapshot, &[])
+    }
+
+    /// Shares immutable definition buffers while any prepared scene still owns them.
+    pub fn prepare_keyed(
+        &mut self,
+        snapshot: Arc<RenderSnapshot>,
+        keys: &[Option<ContentHash>],
+    ) -> Result<PreparedSnapshot> {
+        if !keys.is_empty() && keys.len() != snapshot.meshes().len() {
+            return Err(CadError::rendering("the mesh keys do not match the scene"));
+        }
+        self.resident
+            .retain(|_, buffers| buffers.strong_count() != 0);
         let draw_buffer_size = self.validate_snapshot(&snapshot)?;
 
         // Every draw's uniform data in one buffer, each at a device-aligned
@@ -1508,7 +1532,7 @@ impl Renderer {
                 transform: item.transform,
                 colour: item.colour,
                 pick: item.pick.to_raw(),
-                padding: [0; 3],
+                pick_bases: snapshot.meshes()[item.mesh].pick_bases(),
             };
             let at = index * self.draw_stride as usize;
             draw_bytes[at..at + std::mem::size_of::<DrawUniform>()]
@@ -1547,6 +1571,11 @@ impl Renderer {
             .try_reserve_exact(snapshot.meshes().len())
             .map_err(|error| CadError::rendering_because("recording mesh buffers", error))?;
         for (index, mesh) in snapshot.meshes().iter().enumerate() {
+            let key = keys.get(index).copied().flatten();
+            if let Some(buffers) = key.and_then(|k| self.resident.get(&k)?.upgrade()) {
+                meshes.push(buffers);
+                continue;
+            }
             let vertices = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1565,11 +1594,17 @@ impl Renderer {
             // than woven into them: the positions and normals keep the layout
             // every other part of this crate agrees on, and a face is one more
             // buffer whose contents were decided when the picture was packed.
+            let base = mesh.pick_bases()[0];
+            let local_faces: Vec<u32> = mesh
+                .faces_of_vertices()
+                .iter()
+                .map(|&face| if face == 0 { 0 } else { face - base })
+                .collect();
             let faces = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("ferritecad viewport faces"),
-                    contents: bytemuck::cast_slice(mesh.faces_of_vertices()),
+                    contents: bytemuck::cast_slice(&local_faces),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
             // Where the faces stop, decided when the picture was packed and
@@ -1591,7 +1626,7 @@ impl Renderer {
             // picture was packed with: no position is matched against another,
             // and nothing the kernel called an edge is uploaded — only the
             // number this picture gave it.
-            let edge_vertices = edge_stream(&snapshot, index, mesh)?;
+            let edge_vertices = edge_stream(mesh)?;
             let edge_vertex_count = edge_vertices.len() as u32;
             let edges = self
                 .device
@@ -1611,7 +1646,7 @@ impl Renderer {
                 });
             // The corner footprints, uploaded once here with everything else.
             // Nothing is built or uploaded per frame.
-            let corner_vertices = corner_stream(&snapshot, index, mesh)?;
+            let corner_vertices = corner_stream(mesh)?;
             let corner_vertex_count = corner_vertices.len() as u32;
             let corners = self
                 .device
@@ -1630,7 +1665,13 @@ impl Renderer {
                     },
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-            meshes.push(GpuMesh {
+            self.geometry_bytes += vertices.size()
+                + indices.size()
+                + faces.size()
+                + lines.size()
+                + edges.size()
+                + corners.size();
+            let buffers = Arc::new(GpuMesh {
                 vertices,
                 faces,
                 indices,
@@ -1642,6 +1683,10 @@ impl Renderer {
                 corners,
                 corner_vertex_count,
             });
+            if let Some(key) = key {
+                self.resident.insert(key, Arc::downgrade(&buffers));
+            }
+            meshes.push(buffers);
             self.geometry_uploads += 1;
         }
 
@@ -2262,7 +2307,7 @@ struct GpuMesh {
 pub struct PreparedSnapshot {
     renderer: RendererId,
     snapshot: Arc<RenderSnapshot>,
-    meshes: Vec<GpuMesh>,
+    meshes: Vec<Arc<GpuMesh>>,
     /// The per-draw uniforms are not held separately: a bind group keeps the
     /// resources it names alive, so a second handle to that buffer would only
     /// be a second thing to keep in step.
@@ -2497,27 +2542,14 @@ fn build_line_pipeline(
 /// A definition whose mesh carried no edge association, and one whose
 /// association is empty, both produce nothing here: neither has an edge this
 /// picture can name, so neither gets geometry.
-fn edge_stream(
-    snapshot: &RenderSnapshot,
-    definition: usize,
-    mesh: &ferritecad_viewport::PackedMesh,
-) -> Result<Vec<EdgeVertex>> {
+fn edge_stream(mesh: &ferritecad_viewport::PackedMesh) -> Result<Vec<EdgeVertex>> {
     let Some(count) = mesh.edge_count() else {
         return Ok(Vec::new());
     };
     let mut stream: Vec<EdgeVertex> = Vec::new();
     for ordinal in 0..count {
-        // This picture's own numbering, asked for rather than recomputed: a
-        // second account of it here is a second thing to drift.
-        let edge = snapshot.edge_of(definition, ordinal).ok_or_else(|| {
-            CadError::rendering(format!(
-                "the picture numbers {count} edges of definition {definition} but \
-                 will not name edge {ordinal}"
-            ))
-        })?;
-        let raw = edge.to_raw();
-        let segments = snapshot
-            .segments_of_edge(edge)
+        let segments = mesh
+            .segments_of_edge(ordinal)
             .ok_or_else(|| CadError::rendering("an edge of this picture draws nothing"))?;
         for pair in segments.chunks_exact(2) {
             for index in pair {
@@ -2529,7 +2561,7 @@ fn edge_stream(
                 })?;
                 stream.push(EdgeVertex {
                     position: [position[0], position[1], position[2]],
-                    edge: raw,
+                    edge: ordinal as u32 + 1,
                 });
             }
         }
@@ -2977,11 +3009,7 @@ fn build_corner_pipeline(
 /// they are the copies each adjoining face keeps - so which one is read does
 /// not change where the square goes, and all of them carry the one identity
 /// the picture gave that corner.
-fn corner_stream(
-    snapshot: &RenderSnapshot,
-    definition: usize,
-    mesh: &ferritecad_viewport::PackedMesh,
-) -> Result<Vec<CornerVertex>> {
+fn corner_stream(mesh: &ferritecad_viewport::PackedMesh) -> Result<Vec<CornerVertex>> {
     let Some(count) = mesh.corner_count() else {
         return Ok(Vec::new());
     };
@@ -2996,16 +3024,8 @@ fn corner_stream(
     ];
     let mut stream: Vec<CornerVertex> = Vec::new();
     for ordinal in 0..count {
-        // This picture's own numbering, asked for rather than recomputed.
-        let corner = snapshot.vertex_of(definition, ordinal).ok_or_else(|| {
-            CadError::rendering(format!(
-                "the picture numbers {count} vertices of definition {definition} but \
-                 will not name vertex {ordinal}"
-            ))
-        })?;
-        let raw = corner.to_raw();
-        let occurrences = snapshot
-            .occurrences_of_vertex(corner)
+        let occurrences = mesh
+            .occurrences_of_corner(ordinal)
             .ok_or_else(|| CadError::rendering("a vertex of this picture is drawn nowhere"))?;
         let first = *occurrences
             .first()
@@ -3019,7 +3039,7 @@ fn corner_stream(
         for offset in OFFSETS {
             stream.push(CornerVertex {
                 position: [position[0], position[1], position[2]],
-                vertex: raw,
+                vertex: ordinal as u32 + 1,
                 offset,
             });
         }

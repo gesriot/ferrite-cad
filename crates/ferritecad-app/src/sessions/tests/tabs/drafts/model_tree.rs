@@ -50,6 +50,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
 // not geometry evidence; native tests below use the production scene worker.
 pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<LoadedScene> {
     Ok(LoadedScene {
+        mesh_keys: vec![],
         rebuild_facts: None,
         rebuild: Default::default(),
         edit_source: Some(ferritecad_jobs::read_extrude_source(path)?),
@@ -70,7 +71,7 @@ pub(in crate::sessions::tests::tabs) fn open_facts(w: &mut Window, path: &Path) 
     w.present(
         &path,
         facts_scene(&path),
-        Bind::Open(Box::new(session)),
+        Bind::Open(Box::new(session.into())),
         Ok(()),
     )
     .expect("facts accepted");
@@ -194,7 +195,7 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
         w.present(
             &staged,
             loaded,
-            Bind::Open(Box::new(candidate)),
+            Bind::Open(Box::new(candidate.into())),
             Err(CadError::unsupported("device refusal"))
         )
         .is_err()

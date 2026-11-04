@@ -159,7 +159,7 @@ impl Window {
             .expect("session");
             let shown = session.current().path().to_path_buf();
             let scene = self.picture(&shown);
-            self.present(&shown, scene, Bind::Open(Box::new(session)), Ok(()))
+            self.present(&shown, scene, Bind::Open(Box::new(session.into())), Ok(()))
                 .expect("a new tab");
         }
         opening
@@ -177,7 +177,7 @@ impl Window {
         )?;
         let shown = session.current().path().to_path_buf();
         let scene = self.picture(&shown);
-        self.present(&shown, scene, Bind::Open(Box::new(session)), Ok(()))
+        self.present(&shown, scene, Bind::Open(Box::new(session.into())), Ok(()))
     }
 
     fn feature(&self) -> ObjectId {
@@ -550,7 +550,7 @@ fn opening_a_file_open_by_any_name_shows_its_tab_and_copies_are_new_tabs() {
     let scene = w.picture(&shown);
     let before = w.scene.document.clone();
     let refused = w
-        .present(&shown, scene, Bind::Open(Box::new(twice)), Ok(()))
+        .present(&shown, scene, Bind::Open(Box::new(twice.into())), Ok(()))
         .expect_err("one file, one tab");
     assert!(refused.to_string().contains("already open"), "{refused}");
     assert_eq!((w.tabs.count(), w.sessions.tab()), (2, b));
@@ -1082,8 +1082,13 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
         (w.picture(&shown), session)
     };
     let shown = recovered.current().path().to_path_buf();
-    w.present(&shown, scene, Bind::Open(Box::new(recovered)), Ok(()))
-        .expect("a new tab");
+    w.present(
+        &shown,
+        scene,
+        Bind::Open(Box::new(recovered.into())),
+        Ok(()),
+    )
+    .expect("a new tab");
     let r = w.sessions.tab();
     assert_ne!(r, a);
     assert!(w.sessions.recovered() && w.sessions.dirty());
@@ -1136,7 +1141,7 @@ fn the_ninth_document_is_refused_before_anything_changes() {
     let path = session.current().path().to_path_buf();
     let scene = w.picture(&path);
     assert!(
-        w.present(&path, scene, Bind::Open(Box::new(session)), Ok(()))
+        w.present(&path, scene, Bind::Open(Box::new(session.into())), Ok(()))
             .is_err()
     );
     assert_eq!((w.tabs.count(), w.sessions.tab()), (MAX_TABS, shown_tab));

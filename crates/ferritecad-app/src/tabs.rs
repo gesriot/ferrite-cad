@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
-use ferritecad_jobs::{DocumentSession, RecoveryRecorder, Snapshot};
+use ferritecad_jobs::{RecoveryRecorder, Snapshot};
 use ferritecad_kernel::CancelToken;
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::ViewportInput;
@@ -502,7 +502,7 @@ impl Tabs {
     fn open(
         &mut self,
         active: &mut Sessions,
-        session: DocumentSession,
+        session: crate::sessions::OpenTab,
         camera: &ViewportInput,
         checkpoint_name: &mut String,
         forms: &mut Forms<'_>,
@@ -601,12 +601,49 @@ impl Tabs {
     /// (`spawn` is given the version's private file and the generation to answer
     /// with) while the shown tab holds the one operation slot. `after` is what
     /// follows once it is shown.
+    pub(crate) fn begin_live_switch(
+        &mut self,
+        active: &mut Sessions,
+        tab: TabId,
+        after: Option<After>,
+        reply: impl FnOnce(u64, ferritecad_types::Result<ferritecad_scene::LoadedScene>)
+        + Send
+        + 'static,
+    ) -> std::result::Result<u64, String> {
+        let (port, snapshot) = self
+            .hidden_sessions(tab)
+            .and_then(Sessions::switch_picture)
+            .ok_or_else(|| "That tab has no document evaluator.".to_string())?;
+        self.start_switch(active, tab, after, |_, generation, cancel| {
+            port.draw(
+                crate::sessions::Address { tab, generation },
+                crate::sessions::Target::Switch(snapshot),
+                cancel.clone(),
+                move |result| reply(generation, result),
+            );
+            None
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_switch(
         &mut self,
         active: &mut Sessions,
         target: TabId,
         after: Option<After>,
         spawn: impl FnOnce(PathBuf, u64, &CancelToken) -> JoinHandle<()>,
+    ) -> std::result::Result<u64, String> {
+        self.start_switch(active, target, after, |path, generation, cancel| {
+            Some(spawn(path, generation, cancel))
+        })
+    }
+
+    fn start_switch(
+        &mut self,
+        active: &mut Sessions,
+        target: TabId,
+        after: Option<After>,
+        spawn: impl FnOnce(PathBuf, u64, &CancelToken) -> Option<JoinHandle<()>>,
     ) -> std::result::Result<u64, String> {
         if self.closing_form()
             || (self.quitting()
@@ -632,7 +669,7 @@ impl Tabs {
             generation,
             target,
             cancel,
-            worker: Some(worker),
+            worker,
             after,
             _lease: lease,
             quit: self
@@ -1301,7 +1338,6 @@ impl Tabs {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn hidden_sessions(&self, tab: TabId) -> Option<&Sessions> {
         self.hidden(tab).map(|hidden| &hidden.sessions)
     }
