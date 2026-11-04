@@ -678,3 +678,81 @@ fn tilted_cylindrical_wall_parallel_to_the_sweep_keeps_its_volume() -> Result<()
     }
     tilted_step(true, false, 37., 29.)
 }
+
+#[test]
+fn separate_regions_cut_to_their_exits_with_cold_names_after_restore() -> Result<()> {
+    use ferritecad_document::*;
+    use ferritecad_eval::{CacheOutcome, rebuild_cached, rebuild_cold};
+    use ferritecad_fixtures::result_sets::plate;
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir().expect("model directory");
+    let mut doc = Document::create(dir.path().join("regions.fcad"))?;
+    let plate = plate(&mut doc)?;
+    let [top, sketch, feature] = std::array::from_fn(|_| ObjectId::new());
+    let mut regions = rectangle(top, [5., 5.], [15., 15.])?;
+    regions
+        .curves
+        .extend(rectangle(top, [30., 10.], [50., 30.])?.curves);
+    doc.write_changes(&[
+        EditChange::AddDatumPlane {
+            object: top,
+            name: None,
+            plane: DatumPlane::Offset {
+                from: plate.plane,
+                distance_mm: Expression::constant(10.)?,
+            },
+        },
+        EditChange::AddSketch {
+            object: sketch,
+            name: None,
+            sketch: regions,
+        },
+        EditChange::AddFeature {
+            object: feature,
+            name: None,
+            body: plate.body,
+            feature: FeatureAddition::Extrude {
+                profile: sketch,
+                regions: Vec::new(),
+                operation: SolidOperation::Cut,
+                reversed: true,
+                end_condition: EndCondition::UpToNext,
+            },
+        },
+    ])?;
+    // Both regions exit through the bottom: 60 × 40 × 10 − (100 + 400) × 10.
+    let volume = 19_000.;
+    let mut kernel = OcctKernel::new()?;
+    let context = OperationContext::default();
+    let cold = rebuild_cold(&doc, &mut kernel, &context)?;
+    assert!(cold.all_built(), "{:?}", cold.report());
+    let shape = cold.shape(feature).expect("final feature");
+    assert!(kernel.is_valid(shape)?);
+    assert_eq!(kernel.solid_count(shape)?, 1);
+    assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+    let expected = naming::signature(&cold.topology().features[&feature]);
+    let mut cache = CacheStore::open(
+        dir.path().join("cache"),
+        doc.meta().document_id,
+        kernel.identity().id(),
+        kernel.identity().version(),
+    )?;
+    for expected_event in [CacheOutcome::Miss, CacheOutcome::Hit] {
+        let (restored, events) = rebuild_cached(&doc, &mut kernel, &mut cache, &context)?;
+        assert!(restored.all_built(), "{:?}", restored.report());
+        assert!(events.iter().all(|event| event.outcome == expected_event));
+        assert_eq!(
+            naming::signature(&restored.topology().features[&feature]),
+            expected
+        );
+        let shape = restored.shape(feature).expect("restored feature");
+        assert!(kernel.is_valid(shape)?);
+        assert!((kernel.shape_stats(shape)?.1 - volume).abs() < 1e-7);
+        restored.release_all(&mut kernel);
+    }
+    cold.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+    Ok(())
+}
