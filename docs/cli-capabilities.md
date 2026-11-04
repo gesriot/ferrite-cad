@@ -500,9 +500,8 @@ alias, полное чтение версии отказывает с её им�
 JSON v1: успех/отказ выполнения — структурированный stdout, диагностика — stderr.
 Clap usage/help остаются текстом. Потеря отчёта после публикации — exit 7 с сохранённой копией.
 Неверный UUID/значение/stale/busy — input; другая фича, Symmetric/ThroughAll,
-Формула в числовой форме, stored SQL trigger и нестандартное mutating FK action дают unsupported.
-Ошибки kernel/topology
-refusal остаётся типизированным. Отказ/отмена до publish не оставляет файла и scratch;
+формула в числовой форме, stored SQL trigger и нестандартное mutating FK action —
+unsupported; kernel/topology refusal остаётся типизированным. Отказ/отмена до publish не оставляет файла и scratch;
 после publish поздняя отмена не удаляет файл и не выдаёт публикацию за отказ.
 Сборка без OCCT собирается и честно отказывает операции, требующей ядра.
 

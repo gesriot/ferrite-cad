@@ -1427,7 +1427,9 @@ impl ObjectPayload {
                     validate_positive(distance.value(), "extrude distance")
                 }
                 EndCondition::UpToFace { offset_mm, .. } => offset_mm.validate(),
-                _ => Ok(()),
+                EndCondition::ThroughAll
+                | EndCondition::UpToNext
+                | EndCondition::UpToVertex { .. } => Ok(()),
             },
             Self::Revolve(r) => match &r.extent {
                 RevolveExtent::Partial { angle } | RevolveExtent::ByAngle { angle }
@@ -1435,11 +1437,16 @@ impl ObjectPayload {
                 {
                     RevolveAngle::new(angle.value()).map(|_| ())
                 }
-                _ => Ok(()),
+                RevolveExtent::Partial { .. }
+                | RevolveExtent::ByAngle { .. }
+                | RevolveExtent::FullTurn => Ok(()),
             },
             Self::Fillet(f) => validate_amount(f.radius_mm.value(), "a fillet radius", " mm"),
             Self::Chamfer(c) => validate_amount(c.distance_mm.value(), "a chamfer distance", " mm"),
-            _ => Ok(()),
+            Self::DatumPlane(DatumPlane::Fixed { .. })
+            | Self::Body(_)
+            | Self::KeepSolids(_)
+            | Self::ImportedStep(_) => Ok(()),
         }
     }
 

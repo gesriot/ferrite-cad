@@ -871,7 +871,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("this value is an expression; edit it through `edit`")
+                .contains("this value is an expression; send a text `expression` through `edit`")
         );
         assert_eq!(kernel.live_shape_count(), 0);
         assert_eq!(std::fs::read(&request.source).expect("source"), before);

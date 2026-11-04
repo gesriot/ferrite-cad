@@ -580,7 +580,7 @@ fn set_expression(
 impl Expression {
     pub fn numeric_form_refusal(&self) -> Option<&'static str> {
         (!Formula::parse(&self.source).is_ok_and(|f| f.is_literal()))
-            .then_some("this value is an expression; edit it through `edit`")
+            .then_some("this value is an expression; send a text `expression` through `edit`")
     }
 }
 

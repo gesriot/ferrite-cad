@@ -34,7 +34,7 @@ fn native_open_draws_and_saves_a_parameter_driven_extrusion() {
         .expect("height");
     assert_eq!(
         slot.refusal.as_deref(),
-        Some("this value is an expression; edit it through `edit`")
+        Some("this value is an expression; send a text `expression` through `edit`")
     );
     assert!(!crate::edits::Edits::default().begin_selected(&f.file, &reading, f.feature));
     let snapshot = Arc::new(scene.snapshot);

@@ -110,8 +110,11 @@ its extrusion direction with `set_reversed` (`object`, `reversed`).
 
 A Revolve addition has `kind: "revolve"`, `profile`, `operation`, `axis` and `extent`.
 Axes are `"sketch_x"`, `"sketch_y"`, or `{"line":"<Line UUID>"}`.
-Extents are `{"kind":"full_turn"}` or
-`{"kind":"partial","angle":{"value":137.5,"unit":"deg"}}`.
+Extents are `{"kind":"full_turn"}`,
+`{"kind":"partial","angle":{"value":137.5,"unit":"deg"}}` or
+`{"kind":"by_angle","expression":"<text>"}`. A `by_angle` extent makes a full turn when its
+expression evaluates to exactly one turn. A text `set_expression` on a Revolve angle stores
+this extent.
 Use `set_revolve_axis` (`object`, `axis`) and `set_revolve_extent` (`object`, `extent`)
 for existing features. Numbers still use expression slots; no new numeric edit route
 is introduced. See [sweep semantics](generic-sweeps.md).
