@@ -5,6 +5,22 @@ use serde_json::{Value, json};
 /// Encode a test's domain changes at the CLI boundary, with explicit units.
 pub fn edit_request_json(changes: &[EditChange]) -> Value {
     let changes: Vec<_> = changes.iter().map(|change| match change {
+        EditChange::AddParameter { object, name, dimension, expression } => json!({
+            "kind":"add_parameter", "object":object, "name":name,
+            "dimension":dimension, "expression":expression,
+        }),
+        EditChange::SetParameter { object, expression } => json!({
+            "kind":"set_parameter", "object":object, "expression":expression,
+        }),
+        EditChange::RenameParameter { object, name } => json!({
+            "kind":"rename_parameter", "object":object, "name":name,
+        }),
+        EditChange::RemoveParameter { object } => {
+            json!({"kind":"remove_parameter","object":object})
+        }
+        EditChange::SetExpressionText { object, slot, source } => json!({
+            "kind":"set_expression", "object":object, "slot":slot, "expression":source,
+        }),
         EditChange::AddDatumPlane { object, name, plane } => {
             use ferritecad_document::DatumPlane as D;
             let plane = match plane {
@@ -160,6 +176,9 @@ fn feature_json(feature: &ferritecad_document::FeatureAddition) -> Value {
 }
 fn turn_json(extent: &ferritecad_document::RevolveExtent) -> Value {
     match extent {
+        ferritecad_document::RevolveExtent::ByAngle { angle } => {
+            json!({"kind":"by_angle", "expression":angle.source})
+        }
         ferritecad_document::RevolveExtent::FullTurn => json!({"kind":"full_turn"}),
         ferritecad_document::RevolveExtent::Partial { angle } => json!({"kind":"partial",
             "angle":{"value":angle.value(), "unit":"rad"}}),

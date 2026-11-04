@@ -31,6 +31,7 @@ A parameter has a unique case-sensitive name matching `[A-Za-z_][A-Za-z0-9_]*`, 
 dimension and an expression. Reserve the seven unit names. Resolve source tokens by name
 and store one `parameter` dependency from the owning object to each referenced parameter ID.
 Derive those rows on edit. On open, a missing or extra row is a structural `input` error.
+Unparseable source text and an unknown parameter name are also structural `input` errors on open.
 Reject cycles and identify the parameters in the cycle by name.
 
 Evaluate the edit candidate once in graph order and store every affected value in the same

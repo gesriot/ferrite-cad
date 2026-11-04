@@ -229,16 +229,14 @@ fn stored(path: &Path) -> Stored {
     let SketchGeometry::Circle { center, radius } = curve.geometry else {
         panic!("the document stores a Circle")
     };
-    let height_mm = objects
-        .iter()
-        .find_map(|o| match &o.payload {
-            ObjectPayload::Extrude(e) => Some(
-                ferritecad_document::editable_extrude(&d, o)
-                    .unwrap_or_else(|_| panic!("literal height, got {e:?}")),
-            ),
-            _ => None,
-        })
-        .expect("extrude");
+    let height = d
+        .expression_slots()
+        .expect("slots")
+        .into_iter()
+        .find(|s| s.slot == ferritecad_document::ExpressionSlot::ExtrudeDistance)
+        .expect("extrusion distance");
+    assert!(height.refusal.is_none(), "literal height");
+    let height_mm = height.expression.value();
     let refs = crate::names::snapshot(&d);
     d.close().expect("close");
     Stored {

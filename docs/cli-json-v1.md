@@ -29,7 +29,7 @@ ferritecad export-stl <source.fcad> -o <out.stl> --json [--solid <name-or-id>] [
 Обычный текстовый режим сохраняется. Общие document/jobs операции остаются
 владельцами чтения, создания, допустимости правки и публикации.
 Нет JSON остальных команд, stdin/batch, RPC, DSL, сервера,
-правки формул/Parameter или in-place Save. Возможности остальных
+или in-place Save. Правки формул и параметров поддерживает `edit`. Возможности остальных
 команд описаны в [карте CLI](cli-capabilities.md).
 
 ## Конверт и совместимость
@@ -609,9 +609,11 @@ descendant floor UUID каждого Cut. Для standalone/неподдержи
 
 При общем запрете **все** `editable` равны false, даже если локальная `refusal`
 равна null. Пустой или нередактируемый документ успешно читается: `ok: true`,
-`available: false` и объяснение. Наличие расстояния не означает допустимость
-правки. Поддерживается только Blind с числовым литералом без зависимости
-Parameter. Formula, Parameter, Symmetric и ThroughAll отказывают.
+`available: false` и объяснение. У слота в `expression_slots` есть
+`expression.source` и `expression.value`.
+Массив `parameters` содержит `object`, `name`, `dimension`, `source`, `value` и список UUID
+`dependents`. Ограничение числовой формы выводится в `refusal`. Формулы редактируются
+текстовым вариантом `set_expression`. См. [выражения](expressions.md).
 
 Чтение использует один `Document::open_read_only`, `ExtrudeEditSource` и общий
 `stl_bodies(&Document)` на том же закреплённом снимке, с одним вычислением content

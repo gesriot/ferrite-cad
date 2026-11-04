@@ -167,7 +167,10 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                     _ => None,
                                 })?;
                             Some(match &r.extent {
-                                ferritecad_document::RevolveExtent::Partial { angle } => {
+                                ferritecad_document::RevolveExtent::Partial { angle }
+                                | ferritecad_document::RevolveExtent::ByAngle { angle }
+                                    if !r.extent.is_full_turn() =>
+                                {
                                     SketchProfileUse::PartialRevolve {
                                         feature: feature.id,
                                         body,
@@ -178,7 +181,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                         .ok()?,
                                     }
                                 }
-                                ferritecad_document::RevolveExtent::FullTurn => {
+                                extent if extent.is_full_turn() => {
                                     SketchProfileUse::FullTurnRevolve {
                                         feature: feature.id,
                                         body,

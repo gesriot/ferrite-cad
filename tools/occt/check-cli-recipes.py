@@ -9,7 +9,11 @@ import subprocess
 import sys
 import tempfile
 
-RECIPES = [('docs/keep-solids.md',
+RECIPES = [('docs/expressions.md',
+  'EXPRESSIONS_RECIPE',
+  {'no-solver': 'EXPRESSIONS_NO_SOLVER ', 'solver': 'EXPRESSIONS_SOLVER ',
+   'stub': 'EXPRESSIONS_STUB '}),
+ ('docs/keep-solids.md',
   'KEEP_SOLIDS_RECIPE',
   {'no-solver': 'KEEP_SOLIDS_OK ', 'solver': 'KEEP_SOLIDS_OK ',
    'stub': 'KEEP_SOLIDS_NO_KERNEL '}),

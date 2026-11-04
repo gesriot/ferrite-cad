@@ -200,8 +200,9 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             "profile {}, {}, {:?}",
             r.profile,
             match &r.extent {
-                ferritecad_document::RevolveExtent::FullTurn => "full turn".to_owned(),
-                ferritecad_document::RevolveExtent::Partial { angle } =>
+                extent if extent.is_full_turn() => "full turn".to_owned(),
+                ferritecad_document::RevolveExtent::Partial { angle }
+                | ferritecad_document::RevolveExtent::ByAngle { angle } =>
                     format!("{}°", ferritecad_types::display_degrees(angle.value())),
                 other => format!("{other:?}"),
             },

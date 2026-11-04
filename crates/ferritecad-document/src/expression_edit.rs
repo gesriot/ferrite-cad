@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
-use std::collections::{BTreeMap, BTreeSet};
+use crate::candidate::Candidate;
+
+use crate::formula::Formula;
 
 use ferritecad_types::{CadError, Dimension, ObjectId, Result, StableEntityId};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DependencyRole, Document, EndCondition, Expression, ObjectPayload, ObjectRecord, RevolveExtent,
-    SketchConstraintRule,
+    Document, EndCondition, Expression, ObjectPayload, RevolveExtent, SketchConstraintRule,
 };
 
 /// A stored expression, addressed independently of geometry or evaluation policy.
@@ -60,6 +61,28 @@ impl std::fmt::Display for ExpressionSlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditChange {
+    AddParameter {
+        object: ObjectId,
+        name: String,
+        dimension: Dimension,
+        expression: String,
+    },
+    SetParameter {
+        object: ObjectId,
+        expression: String,
+    },
+    RenameParameter {
+        object: ObjectId,
+        name: String,
+    },
+    RemoveParameter {
+        object: ObjectId,
+    },
+    SetExpressionText {
+        object: ObjectId,
+        slot: ExpressionSlot,
+        source: String,
+    },
     SetKeepSelection {
         object: ObjectId,
         selection: crate::KeepSelection,
@@ -239,7 +262,12 @@ impl EditChange {
 
     pub fn object(&self) -> ObjectId {
         match self {
-            Self::SetKeepSelection { object, .. }
+            Self::AddParameter { object, .. }
+            | Self::SetParameter { object, .. }
+            | Self::RenameParameter { object, .. }
+            | Self::RemoveParameter { object }
+            | Self::SetExpressionText { object, .. }
+            | Self::SetKeepSelection { object, .. }
             | Self::AddDatumPlane { object, .. }
             | Self::SetDatumFace { object, .. }
             | Self::AddBody { object, .. }
@@ -274,7 +302,17 @@ impl EditChange {
             slot, expression, ..
         } = self
         {
-            return set_expression(payload, *slot, expression.clone());
+            return set_expression(payload, *slot, expression.clone(), true);
+        }
+        if let Self::SetExpressionText { slot, source, .. } = self {
+            if let (ExpressionSlot::RevolveAngle, ObjectPayload::Revolve(r)) = (slot, &mut *payload)
+            {
+                r.extent = RevolveExtent::ByAngle {
+                    angle: Expression::new(source, 0.)?,
+                };
+                return Ok(());
+            }
+            return set_expression(payload, *slot, Expression::new(source, 0.)?, false);
         }
         match self {
             Self::SetDatumFace { face, .. } => {
@@ -387,7 +425,11 @@ impl EditChange {
                     })?;
                 sketch.constraints.remove(index);
             }
-            Self::AddDatumPlane { .. }
+            Self::AddParameter { .. }
+            | Self::SetParameter { .. }
+            | Self::RenameParameter { .. }
+            | Self::RemoveParameter { .. }
+            | Self::AddDatumPlane { .. }
             | Self::AddBody { .. }
             | Self::AddSketch { .. }
             | Self::AddFeature { .. } => {
@@ -404,6 +446,7 @@ impl EditChange {
             | Self::SetRevolveAxis { .. }
             | Self::SetRevolveExtent { .. }
             | Self::SetExpression { .. }
+            | Self::SetExpressionText { .. }
             | Self::SetEndCondition { .. } => {
                 unreachable!("expressions were handled before reading the sketch")
             }
@@ -430,115 +473,129 @@ impl ExpressionSlotValue {
             return Err(CadError::unsupported(reason.clone()));
         }
         let mut payload = self.payload.clone();
-        set_expression(&mut payload, self.slot, Expression::constant(value)?)?;
+        set_expression(&mut payload, self.slot, Expression::constant(value)?, true)?;
         payload.validate()
     }
 }
 
-fn expressions(
+// Keep the read and write traversals exhaustive over the same stored slots.
+macro_rules! visit_slots {
+    ($payload:ident, $visit:ident) => {{
+        use ExpressionSlot as S;
+        match $payload {
+            ObjectPayload::DatumPlane(crate::DatumPlane::Offset { distance_mm, .. }) => {
+                $visit(S::DatumOffset, distance_mm)
+            }
+            ObjectPayload::DatumPlane(crate::DatumPlane::Face { offset_mm, .. }) => {
+                $visit(S::DatumOffset, offset_mm)
+            }
+            ObjectPayload::Extrude(crate::Extrude { end_condition, .. }) => match end_condition {
+                EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
+                    $visit(S::ExtrudeDistance, distance)
+                }
+                EndCondition::UpToFace { offset_mm, .. } => $visit(S::ExtrudeEndOffset, offset_mm),
+                EndCondition::ThroughAll
+                | EndCondition::UpToNext
+                | EndCondition::UpToVertex { .. } => {}
+            },
+            ObjectPayload::Fillet(crate::Fillet { radius_mm, .. }) => {
+                $visit(S::FilletRadius, radius_mm)
+            }
+            ObjectPayload::Chamfer(crate::Chamfer { distance_mm, .. }) => {
+                $visit(S::ChamferDistance, distance_mm)
+            }
+            ObjectPayload::Revolve(crate::Revolve { extent, .. }) => match extent {
+                RevolveExtent::Partial { angle } | RevolveExtent::ByAngle { angle } => {
+                    $visit(S::RevolveAngle, angle)
+                }
+                RevolveExtent::FullTurn => {}
+            },
+            ObjectPayload::Sketch(crate::Sketch { constraints, .. }) => {
+                for crate::SketchConstraint { id, rule } in constraints {
+                    let constraint = *id;
+                    match rule {
+                        SketchConstraintRule::Distance { distance, .. } => {
+                            $visit(S::Distance { constraint }, distance)
+                        }
+                        SketchConstraintRule::Radius { radius, .. } => {
+                            $visit(S::Radius { constraint }, radius)
+                        }
+                        SketchConstraintRule::DirectedAngle { angle, .. } => {
+                            $visit(S::DirectedAngle { constraint }, angle)
+                        }
+                        SketchConstraintRule::Fixed { x, y, .. } => {
+                            $visit(S::FixedX { constraint }, x);
+                            $visit(S::FixedY { constraint }, y);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ObjectPayload::KeepSolids(_)
+            | ObjectPayload::DatumPlane(crate::DatumPlane::Fixed { .. })
+            | ObjectPayload::Body(_)
+            | ObjectPayload::Parameter(_)
+            | ObjectPayload::ImportedStep(_) => {}
+        }
+    }};
+}
+
+pub(crate) fn expressions(
     payload: &mut ObjectPayload,
     mut visit: impl FnMut(ExpressionSlot, &mut Expression),
 ) {
-    use ExpressionSlot as S;
-    match payload {
-        ObjectPayload::DatumPlane(crate::DatumPlane::Offset { distance_mm, .. }) => {
-            visit(S::DatumOffset, distance_mm);
-        }
-        ObjectPayload::DatumPlane(crate::DatumPlane::Face { offset_mm, .. }) => {
-            visit(S::DatumOffset, offset_mm);
-        }
-        ObjectPayload::Extrude(extrude) => match &mut extrude.end_condition {
-            EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
-                visit(S::ExtrudeDistance, distance)
-            }
-            EndCondition::UpToFace { offset_mm, .. } => visit(S::ExtrudeEndOffset, offset_mm),
-            EndCondition::ThroughAll | EndCondition::UpToNext | EndCondition::UpToVertex { .. } => {
-            }
-        },
-        ObjectPayload::Fillet(fillet) => visit(S::FilletRadius, &mut fillet.radius_mm),
-        ObjectPayload::Chamfer(chamfer) => visit(S::ChamferDistance, &mut chamfer.distance_mm),
-        ObjectPayload::Revolve(revolve) => {
-            if let RevolveExtent::Partial { angle } = &mut revolve.extent {
-                visit(S::RevolveAngle, angle);
-            }
-        }
-        ObjectPayload::Sketch(sketch) => {
-            for constraint in &mut sketch.constraints {
-                let id = constraint.id;
-                match &mut constraint.rule {
-                    SketchConstraintRule::Distance { distance, .. } => {
-                        visit(S::Distance { constraint: id }, distance)
-                    }
-                    SketchConstraintRule::Radius { radius, .. } => {
-                        visit(S::Radius { constraint: id }, radius)
-                    }
-                    SketchConstraintRule::DirectedAngle { angle, .. } => {
-                        visit(S::DirectedAngle { constraint: id }, angle)
-                    }
-                    SketchConstraintRule::Fixed { x, y, .. } => {
-                        visit(S::FixedX { constraint: id }, x);
-                        visit(S::FixedY { constraint: id }, y);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ObjectPayload::KeepSolids(_)
-        | ObjectPayload::DatumPlane(crate::DatumPlane::Fixed { .. })
-        | ObjectPayload::Body(_)
-        | ObjectPayload::Parameter(_)
-        | ObjectPayload::ImportedStep(_) => {}
-    }
+    visit_slots!(payload, visit);
+}
+
+pub(crate) fn read_expressions(
+    payload: &ObjectPayload,
+    mut visit: impl FnMut(ExpressionSlot, &Expression),
+) {
+    visit_slots!(payload, visit);
 }
 
 fn set_expression(
     payload: &mut ObjectPayload,
     slot: ExpressionSlot,
     expression: Expression,
+    literal_only: bool,
 ) -> Result<()> {
-    let mut found = false;
+    let mut replace = Some(expression);
+    let mut result = Err(CadError::input(format!(
+        "object has no expression slot {slot}"
+    )));
     expressions(payload, |candidate, value| {
         if candidate == slot {
-            *value = expression.clone();
-            found = true;
+            if literal_only && let Some(reason) = value.numeric_form_refusal() {
+                result = Err(CadError::unsupported(reason));
+            } else {
+                *value = replace.take().expect("unique expression slot");
+                result = Ok(());
+            }
         }
     });
-    if !found {
-        return Err(CadError::input(format!(
-            "object has no expression slot {slot}"
-        )));
+    result
+}
+
+impl Expression {
+    pub fn numeric_form_refusal(&self) -> Option<&'static str> {
+        (!Formula::parse(&self.source).is_ok_and(|f| f.is_literal()))
+            .then_some("this value is an expression; edit it through `edit`")
     }
-    Ok(())
-}
-
-fn parameter_dependents(document: &Document) -> Result<BTreeSet<ObjectId>> {
-    Ok(document
-        .dependencies()?
-        .into_iter()
-        .filter(|d| d.role == DependencyRole::Parameter)
-        .map(|d| d.dependent)
-        .collect())
-}
-
-fn parameter_reason(object: ObjectId) -> String {
-    format!("object {object} depends on a Parameter; parameter expressions cannot be edited yet")
 }
 
 impl Document {
     pub fn expression_slots(&self) -> Result<Vec<ExpressionSlotValue>> {
-        let parameters = parameter_dependents(self)?;
         let mut result = Vec::new();
         for object in self.objects()? {
-            expressions(&mut object.payload.clone(), |slot, expression| {
+            read_expressions(&object.payload, |slot, expression| {
                 result.push(ExpressionSlotValue {
                     object: object.id,
                     name: object.name.clone(),
                     slot,
                     expression: expression.clone(),
                     dimension: slot.dimension(),
-                    refusal: parameters
-                        .contains(&object.id)
-                        .then(|| parameter_reason(object.id)),
+                    refusal: expression.numeric_form_refusal().map(str::to_owned),
                     payload: object.payload.clone(),
                 });
             });
@@ -549,17 +606,36 @@ impl Document {
     /// Apply in request order and write each changed object once in one SQLite transaction.
     pub fn write_changes(&mut self, changes: &[EditChange]) -> Result<()> {
         self.write_reading(|document, writer| {
-            let parameters = parameter_dependents(document)?;
-            let mut changed = BTreeMap::<ObjectId, CandidateObject>::new();
-            let mut ordinal = document
-                .objects()?
-                .iter()
-                .map(|o| o.ordinal)
-                .max()
-                .unwrap_or(0);
+            let mut candidate = Candidate::read(document)?;
             for change in changes {
                 let id = change.object();
                 match change {
+                    EditChange::AddParameter {
+                        name,
+                        dimension,
+                        expression,
+                        ..
+                    } => {
+                        candidate.check_name(id, name)?;
+                        candidate.add(
+                            id,
+                            &Some(name.clone()),
+                            ObjectPayload::Parameter(crate::Parameter {
+                                name: name.clone(),
+                                dimension: *dimension,
+                                expression: Expression::new(expression, 0.)?,
+                            }),
+                        )?;
+                    }
+                    EditChange::SetParameter { expression, .. } => {
+                        candidate
+                            .parameter_mut(id)?
+                            .expression
+                            .source
+                            .clone_from(expression);
+                    }
+                    EditChange::RenameParameter { name, .. } => candidate.rename(id, name)?,
+                    EditChange::RemoveParameter { .. } => candidate.remove(id)?,
                     EditChange::AddBody {
                         name,
                         feature_object,
@@ -568,19 +644,8 @@ impl Document {
                         ..
                     } => {
                         let payload = feature.payload(None)?;
-                        payload.validate()?;
-                        insert_candidate(
-                            document,
-                            &mut changed,
-                            &mut ordinal,
-                            *feature_object,
-                            feature_name,
-                            payload,
-                        )?;
-                        insert_candidate(
-                            document,
-                            &mut changed,
-                            &mut ordinal,
+                        candidate.add(*feature_object, feature_name, payload)?;
+                        candidate.add(
                             id,
                             name,
                             ObjectPayload::Body(crate::Body {
@@ -589,24 +654,10 @@ impl Document {
                         )?;
                     }
                     EditChange::AddDatumPlane { name, plane, .. } => {
-                        insert_candidate(
-                            document,
-                            &mut changed,
-                            &mut ordinal,
-                            id,
-                            name,
-                            ObjectPayload::DatumPlane(plane.clone()),
-                        )?;
+                        candidate.add(id, name, ObjectPayload::DatumPlane(plane.clone()))?;
                     }
                     EditChange::AddSketch { name, sketch, .. } => {
-                        insert_candidate(
-                            document,
-                            &mut changed,
-                            &mut ordinal,
-                            id,
-                            name,
-                            ObjectPayload::Sketch(sketch.clone()),
-                        )?;
+                        candidate.add(id, name, ObjectPayload::Sketch(sketch.clone()))?;
                     }
                     EditChange::AddFeature {
                         body,
@@ -614,185 +665,31 @@ impl Document {
                         feature,
                         ..
                     } => {
-                        let saved = candidate_object(document, &mut changed, &parameters, *body)?;
+                        let saved = candidate.edit(*body)?;
                         let ObjectPayload::Body(body_payload) = &saved.payload else {
                             return Err(CadError::input(format!("object {body} is not a Body")));
                         };
                         let previous = body_payload.tip_feature.ok_or_else(|| {
                             CadError::input(format!("Body {body} has no current feature"))
                         })?;
-                        insert_candidate(
-                            document,
-                            &mut changed,
-                            &mut ordinal,
-                            id,
-                            name,
-                            feature.payload(Some(previous))?,
-                        )?;
-                        candidate_object(document, &mut changed, &parameters, *body)?.payload =
-                            ObjectPayload::Body(crate::Body {
-                                tip_feature: Some(id),
-                            });
+                        candidate.add(id, name, feature.payload(Some(previous))?)?;
+                        candidate.edit(*body)?.payload = ObjectPayload::Body(crate::Body {
+                            tip_feature: Some(id),
+                        });
                     }
                     _ => {
-                        let object = candidate_object(document, &mut changed, &parameters, id)?;
+                        let object = candidate.edit(id)?;
                         change
                             .apply(&mut object.payload)
                             .map_err(|source| CadError::Context {
                                 kind: source.kind(),
-                                message: format!("cannot edit object {id}"),
+                                message: format!("cannot edit object {id}: {source}"),
                                 source: Box::new(source),
                             })?;
                     }
                 }
             }
-            for object in changed.values() {
-                object.payload.validate()?;
-            }
-            for (id, object) in &changed {
-                let old = object
-                    .original
-                    .as_ref()
-                    .map(|o| o.payload.dependencies(*id))
-                    .unwrap_or_default();
-                if object
-                    .payload
-                    .dependencies(*id)
-                    .iter()
-                    .any(|d| !old.contains(d))
-                {
-                    validate_candidate_dependencies(document, &changed, *id, &object.payload)?;
-                }
-            }
-            // New rows follow request order, independently of their caller-supplied UUIDs.
-            let mut ordered: Vec<_> = changed.iter().collect();
-            ordered.sort_by_key(|(_, object)| object.ordinal);
-            for (id, object) in ordered {
-                if object.original.is_some() {
-                    writer.update_payload(*id, &object.payload)?;
-                } else {
-                    writer.put_object(
-                        *id,
-                        None,
-                        object.ordinal,
-                        object.name.as_deref(),
-                        &object.payload,
-                    )?;
-                }
-            }
-            for (id, object) in &changed {
-                let old = object
-                    .original
-                    .as_ref()
-                    .map(|o| o.payload.dependencies(*id))
-                    .unwrap_or_default();
-                let new = object.payload.dependencies(*id);
-                for dependency in old.iter().filter(|d| !new.contains(d)) {
-                    writer.remove_dependency(*dependency)?;
-                }
-                for dependency in new.iter().filter(|d| !old.contains(d)) {
-                    writer.add_dependency(*dependency)?;
-                }
-            }
-            Ok(())
+            candidate.write(document, writer)
         })
     }
-}
-
-struct CandidateObject {
-    original: Option<ObjectRecord>,
-    payload: ObjectPayload,
-    name: Option<String>,
-    ordinal: i64,
-}
-
-fn candidate_object<'a>(
-    document: &Document,
-    changed: &'a mut BTreeMap<ObjectId, CandidateObject>,
-    parameters: &BTreeSet<ObjectId>,
-    id: ObjectId,
-) -> Result<&'a mut CandidateObject> {
-    if parameters.contains(&id) {
-        return Err(CadError::unsupported(parameter_reason(id)));
-    }
-    if let std::collections::btree_map::Entry::Vacant(entry) = changed.entry(id) {
-        let original = document
-            .object(id)?
-            .ok_or_else(|| CadError::input(format!("unknown object {id}")))?;
-        // This check also protects the Body whose tip an addition moves.
-        if original.payload.to_storage_bytes()?.as_slice() != original.storage_bytes() {
-            return Err(CadError::unsupported(format!(
-                "object {id}'s saved payload cannot be rewritten losslessly by this build"
-            )));
-        }
-        entry.insert(CandidateObject {
-            payload: original.payload.clone(),
-            name: original.name.clone(),
-            ordinal: original.ordinal,
-            original: Some(original),
-        });
-    }
-    Ok(changed.get_mut(&id).expect("candidate object was inserted"))
-}
-
-fn insert_candidate(
-    document: &Document,
-    changed: &mut BTreeMap<ObjectId, CandidateObject>,
-    ordinal: &mut i64,
-    id: ObjectId,
-    name: &Option<String>,
-    payload: ObjectPayload,
-) -> Result<()> {
-    if changed.contains_key(&id) || document.object(id)?.is_some() {
-        return Err(CadError::input(format!("object {id} already exists")));
-    }
-    *ordinal = ordinal
-        .checked_add(1)
-        .ok_or_else(|| CadError::input("new object ordinal overflows"))?;
-    changed.insert(
-        id,
-        CandidateObject {
-            original: None,
-            payload,
-            name: name.clone(),
-            ordinal: *ordinal,
-        },
-    );
-    Ok(())
-}
-
-fn validate_candidate_dependencies(
-    document: &Document,
-    changed: &BTreeMap<ObjectId, CandidateObject>,
-    id: ObjectId,
-    payload: &ObjectPayload,
-) -> Result<()> {
-    let get = |id| -> Result<ObjectPayload> {
-        if let Some(object) = changed.get(&id) {
-            return Ok(object.payload.clone());
-        }
-        document
-            .object(id)?
-            .map(|o| o.payload)
-            .ok_or_else(|| CadError::input(format!("unknown object {id}")))
-    };
-    for dependency in payload.dependencies(id) {
-        let target = get(dependency.dependency)?;
-        let valid = match dependency.role {
-            DependencyRole::Plane => matches!(target, ObjectPayload::DatumPlane(_)),
-            DependencyRole::Profile => matches!(target, ObjectPayload::Sketch(_)),
-            DependencyRole::Predecessor | DependencyRole::BodyTip | DependencyRole::Support => {
-                target.kind().is_some_and(crate::ObjectKind::is_feature)
-            }
-            _ => true,
-        };
-        if !valid {
-            return Err(CadError::input(format!(
-                "object {} has the wrong kind for {}",
-                dependency.dependency,
-                dependency.role.as_str()
-            )));
-        }
-    }
-    Ok(())
 }

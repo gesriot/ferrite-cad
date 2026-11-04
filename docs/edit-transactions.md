@@ -157,3 +157,12 @@ A splitting Cut and KeepSolids may be added in one request. The shared transacti
 the Body tip and saves payloads/dependencies together. A lost dependent witness refuses
 publication; Undo/Redo restores the whole candidate. See the executable
 [KeepSolids recipe](keep-solids.md) and [ADR 0008](decisions/0008-multibody-results.md).
+
+
+## Named parameters
+
+Use `add_parameter`, `set_parameter`, `rename_parameter` and `remove_parameter` in the same
+ordered transaction as feature edits. In `set_expression`, supply either a text `expression`
+or both `value` and `unit`. A literal form edit refuses to overwrite a formula. A text edit
+explicitly replaces it. Parameter values, dependent slots and graph rows change in the same
+Undo step. See the [request examples](expressions.md).

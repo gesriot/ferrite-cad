@@ -391,7 +391,14 @@ fn json_create_closed_pipes_keep_publication_and_structured_errors() {
     assert_eq!(inspect(&note)["document_id"], created["document_id"]);
 }
 
-fn mixed_catalog(path: &Path) {
+#[derive(PartialEq)]
+enum CatalogRows {
+    Valid,
+    Extra,
+    Missing,
+}
+
+fn mixed_catalog(path: &Path, rows: CatalogRows) {
     create(path, Some(["80", "50", "12"]));
     let mut document = Document::open(path).expect("fixture");
     let original = document
@@ -447,13 +454,20 @@ fn mixed_catalog(path: &Path) {
                     EndCondition::Blind {
                         distance: Expression::new("height * 2", 18.0)?,
                     },
-                    false,
+                    rows != CatalogRows::Missing,
                 ),
                 (
                     6,
                     Some("Parameter"),
                     EndCondition::Blind {
-                        distance: Expression::constant(9.0)?,
+                        distance: Expression::new(
+                            if rows == CatalogRows::Extra {
+                                "9"
+                            } else {
+                                "height"
+                            },
+                            9.0,
+                        )?,
                     },
                     true,
                 ),
@@ -521,7 +535,7 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
         "Каталог с пробелами.fcad"
     };
     let source = root.path().join(name);
-    mixed_catalog(&source);
+    mixed_catalog(&source, CatalogRows::Valid);
     for guard in ["none", "trigger"] {
         if guard == "trigger" {
             rusqlite::Connection::open(&source)
@@ -547,6 +561,24 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
         assert_eq!(catalog["distance_unit"], "mm");
         let slots = catalog["expression_slots"].as_array().expect("slots");
         assert_eq!(slots.len(), common.expression_slots.len());
+        let mut users = Vec::new();
+        for (label, source) in [("Formula", "height * 2"), ("Parameter", "height")] {
+            let slot = slots
+                .iter()
+                .find(|s| s["name"] == label)
+                .expect("dependent slot");
+            assert_eq!(slot["expression"]["source"], source);
+            users.push(slot["object"].as_str().expect("UUID"));
+        }
+        users.sort_unstable();
+        let parameters = catalog["parameters"].as_array().expect("parameters");
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(parameters[0]["name"], "height");
+        assert_eq!(parameters[0]["dimension"], "length");
+        assert_eq!(parameters[0]["source"], "9");
+        assert_eq!(parameters[0]["value"], 9.);
+        assert_eq!(parameters[0]["dependents"], serde_json::json!(users));
+
         for (wire, fact) in slots.iter().zip(&common.expression_slots) {
             assert_eq!(wire["object"], fact.object.to_string());
             assert_eq!(wire["slot"], serde_json::to_value(fact.slot).expect("slot"));
@@ -571,6 +603,34 @@ fn mixed_catalog_matches_common_facts_order_optional_values_and_copy_access() {
             entries(root.path()),
             vec![source.file_name().expect("name")]
         );
+    }
+}
+
+#[test]
+fn inspect_refuses_extra_and_missing_parameter_rows_without_writing() {
+    for (rows, diagnostic) in [
+        (CatalogRows::Extra, "unexpected"),
+        (CatalogRows::Missing, "missing"),
+    ] {
+        let root = tempfile::tempdir().expect("directory");
+        let path = root.path().join("broken.fcad");
+        mixed_catalog(&path, rows);
+        let files = entries(root.path());
+        let before = std::fs::read(&path).expect("source");
+        let failure = reply(
+            &run(cli().arg("inspect").arg(&path).arg("--json")),
+            "inspect",
+            2,
+        );
+        assert_eq!(failure["error"]["kind"], "input");
+        assert!(
+            failure["error"]["message"]
+                .as_str()
+                .expect("reason")
+                .contains(diagnostic)
+        );
+        assert_eq!(std::fs::read(&path).expect("unchanged"), before);
+        assert_eq!(entries(root.path()), files);
     }
 }
 
@@ -1247,7 +1307,7 @@ fn native_json_inspect_edit_contract() {
 fn native_structured_refusals() {
     let root = tempfile::tempdir().expect("dir");
     let source = root.path().join("refusals.fcad");
-    mixed_catalog(&source);
+    mixed_catalog(&source, CatalogRows::Valid);
     let reading = inspect(&source);
     let version = reading["content_version"].as_str().expect("version");
     let before = std::fs::read(&source).expect("source");

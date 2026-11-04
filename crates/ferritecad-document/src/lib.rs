@@ -47,7 +47,11 @@ pub use sketch_changes::{SketchVertex, move_sketch_vertices, validate_sketch_cha
 
 mod entity_reference;
 pub use entity_reference::{EntityKind, EntityReference, ReferenceMeaning, Selection};
+mod candidate;
 mod envelope;
+mod formula;
+mod parameters;
+pub use parameters::ParameterValues;
 mod graph;
 mod model;
 mod model_tree;
@@ -60,7 +64,7 @@ pub use document::{
     MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS, ObjectRecord, ReopenedStepImport,
     StepImportRequest, StepImporter, StoredStepImport, checkpoint_name,
 };
-pub use edit::{DocumentVersion, ExtrudeEditSource, editable_extrude};
+pub use edit::{DocumentVersion, ExtrudeEditSource};
 pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{

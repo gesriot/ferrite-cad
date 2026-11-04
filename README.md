@@ -19,7 +19,8 @@ expression source and internal value, dimension, display value/unit, and refusal
 Length values use millimetres internally; angles use radians and display degrees.
 Slots include Extrude distance (Blind or Symmetric), Fillet radius, Chamfer distance,
 partial Revolve angle, and Sketch constraint Distance, Radius, DirectedAngle, FixedX
-and FixedY (addressed by constraint UUID). Parameter-dependent objects are refused.
+and FixedY (addressed by constraint UUID). Named parameters can drive any of these slots.
+Use the [expression reference and CLI recipe](docs/expressions.md) to edit formulas.
 
 Use the returned `content_version` with one ordered transaction:
 

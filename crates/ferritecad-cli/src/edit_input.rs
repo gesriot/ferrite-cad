@@ -51,7 +51,7 @@ pub(super) enum Change {
     },
     SetRevolveExtent {
         object: ObjectId,
-        extent: Turn,
+        extent: TurnInput,
     },
     AddSketch {
         object: ObjectId,
@@ -70,11 +70,32 @@ pub(super) enum Change {
         object: ObjectId,
         end_condition: End,
     },
+    AddParameter {
+        object: ObjectId,
+        name: String,
+        dimension: Dimension,
+        expression: String,
+    },
+    SetParameter {
+        object: ObjectId,
+        expression: String,
+    },
+    RenameParameter {
+        object: ObjectId,
+        name: String,
+    },
+    RemoveParameter {
+        object: ObjectId,
+    },
     SetExpression {
         object: ObjectId,
         slot: ExpressionSlot,
-        value: f64,
-        unit: String,
+        #[serde(default, deserialize_with = "present")]
+        value: Option<f64>,
+        #[serde(default, deserialize_with = "present")]
+        unit: Option<String>,
+        #[serde(default, deserialize_with = "present")]
+        expression: Option<String>,
     },
     SetCurveGeometry {
         sketch: ObjectId,
@@ -89,6 +110,12 @@ pub(super) enum Change {
         sketch: ObjectId,
         constraint: StableEntityId,
     },
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 impl Change {
@@ -186,14 +213,45 @@ impl Change {
                 object,
                 end_condition: end_condition.into_end()?,
             },
+            Self::AddParameter {
+                object,
+                name,
+                dimension,
+                expression,
+            } => EditChange::AddParameter {
+                object,
+                name,
+                dimension,
+                expression,
+            },
+            Self::SetParameter { object, expression } => {
+                EditChange::SetParameter { object, expression }
+            }
+            Self::RenameParameter { object, name } => EditChange::RenameParameter { object, name },
+            Self::RemoveParameter { object } => EditChange::RemoveParameter { object },
             Self::SetExpression {
                 object,
                 slot,
                 value,
                 unit,
-            } => {
-                EditChange::constant(object, slot, Number { value, unit }.base(slot.dimension())?)?
-            }
+                expression,
+            } => match (value, unit, expression) {
+                (Some(value), Some(unit), None) => EditChange::constant(
+                    object,
+                    slot,
+                    Number { value, unit }.base(slot.dimension())?,
+                )?,
+                (None, None, Some(source)) => EditChange::SetExpressionText {
+                    object,
+                    slot,
+                    source,
+                },
+                _ => {
+                    return Err(CadError::input(
+                        "supply either expression or both value and unit",
+                    ));
+                }
+            },
             Self::SetCurveGeometry {
                 sketch,
                 curve,
@@ -525,7 +583,7 @@ pub(super) enum Feature {
         #[serde(default)]
         regions: Vec<StableEntityId>,
         axis: ferritecad_document::RevolveAxis,
-        extent: Turn,
+        extent: TurnInput,
         operation: ferritecad_document::SolidOperation,
     },
     Fillet {
@@ -613,13 +671,17 @@ impl Reference {
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Turn {
+pub(super) enum TurnInput {
     FullTurn,
     Partial { angle: Number },
+    ByAngle { expression: String },
 }
-impl Turn {
+impl TurnInput {
     fn into_extent(self) -> Result<ferritecad_document::RevolveExtent> {
         Ok(match self {
+            Self::ByAngle { expression } => ferritecad_document::RevolveExtent::ByAngle {
+                angle: Expression::new(expression, 0.)?,
+            },
             Self::FullTurn => ferritecad_document::RevolveExtent::FullTurn,
             Self::Partial { angle } => ferritecad_document::RevolveExtent::Partial {
                 angle: angle.expression(Dimension::Angle)?,

@@ -89,7 +89,7 @@ impl ObjectKind {
 /// Both halves are stored. The source text is what the user sees and edits and
 /// is the only thing that can be re-evaluated when a referenced parameter
 /// changes; the value is the normalised result in internal units, kept so a
-/// document can be rebuilt without an expression evaluator being available.
+/// rebuilds can verify it before using geometry or cached results.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Expression {
     pub source: String,
@@ -113,13 +113,16 @@ impl Expression {
         })
     }
 
+    pub(crate) fn store_value(&mut self, value: f64) {
+        self.value = value;
+    }
+
     /// The last evaluated value, in internal units.
     pub fn value(&self) -> f64 {
         self.value
     }
 
     fn feed(&self, hasher: &mut CanonicalHasher) {
-        hasher.str(&self.source);
         hasher
             .f64(self.value)
             .expect("expression values are validated finite on construction");
@@ -515,7 +518,7 @@ impl SketchConstraintRule {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    fn validate_values(&self) -> Result<()> {
         match self {
             Self::Fixed { x, y, .. } => {
                 normalize_f64(x.value())?;
@@ -540,6 +543,10 @@ impl SketchConstraintRule {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    fn validate_segments(&self) -> Result<()> {
         // A segment is two points. The solver contract does not refuse one that
         // names a single point twice, but it does not mean anything either:
         // perpendicular and parallel over a zero-length segment score exactly
@@ -615,7 +622,7 @@ impl Sketch {
                     constraint.id
                 )));
             }
-            constraint.rule.validate()?;
+            constraint.rule.validate_segments()?;
 
             // Construction geometry is reached through exactly this lookup and
             // is never filtered out of it. A construction line is what most
@@ -764,7 +771,23 @@ impl std::fmt::Display for RevolveAxis {
 #[non_exhaustive]
 pub enum RevolveExtent {
     FullTurn,
-    Partial { angle: Expression },
+    Partial {
+        angle: Expression,
+    },
+    /// A live angle expression chooses a full turn at exactly one revolution.
+    ByAngle {
+        angle: Expression,
+    },
+}
+
+impl RevolveExtent {
+    pub fn is_full_turn(&self) -> bool {
+        match self {
+            Self::FullTurn => true,
+            Self::Partial { .. } => false,
+            Self::ByAngle { angle } => angle.value() == std::f64::consts::TAU,
+        }
+    }
 }
 
 /// The angle of a partial [`Revolve`], in radians: the one domain policy for
@@ -887,14 +910,13 @@ impl Revolve {
                 hasher.str("line").bytes(&line.to_bytes());
             }
         }
-        match &self.extent {
-            RevolveExtent::FullTurn => {
-                hasher.field("extent").str("full_turn");
-            }
-            RevolveExtent::Partial { angle } => {
-                hasher.field("extent").str("partial");
-                angle.feed(&mut hasher);
-            }
+        if self.extent.is_full_turn() {
+            hasher.field("extent").str("full_turn");
+        } else if let RevolveExtent::Partial { angle } | RevolveExtent::ByAngle { angle } =
+            &self.extent
+        {
+            hasher.field("extent").str("partial");
+            angle.feed(&mut hasher);
         }
         hasher.field("operation").str(match self.operation {
             SolidOperation::NewBody => "new_body",
@@ -1334,6 +1356,10 @@ impl ObjectPayload {
     /// Encodes the current payload for storage.
     pub fn to_storage_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;
+        self.encode()
+    }
+
+    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         let name = self.type_name();
         let envelope = match self {
             Self::Parameter(v) => Envelope::encode(name, v)?,
@@ -1352,6 +1378,12 @@ impl ObjectPayload {
 
     /// Decodes a supported object; an unknown type or invalid payload is an error.
     pub fn from_storage_bytes(bytes: &[u8]) -> Result<Self> {
+        let payload = Self::read_record(bytes)?;
+        payload.validate_values()?;
+        Ok(payload)
+    }
+
+    pub(crate) fn read_record(bytes: &[u8]) -> Result<Self> {
         let envelope = Envelope::from_bytes(bytes)?;
         let kind = ObjectKind::parse(&envelope.type_name).ok_or_else(|| {
             CadError::input(format!("unknown object type {}", envelope.type_name))
@@ -1368,7 +1400,7 @@ impl ObjectPayload {
             ObjectKind::KeepSolids => Self::KeepSolids(envelope.decode()?),
             ObjectKind::ImportedStep => Self::ImportedStep(envelope.decode()?),
         };
-        payload.validate()?;
+        payload.validate_structure()?;
         Ok(payload)
     }
 
@@ -1377,8 +1409,43 @@ impl ObjectPayload {
     /// constructors, so constructors alone cannot keep non-finite values out
     /// of a document.
     pub(crate) fn validate(&self) -> Result<()> {
+        self.validate_structure()?;
+        self.validate_values()
+    }
+
+    pub(crate) fn validate_values(&self) -> Result<()> {
         match self {
-            Self::Parameter(parameter) => parameter.expression.validate(),
+            Self::Parameter(p) => p.expression.validate(),
+            Self::DatumPlane(DatumPlane::Offset { distance_mm, .. }) => distance_mm.validate(),
+            Self::DatumPlane(DatumPlane::Face { offset_mm, .. }) => offset_mm.validate(),
+            Self::Sketch(s) => s
+                .constraints
+                .iter()
+                .try_for_each(|c| c.rule.validate_values()),
+            Self::Extrude(e) => match &e.end_condition {
+                EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
+                    validate_positive(distance.value(), "extrude distance")
+                }
+                EndCondition::UpToFace { offset_mm, .. } => offset_mm.validate(),
+                _ => Ok(()),
+            },
+            Self::Revolve(r) => match &r.extent {
+                RevolveExtent::Partial { angle } | RevolveExtent::ByAngle { angle }
+                    if !r.extent.is_full_turn() =>
+                {
+                    RevolveAngle::new(angle.value()).map(|_| ())
+                }
+                _ => Ok(()),
+            },
+            Self::Fillet(f) => validate_amount(f.radius_mm.value(), "a fillet radius", " mm"),
+            Self::Chamfer(c) => validate_amount(c.distance_mm.value(), "a chamfer distance", " mm"),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_structure(&self) -> Result<()> {
+        match self {
+            Self::Parameter(_) => Ok(()),
             Self::DatumPlane(plane) => match plane {
                 DatumPlane::Fixed { placement } => {
                     for row in placement.rows() {
@@ -1388,27 +1455,16 @@ impl ObjectPayload {
                     }
                     Ok(())
                 }
-                DatumPlane::Offset { distance_mm, .. } => distance_mm.validate(),
-                DatumPlane::Face {
-                    face, offset_mm, ..
-                } => {
-                    crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
-                    offset_mm.validate()
+                DatumPlane::Offset { .. } => Ok(()),
+                DatumPlane::Face { face, .. } => {
+                    crate::entity_reference::validate_kind(face, crate::EntityKind::Face)
                 }
             },
             Self::Sketch(sketch) => sketch.validate(),
             Self::Body(_) => Ok(()),
             Self::Extrude(extrude) => {
                 match &extrude.end_condition {
-                    EndCondition::Blind { distance } | EndCondition::Symmetric { distance } => {
-                        distance.validate()?;
-                        if distance.value() <= 0.0 {
-                            return Err(CadError::input(format!(
-                                "extrude distance must be positive, found {}",
-                                distance.value()
-                            )));
-                        }
-                    }
+                    EndCondition::Blind { .. } | EndCondition::Symmetric { .. } => {}
                     EndCondition::ThroughAll
                         if matches!(
                             extrude.operation,
@@ -1424,11 +1480,8 @@ impl ObjectPayload {
                         return Err(CadError::input("a new body has no target for up to next"));
                     }
                     EndCondition::ThroughAll | EndCondition::UpToNext => {}
-                    EndCondition::UpToFace {
-                        face, offset_mm, ..
-                    } => {
+                    EndCondition::UpToFace { face, .. } => {
                         crate::entity_reference::validate_kind(face, crate::EntityKind::Face)?;
-                        offset_mm.validate()?;
                     }
                     EndCondition::UpToVertex { vertex, .. } => {
                         crate::entity_reference::validate_kind(vertex, crate::EntityKind::Vertex)?;
@@ -1455,41 +1508,18 @@ impl ObjectPayload {
             // The layout records any axis, extent and operation a later build
             // may write; this build stores and rebuilds only the §27A class,
             // and refuses to write anything else under its name.
-            Self::Revolve(revolve) => {
-                if let RevolveExtent::Partial { angle } = &revolve.extent {
-                    angle.validate()?;
-                    RevolveAngle::new(angle.value())?;
-                }
-                match (revolve.operation, revolve.previous) {
-                    (SolidOperation::NewBody, None) => Ok(()),
-                    (SolidOperation::NewBody, Some(_)) => Err(CadError::input(
-                        "a new-body revolve consumes no earlier result",
-                    )),
-                    (_, None) => Err(CadError::input(
-                        "an additive, cut, or intersect revolve must name the result it modifies",
-                    )),
-                    (_, Some(_)) => Ok(()),
-                }
-            }
-            // The kernel judges whether a positive amount fits the selected geometry.
-            Self::Fillet(fillet) => {
-                let radius = normalize_f64(fillet.radius_mm.value())?;
-                if radius <= 0.0 {
-                    return Err(CadError::input(format!(
-                        "a fillet radius must be positive, found {radius} mm"
-                    )));
-                }
-                crate::entity_reference::validate_edges(&fillet.edges)
-            }
-            Self::Chamfer(chamfer) => {
-                let distance = normalize_f64(chamfer.distance_mm.value())?;
-                if distance <= 0.0 {
-                    return Err(CadError::input(format!(
-                        "a chamfer distance must be positive, found {distance} mm"
-                    )));
-                }
-                crate::entity_reference::validate_edges(&chamfer.edges)
-            }
+            Self::Revolve(revolve) => match (revolve.operation, revolve.previous) {
+                (SolidOperation::NewBody, None) => Ok(()),
+                (SolidOperation::NewBody, Some(_)) => Err(CadError::input(
+                    "a new-body revolve consumes no earlier result",
+                )),
+                (_, None) => Err(CadError::input(
+                    "an additive, cut, or intersect revolve must name the result it modifies",
+                )),
+                (_, Some(_)) => Ok(()),
+            },
+            Self::Fillet(f) => crate::entity_reference::validate_edges(&f.edges),
+            Self::Chamfer(c) => crate::entity_reference::validate_edges(&c.edges),
             Self::ImportedStep(imported) => imported.validate(),
             Self::KeepSolids(keep) => keep.selection.validate(),
         }
@@ -1517,10 +1547,14 @@ impl ObjectPayload {
 }
 
 fn validate_positive(value: f64, what: &str) -> Result<()> {
+    validate_amount(value, what, "")
+}
+
+fn validate_amount(value: f64, what: &str, unit: &str) -> Result<()> {
     let value = normalize_f64(value)?;
     if value <= 0.0 {
         return Err(CadError::input(format!(
-            "{what} must be positive, found {value}"
+            "{what} must be positive, found {value}{unit}"
         )));
     }
     Ok(())
@@ -1613,7 +1647,7 @@ mod tests {
                 angle: constant(std::f64::consts::FRAC_PI_2),
             },
         ] {
-            rule.validate().expect("valid rule");
+            rule.validate_values().expect("valid rule");
             let mut bytes = Vec::new();
             ciborium::into_writer(&rule, &mut bytes).expect("write rule");
             let read: SketchConstraintRule =
@@ -1674,7 +1708,7 @@ mod tests {
                     angle: invalid.clone(),
                 },
             ] {
-                assert!(rule.validate().is_err());
+                assert!(rule.validate_values().is_err());
             }
             for payload in [
                 ObjectPayload::Fillet(Fillet {
@@ -1720,7 +1754,7 @@ mod tests {
             ObjectPayload::Parameter(Parameter {
                 name: "width".to_owned(),
                 dimension: Dimension::Length,
-                expression: Expression::new("2 * 25", 50.0).expect("finite"),
+                expression: Expression::new("2 * 25 mm", 50.0).expect("finite"),
             }),
             ObjectPayload::DatumPlane(DatumPlane::Fixed {
                 placement: Transform::IDENTITY,
