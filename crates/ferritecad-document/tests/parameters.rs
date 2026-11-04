@@ -199,3 +199,73 @@ fn an_invalid_saved_distance_opens_for_repair_when_its_source_disagrees() -> Res
     }])?;
     ParameterValues::default().verify(id, &doc.object(id)?.expect("repaired").payload)
 }
+
+#[test]
+fn stored_parameter_names_must_be_unique_and_valid_at_open() -> Result<()> {
+    for (second, reason) in [
+        ("h", "duplicate parameter name"),
+        ("cm", "reserved for a unit"),
+    ] {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("names.fcad");
+        let mut doc = Document::create(&path)?;
+        doc.write(|w| {
+            for (ordinal, name) in ["h", second].into_iter().enumerate() {
+                let p = Parameter {
+                    name: name.into(),
+                    dimension: Dimension::Length,
+                    expression: ferritecad_document::Expression::constant(1.)?,
+                };
+                w.put_object(
+                    ObjectId::new(),
+                    None,
+                    ordinal as i64,
+                    None,
+                    &ObjectPayload::Parameter(p),
+                )?;
+            }
+            Ok(())
+        })?;
+        doc.close()?;
+        let error = Document::open_read_only(&path).expect_err("invalid stored names");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+    Ok(())
+}
+
+#[path = "support/expression.rs"]
+mod expression;
+
+#[test]
+fn even_a_zero_sign_difference_is_a_stored_value_mismatch() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("negative-zero.fcad");
+    let id = ObjectId::new();
+    let mut saved = expression::unchecked(-0.0);
+    saved.source = "0".into();
+    let payload = ObjectPayload::Parameter(Parameter {
+        name: "offset".into(),
+        dimension: Dimension::Length,
+        expression: saved,
+    });
+    let mut doc = Document::create(&path)?;
+    doc.write(|w| w.put_object(id, None, 0, None, &payload))?;
+    doc.close()?;
+    let read = Document::open_read_only(&path)?;
+    let stored = read.object(id)?.expect("parameter");
+    assert_eq!(
+        param(&read, id)?.expression.value().to_bits(),
+        (-0.0_f64).to_bits()
+    );
+    let error = ferritecad_document::ParameterValues::default()
+        .verify(id, &stored.payload)
+        .expect_err("signed zero must fail bitwise comparison");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+    assert!(
+        error
+            .to_string()
+            .contains("stored value -0 differs from the evaluated value 0")
+    );
+    Ok(())
+}

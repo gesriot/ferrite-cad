@@ -1334,6 +1334,7 @@ mod tests {
     mod fillet;
     mod keep_solids;
     mod new_document;
+    mod parameters;
     mod recovery;
     mod tabs;
     mod up_to_end;

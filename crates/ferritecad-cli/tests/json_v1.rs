@@ -1422,3 +1422,44 @@ fn native_selection_and_stale_source() {
     assert!(!refused.exists());
     assert_eq!(before, std::fs::read(&source).expect("unchanged"));
 }
+
+#[test]
+fn text_and_numeric_edits_require_exactly_one_complete_form() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("source.fcad");
+    create(&path, Some(["80", "50", "12"]));
+    let facts = inspect(&path);
+    let version = facts["content_version"].as_str().expect("version");
+    let feature = &facts["expression_slots"][0]["object"];
+    let request = root.path().join("request.json");
+    let out = root.path().join("output.fcad");
+    let before = std::fs::read(&path).expect("source bytes");
+    for fields in [
+        serde_json::json!({}),
+        serde_json::json!({"value":2}),
+        serde_json::json!({"unit":"mm"}),
+        serde_json::json!({"value":2,"expression":"2 mm"}),
+        serde_json::json!({"value":2,"unit":"mm","expression":"2 mm"}),
+        serde_json::json!({"value":null,"expression":"2 mm"}),
+        serde_json::json!({"unit":null,"expression":"2 mm"}),
+        serde_json::json!({"value":2,"unit":"mm","expression":null}),
+    ] {
+        let mut change = fields;
+        change["kind"] = "set_expression".into();
+        change["object"] = feature.clone();
+        change["slot"] = serde_json::json!({"kind":"extrude_distance"});
+        let input = serde_json::json!({"request_version":1,"changes":[change]});
+        std::fs::write(&request, input.to_string()).expect("request");
+        let files = entries(root.path());
+        let error = reply(
+            &run(&mut crate::transaction::command(
+                &path, version, &request, &out,
+            )),
+            "edit",
+            2,
+        );
+        assert_eq!(error["error"]["kind"], "input");
+        assert_eq!(entries(root.path()), files);
+        assert_eq!(std::fs::read(&path).expect("source bytes"), before);
+    }
+}
