@@ -84,6 +84,7 @@ pub fn prepared(feature: ObjectId, profile: &Profile, revolve: bool) -> Result<M
     })?;
     let mut model = ModelNaming::new();
     model.prepare(&document.objects()?.into_iter().map(|o| (o.id, o)).collect())?;
+    model.select_profile(feature, profile)?;
     Ok(model)
 }
 pub fn bind(

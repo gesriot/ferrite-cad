@@ -18,6 +18,11 @@ use std::ffi::{CStr, c_char, c_void};
 use ferritecad_kernel::{CancelToken, FaceSurface, TessellationRefusal};
 use ferritecad_types::{CadError, Result};
 
+pub(crate) enum EndLimit<'a> {
+    Face(&'a [u64], f64),
+    Next,
+}
+
 pub(crate) struct ProfilePartition<'a> {
     pub loops: &'a [usize],
     pub regions: &'a [usize],
@@ -264,6 +269,22 @@ unsafe extern "C" {
         sign: f64,
         linear: f64,
         angular: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_extrude_to_next(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        loops: *const usize,
+        loop_count: usize,
+        regions: *const usize,
+        region_count: usize,
+        target: u64,
+        sign: f64,
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
@@ -745,14 +766,13 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn extrude_to_face(
+    pub(crate) fn extrude_limited(
         &mut self,
         plane: &Plane,
         segments: &[Segment],
         partition: ProfilePartition<'_>,
         shape: u64,
-        faces: &[u64],
-        offset: f64,
+        end: EndLimit,
         sign: f64,
         context: &ferritecad_kernel::OperationContext,
     ) -> Result<u64> {
@@ -762,29 +782,54 @@ impl Session {
         // SAFETY: input slices and the cancellation token live throughout the call;
         // output pointers are writable and the bridge catches every exception.
         let status = unsafe {
-            fc_occt_extrude_to_face(
-                self.raw,
-                plane,
-                segments.as_ptr(),
-                segments.len(),
-                partition.loops.as_ptr(),
-                partition.loops.len(),
-                partition.regions.as_ptr(),
-                partition.regions.len(),
-                shape,
-                faces.as_ptr(),
-                faces.len(),
-                offset,
-                sign,
-                tolerance.linear(),
-                tolerance.angular(),
-                Some(cancel_trampoline),
-                context.cancel() as *const CancelToken as *mut c_void,
-                &mut output,
-                &mut error,
-            )
+            match end {
+                EndLimit::Face(faces, offset) => fc_occt_extrude_to_face(
+                    self.raw,
+                    plane,
+                    segments.as_ptr(),
+                    segments.len(),
+                    partition.loops.as_ptr(),
+                    partition.loops.len(),
+                    partition.regions.as_ptr(),
+                    partition.regions.len(),
+                    shape,
+                    faces.as_ptr(),
+                    faces.len(),
+                    offset,
+                    sign,
+                    tolerance.linear(),
+                    tolerance.angular(),
+                    Some(cancel_trampoline),
+                    context.cancel() as *const CancelToken as *mut c_void,
+                    &mut output,
+                    &mut error,
+                ),
+                EndLimit::Next => fc_occt_extrude_to_next(
+                    self.raw,
+                    plane,
+                    segments.as_ptr(),
+                    segments.len(),
+                    partition.loops.as_ptr(),
+                    partition.loops.len(),
+                    partition.regions.as_ptr(),
+                    partition.regions.len(),
+                    shape,
+                    sign,
+                    Some(cancel_trampoline),
+                    context.cancel() as *const CancelToken as *mut c_void,
+                    &mut output,
+                    &mut error,
+                ),
+            }
         };
-        interpret(status, &error, "extruding to a face")?;
+        interpret(
+            status,
+            &error,
+            match end {
+                EndLimit::Next => "extruding up to next",
+                EndLimit::Face(..) => "extruding to a face",
+            },
+        )?;
         Ok(output)
     }
 

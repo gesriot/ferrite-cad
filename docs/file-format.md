@@ -99,3 +99,6 @@ A `predecessor` dependency names `previous`. References retain their diagnostic 
 the key uses sorted, deduplicated meanings and the predecessor result key. No solid index,
 new solid name kind or selected-piece document object is stored. See
 [KeepSolids](keep-solids.md) and [ADR 0008](decisions/0008-multibody-results.md).
+
+The Extrude end condition `up_to_next` has no fields. It uses `previous` as the target
+and `reversed` for direction. See [up to next](generic-sweeps.md#up-to-next).

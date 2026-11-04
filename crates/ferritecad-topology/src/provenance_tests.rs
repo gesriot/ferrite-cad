@@ -176,7 +176,16 @@ fn incomplete_foreign_and_contradictory_live_provenance_cannot_publish_names() {
         let entity = kernel.topology.entities(kind).next().expect("kind");
         let mut bad = kernel.topology.clone();
         bad.adjacent_faces.insert(entity, BTreeSet::from([entity]));
-        assert!(validate_history(shape, &bad, kernel.trace.as_ref().expect("trace"), &[]).is_err());
+        assert!(
+            validate_history(
+                shape,
+                &bad,
+                kernel.trace.as_ref().expect("trace"),
+                &[],
+                None
+            )
+            .is_err()
+        );
     }
 }
 #[test]
@@ -208,25 +217,25 @@ fn each_input_subform_requires_one_complete_survival_account() {
             })
             .collect(),
     };
-    validate_history(shape, &topology, &trace, &[source]).expect("all inputs accounted for");
+    validate_history(shape, &topology, &trace, &[source], None).expect("all inputs accounted for");
     for input in source.entities.keys() {
         let mut absent = trace.clone();
         absent
             .relations
             .retain(|(i, _, _)| *i != NamingInput::SubShape(*input));
-        assert!(validate_history(shape, &topology, &absent, &[source]).is_err());
+        assert!(validate_history(shape, &topology, &absent, &[source], None).is_err());
         let mut contradiction = trace.clone();
         contradiction.relations.insert((
             NamingInput::SubShape(*input),
             NamingRelation::Deleted,
             None,
         ));
-        assert!(validate_history(shape, &topology, &contradiction, &[source]).is_err());
+        assert!(validate_history(shape, &topology, &contradiction, &[source], None).is_err());
         let mut deleted = absent;
         deleted
             .relations
             .insert((NamingInput::SubShape(*input), NamingRelation::Deleted, None));
-        validate_history(shape, &topology, &deleted, &[source])
+        validate_history(shape, &topology, &deleted, &[source], None)
             .expect("an explicit deletion is an account");
     }
 }
@@ -342,4 +351,59 @@ fn restoration_requires_local_output_rows_and_nonempty_inherited_rows() {
     without_parent.remove_feature(parent);
     assert!(crate::restore_feature(&mut kernel, &valid, &mut without_parent).is_err());
     assert!(without_parent.derivations().is_empty());
+}
+
+#[test]
+fn a_reported_empty_cap_cannot_hide_an_incident_outer_curve() {
+    let (mut base, mut model, owner, request) = crate::archive::tests::plate();
+    let shape = model.features[&owner].shape().expect("plate");
+    let topology = base.shape_topology(shape).expect("inventory");
+    let mut history = base.naming_history(shape).expect("sweep");
+    let caps: Vec<_> = history
+        .relations
+        .iter()
+        .filter_map(|&(input, _, output)| {
+            matches!(input, NamingInput::Cap { .. })
+                .then_some(output)
+                .flatten()
+        })
+        .collect();
+    let curves: BTreeSet<_> = request.profile().segments().map(|s| s.label).collect();
+    for face in &caps {
+        history.cap_boundaries.insert(*face, curves.clone());
+    }
+    let inner = SubShapeHandle::new(shape, SubShapeKind::Face, 100);
+    let mut topology = topology;
+    topology.adjacent_faces.insert(inner, BTreeSet::new());
+    history.relations.insert((
+        NamingInput::Cap { end: true },
+        NamingRelation::Generated,
+        Some(inner),
+    ));
+    history.cap_boundaries.insert(inner, BTreeSet::new());
+    model.remove_feature(owner);
+    let mut kernel = TraceKernel {
+        base,
+        topology,
+        trace: Some(history),
+        slot_fault: 0,
+    };
+    model
+        .name_operation(owner, shape, &[], &mut kernel)
+        .expect("explicit empty set");
+    let reported = &mut kernel.trace.as_mut().expect("trace").cap_boundaries;
+    reported.get_mut(&caps[0]).expect("outer cap").pop_first();
+    assert!(
+        model
+            .name_operation(owner, shape, &[], &mut kernel)
+            .is_err()
+    );
+    let reported = &mut kernel.trace.as_mut().expect("trace").cap_boundaries;
+    reported.insert(caps[0], curves);
+    reported.remove(&inner);
+    assert!(
+        model
+            .name_operation(owner, shape, &[], &mut kernel)
+            .is_err()
+    );
 }

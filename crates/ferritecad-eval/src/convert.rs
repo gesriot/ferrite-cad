@@ -220,6 +220,9 @@ pub fn extrude_request(
         // conversion exists to pin down.
         EndCondition::Blind { distance } => ExtrudeExtent::blind(distance.value())?,
         EndCondition::Symmetric { distance } => ExtrudeExtent::symmetric(distance.value())?,
+        EndCondition::UpToNext => {
+            return Err(CadError::input("up to next needs its target result"));
+        }
         EndCondition::ThroughAll => {
             let bounds = bounds.ok_or_else(|| {
                 CadError::input("ThroughAll needs a target body; there is nothing to go through")

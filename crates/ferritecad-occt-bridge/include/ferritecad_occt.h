@@ -300,6 +300,12 @@ FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *
     double linear, double angular, FcOcctCancelFn cancel, void *cancel_context,
     uint64_t *out_shape, FcOcctError *error) FC_OCCT_NOEXCEPT;
 
+/* End the sweep at the first forward boundary of the complete target. */
+FcOcctStatus fc_occt_extrude_to_next(FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count, const size_t *loops, size_t loop_count,
+    const size_t *regions, size_t region_count, uint64_t target, double sign,
+    FcOcctCancelFn cancel, void *context, uint64_t *out_shape, FcOcctError *error) FC_OCCT_NOEXCEPT;
+
 /* Turn the same planar region accepted by extrude about an in-plane model-space axis.
  * angle is in (0, 2*pi], and 2*pi is the full turn with no caps. */
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
@@ -364,6 +370,7 @@ FcOcctStatus fc_occt_projected_bounds(FcOcctSession *session, uint64_t shape,
  * Input kinds 0..2 are sub-shapes; 3 is a profile curve, 4/5 its start/end, 6
  * an operation cap (input 0=start, 1=end). Profile inputs use shape=0 and the
  * request's flattened curve position, translated to UUIDs by the adapter.
+ * Input kind 7 reports a cap boundary curve; UINT64_MAX declares a set without adding a curve.
  * Relations: kept=0, modified=1, generated=2, deleted=3 (output words unused).
  * All positions are session-local transport, never durable names.
  * Capacity zero measures the buffer; decoded B-Reps have no operation history.

@@ -159,7 +159,12 @@ fn report(
                     // carried forward, counted where the names live.
                     write!(line, "{} named faces", names.named_face_count())
                         .expect("writing to a String cannot fail");
-                    if extrude.end_condition.support().is_some() {
+                    if extrude.end_condition.support().is_some()
+                        || matches!(
+                            extrude.end_condition,
+                            ferritecad_document::EndCondition::UpToNext
+                        )
+                    {
                         write!(line, "; {}", extrude.end_condition)
                             .expect("writing to a String cannot fail");
                     }

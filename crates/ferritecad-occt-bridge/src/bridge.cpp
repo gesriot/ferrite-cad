@@ -10,6 +10,7 @@
 
 #include "ferritecad_occt.h"
 #include "step_identity.hpp"
+#include "next_boundary.hpp"
 
 #include <XSControl_WorkSession.hxx>
 
@@ -338,6 +339,61 @@ FcOcctStatus checked_result(const TopoDS_Shape &shape, const std::string &operat
 }
 
 
+void name_limited_sweep(ShapeRecord &record, BRepPrimAPI_MakePrism &prism,
+    BRepAlgoAPI_BuilderAlgo &split, const TopTools_IndexedMapOfShape &ends,
+    const std::vector<TopoDS_Edge> &edges, const FcOcctSegment *segments,
+    const std::vector<TopoDS_Face> &faces, const size_t *loops, const size_t *regions) {
+  auto sweep = prism.Prism();
+  ShapeRecord source;
+  source.shape = prism.Shape();
+  naming_sweep(source, sweep, edges, segments, faces, loops, regions, true);
+  for (size_t i = 0; i < source.naming_history.size(); i += 6) {
+    const auto *row = source.naming_history.data() + i;
+    if (row[3] == 3 || row[2] == 7 || (row[2] == 6 && row[1] == 1)) continue;
+    const auto &sub = source.sub_shapes[row[4]];
+    naming_link(record, 0, row[1], row[2], 2, sub);
+    for (TopTools_ListOfShape::Iterator it(split.Modified(sub)); it.More(); it.Next())
+      naming_link(record, 0, row[1], row[2], 2, it.Value());
+    if (row[2] < 6) {
+      for (TopTools_ListOfShape::Iterator it(split.Generated(sub)); it.More(); it.Next())
+        if (naming_kind(it.Value()) == naming_kind(sub) + 1)
+          naming_link(record, 0, row[1], row[2], 2, it.Value());
+    }
+  }
+  for (int i = 1; i <= ends.Extent(); ++i)
+    naming_link(record, 0, 1, 6, 2, ends(i));
+  // A periodic end surface may split one region's cap at its seam. Forward
+  // the actual outer-curve witnesses incident on every cap, including the
+  // start cap, without assuming that two caps means one region and vice versa.
+  TopTools_IndexedMapOfShape caps;
+  const size_t history_size = record.naming_history.size();
+  for (size_t i = 0; i < history_size; i += 6) {
+    const auto *row = record.naming_history.data() + i;
+    if (row[2] == 6 && row[3] == 2) caps.Add(record.sub_shapes[row[4]]);
+  }
+  if (caps.Extent() <= 2) return;
+  std::vector<size_t> outer_curves;
+  size_t loop = 0, segment = 0;
+  for (size_t r = 0; r < faces.size(); ++r) {
+    for (size_t k = 0; k < loops[loop]; ++k) outer_curves.push_back(segment + k);
+    for (size_t i = 0; i < regions[r]; ++i) segment += loops[loop++];
+  }
+  for (int c = 1; c <= caps.Extent(); ++c) {
+    TopTools_IndexedMapOfShape boundary;
+    TopExp::MapShapes(caps(c), TopAbs_EDGE, boundary);
+    naming_link(record, 0, UINT64_MAX, 7, 2, caps(c));
+    for (const auto curve : outer_curves) {
+      bool incident = false;
+      for (size_t i = 0; i < history_size; i += 6) {
+        const auto *row = record.naming_history.data() + i;
+        if (row[1] == curve && row[2] == 3 && row[3] == 2 && row[5] == 1)
+          incident |= boundary.Contains(record.sub_shapes[row[4]]);
+      }
+      if (incident) naming_link(record, 0, curve, 7, 2, caps(c));
+    }
+  }
+}
+
 // A split keeps provenance from the prism; the cutting surface only supplies
 // the end cap. No auxiliary shape becomes a naming input.
 FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
@@ -452,55 +508,137 @@ FcOcctStatus up_to_surface(ShapeRecord &record, const TopoDS_Shape &input,
   const auto status = checked_result(record.shape, "extrusion to the end surface", true,
       error, nullptr, "extrusion to the end surface is not a valid solid");
   if (status != FC_OCCT_OK) return status;
-  ShapeRecord source;
-  source.shape = prism.Shape();
-  naming_sweep(source, sweep, edges, segments, faces, loops, regions, true);
-  for (size_t i = 0; i < source.naming_history.size(); i += 6) {
-    const auto *row = source.naming_history.data() + i;
-    if (row[3] == 3 || (row[2] == 6 && row[1] == 1)) continue;
-    const auto &sub = source.sub_shapes[row[4]];
-    naming_link(record, 0, row[1], row[2], 2, sub);
-    for (TopTools_ListOfShape::Iterator it(split.Modified(sub)); it.More(); it.Next())
-      naming_link(record, 0, row[1], row[2], 2, it.Value());
-    if (row[2] < 6) {
-      for (TopTools_ListOfShape::Iterator it(split.Generated(sub)); it.More(); it.Next())
-        if (naming_kind(it.Value()) == naming_kind(sub) + 1)
-          naming_link(record, 0, row[1], row[2], 2, it.Value());
+  TopTools_IndexedMapOfShape ends;
+  ends.Add(until);
+  for (const auto &part : split.Modified(until)) ends.Add(part);
+  name_limited_sweep(record, prism, split, ends, edges, segments, faces, loops, regions);
+  return FC_OCCT_OK;
+}
+
+// A cap can acquire new topological identity at a coincident target boundary.
+void add_survivors(BRepAlgoAPI_BuilderAlgo &split, const TopoDS_Shape &source,
+                   TopTools_IndexedMapOfShape &set) {
+  set.Add(source);
+  for (const auto &modified : split.Modified(source)) set.Add(modified);
+}
+
+constexpr const char *next_coverage = "nothing next ahead of the sketch plane covers the profile";
+
+FcOcctStatus up_to_next(ShapeRecord &record, const TopoDS_Shape &input,
+    const TopoDS_Shape &target, const gp_Ax3 &frame, double sign,
+    const std::vector<TopoDS_Edge> &edges, const FcOcctSegment *segments,
+    const std::vector<TopoDS_Face> &faces, const size_t *loops, const size_t *regions,
+    FcOcctError *error, const Message_ProgressRange &progress) {
+  const gp_Dir dir(gp_Vec(frame.Direction()) * sign);
+  gp_Trsf local;
+  local.SetTransformation(gp_Ax3(frame.Location(), dir, frame.XDirection()));
+  Bnd_Box bounds;
+  BRepBndLib::AddOptimal(target.Moved(TopLoc_Location(local)), bounds, false, false);
+  double x0, y0, z0, x1, y1, z1;
+  bounds.Get(x0, y0, z0, x1, y1, z1);
+  constexpr double far_margin_mm = 1.;
+  BRepPrimAPI_MakePrism prism(input, gp_Vec(dir) * (std::max(0., z1) + far_margin_mm));
+  TopTools_ListOfShape arguments, tools;
+  arguments.Append(prism.Shape());
+  tools.Append(target);
+  BRepAlgoAPI_BooleanOperation inside, outside;
+  inside.SetOperation(BOPAlgo_COMMON);
+  outside.SetOperation(BOPAlgo_CUT);
+  BRepAlgoAPI_BooleanOperation *owner = nullptr;
+  TopTools_IndexedMapOfShape selected;
+  bool uncovered = false;
+  auto sweep = prism.Prism();
+  for (auto *side : {&inside, &outside}) {
+    side->SetArguments(arguments);
+    side->SetTools(tools);
+    side->SetNonDestructive(true);
+    side->Build(progress);
+    if (!side->IsDone()) {
+      write_error(error, "cannot split the prism at the target boundary");
+      return FC_OCCT_KERNEL;
     }
-  }
-  for (TopTools_ListOfShape::Iterator it(split.Modified(until)); it.More(); it.Next())
-    naming_link(record, 0, 1, 6, 2, it.Value());
-  naming_link(record, 0, 1, 6, 2, until);
-  // A periodic end surface may split one region's cap at its seam. Forward
-  // the actual outer-curve witnesses incident on every cap, including the
-  // start cap, without assuming that two caps means one region and vice versa.
-  TopTools_IndexedMapOfShape caps;
-  const size_t history_size = record.naming_history.size();
-  for (size_t i = 0; i < history_size; i += 6) {
-    const auto *row = record.naming_history.data() + i;
-    if (row[2] == 6 && row[3] == 2) caps.Add(record.sub_shapes[row[4]]);
-  }
-  if (caps.Extent() > 2) {
-    std::vector<size_t> outer_curves;
-    size_t loop = 0, segment = 0;
-    for (size_t r = 0; r < faces.size(); ++r) {
-      for (size_t k = 0; k < loops[loop]; ++k) outer_curves.push_back(segment + k);
-      for (size_t i = 0; i < regions[r]; ++i) segment += loops[loop++];
+    TopTools_IndexedMapOfShape starts, far;
+    for (const auto &face : faces) {
+      add_survivors(*side, sweep.FirstShape(face), starts);
+      add_survivors(*side, sweep.LastShape(face), far);
     }
-    for (int c = 1; c <= caps.Extent(); ++c) {
-      TopTools_IndexedMapOfShape boundary;
-      TopExp::MapShapes(caps(c), TopAbs_EDGE, boundary);
-      for (const auto curve : outer_curves) {
-        bool incident = false;
-        for (size_t i = 0; i < history_size; i += 6) {
-          const auto *row = record.naming_history.data() + i;
-          if (row[1] == curve && row[2] == 3 && row[3] == 2 && row[5] == 1)
-            incident |= boundary.Contains(record.sub_shapes[row[4]]);
-        }
-        if (incident) naming_link(record, 0, curve, 7, 2, caps(c));
+    for (TopExp_Explorer solid(side->Shape(), TopAbs_SOLID); solid.More(); solid.Next()) {
+      bool start = false, touches_far = false;
+      for (TopExp_Explorer f(solid.Current(), TopAbs_FACE); f.More(); f.Next()) {
+        start |= starts.Contains(f.Current());
+        touches_far |= far.Contains(f.Current());
       }
+      if (!start) continue;
+      if (owner && owner != side) {
+        write_error(error, "the profile starts partly inside and partly outside the target");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      owner = side;
+      selected.Add(solid.Current());
+      uncovered |= touches_far;
     }
   }
+  if (uncovered || selected.IsEmpty()) {
+    write_error(error, next_coverage);
+    return FC_OCCT_INVALID_INPUT;
+  }
+  TopoDS_Compound pieces;
+  BRep_Builder builder;
+  builder.MakeCompound(pieces);
+  for (int i = 1; i <= selected.Extent(); ++i) builder.Add(pieces, selected(i));
+  record.shape = selected.Extent() == 1 ? selected(1) : TopoDS_Shape(pieces);
+  TopTools_IndexedMapOfShape cell_faces;
+  TopExp::MapShapes(record.shape, TopAbs_FACE, cell_faces);
+  for (const auto &face : faces) {
+    const auto start = sweep.FirstShape(face);
+    if (cell_faces.Contains(start)) continue;
+    TopTools_ListOfShape fragments;
+    for (const auto &part : owner->Modified(start))
+      if (cell_faces.Contains(part)) fragments.Append(part);
+    if (fragments.IsEmpty()) {
+      write_error(error, next_coverage);
+      return FC_OCCT_INVALID_INPUT;
+    }
+    TopTools_ListOfShape caps;
+    caps.Append(start);
+    BRepAlgoAPI_BooleanOperation missing;
+    missing.SetOperation(BOPAlgo_CUT);
+    missing.SetArguments(caps);
+    missing.SetTools(fragments);
+    missing.SetNonDestructive(true);
+    missing.Build(progress);
+    if (!missing.IsDone()) {
+      write_error(error, "cannot verify the split of the starting cap");
+      return FC_OCCT_KERNEL;
+    }
+    if (TopExp_Explorer(missing.Shape(), TopAbs_FACE).More()) {
+      write_error(error, next_coverage);
+      return FC_OCCT_INVALID_INPUT;
+    }
+  }
+  TopTools_IndexedMapOfShape prism_faces, boundary, ends;
+  for (TopExp_Explorer f(prism.Shape(), TopAbs_FACE); f.More(); f.Next())
+    add_survivors(*owner, f.Current(), prism_faces);
+  for (TopExp_Explorer f(target, TopAbs_FACE); f.More(); f.Next())
+    add_survivors(*owner, f.Current(), boundary);
+  for (TopExp_Explorer f(record.shape, TopAbs_FACE); f.More(); f.Next()) {
+    if (prism_faces.Contains(f.Current())) continue;
+    if (!boundary.Contains(f.Current())) {
+      write_error(error, "the split returned an end face without target history");
+      return FC_OCCT_KERNEL;
+    }
+    std::string reason;
+    const auto status = next_boundary::check_patch(TopoDS::Face(f.Current()), dir, reason);
+    if (status != FC_OCCT_OK) {
+      write_error(error, reason);
+      return status;
+    }
+    ends.Add(f.Current());
+  }
+  const auto checked = checked_result(record.shape, "up to next extrusion", true, error);
+  if (checked != FC_OCCT_OK) return checked;
+  naming_inventory(record);
+  name_limited_sweep(record, prism, *owner, ends, edges, segments, faces, loops, regions);
   return FC_OCCT_OK;
 }
 
@@ -789,7 +927,7 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              size_t loop_count, const size_t *region_loop_counts,
                              size_t region_count, double base_offset,
                              double top_offset, const double *axis_origin,
-                             const double *axis_direction, double angle, const TopoDS_Face *until,
+                             const double *axis_direction, double angle, const TopoDS_Shape *until,
                              bool prism_tool, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
@@ -1171,7 +1309,11 @@ FcOcctStatus sweep_profile(FcOcctSession *session, const FcOcctPlane *plane,
       naming_sweep(record, sweep, edges, segments, faces,
                    loop_segment_counts, region_loop_counts, partial);
     } else if (until) {
-      const auto status = up_to_surface(record, input, *until, frame, top_offset,
+      const auto status = until->ShapeType() == TopAbs_FACE
+          ? up_to_surface(record, input, TopoDS::Face(*until), frame, top_offset,
+              edges, segments, faces, loop_segment_counts, region_loop_counts,
+              out_error, indicator->Start())
+          : up_to_next(record, input, *until, frame, top_offset,
           edges, segments, faces, loop_segment_counts, region_loop_counts,
           out_error, indicator->Start());
       if (cancelled(cancel, cancel_context)) return FC_OCCT_CANCELLED;
@@ -1407,6 +1549,20 @@ FcOcctStatus fc_occt_extrude_to_face(FcOcctSession *session, const FcOcctPlane *
     return sweep_profile(session, plane, segments, segment_count, loops, loop_count,
         regions, region_count, 0., sign, nullptr, nullptr, 0., &until, false,
         cancel, cancel_context, out_shape, error);
+  });
+}
+
+FcOcctStatus fc_occt_extrude_to_next(FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count, const size_t *loops, size_t loop_count,
+    const size_t *regions, size_t region_count, uint64_t target, double sign,
+    FcOcctCancelFn cancel, void *context, uint64_t *out_shape, FcOcctError *error) noexcept {
+  return guarded(error, [&]() -> FcOcctStatus {
+    if (!session || (sign != 1. && sign != -1.)) return FC_OCCT_INVALID_INPUT;
+    const auto it = session->shapes.find(target);
+    if (it == session->shapes.end()) return FC_OCCT_UNKNOWN_HANDLE;
+    return sweep_profile(session, plane, segments, segment_count, loops, loop_count,
+        regions, region_count, 0., sign, nullptr, nullptr, 0., &it->second.shape, false,
+        cancel, context, out_shape, error);
   });
 }
 

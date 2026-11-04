@@ -151,6 +151,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                                     })
                                 }
                                 EndCondition::Symmetric { .. }
+                                | EndCondition::UpToNext
                                 | EndCondition::ThroughAll
                                 | EndCondition::UpToFace { .. }
                                 | EndCondition::UpToVertex { .. } => None,

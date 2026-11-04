@@ -123,6 +123,9 @@ Change an existing feature with
 The shared transaction rebuilds the candidate and refuses any newly failed
 consumer before publication. Undo and Redo restore the same curve references.
 
+Use `{"kind":"up_to_next"}` as the end condition of an Add, Cut or Intersect.
+The transaction obtains the complete target from `previous`.
+
 ## Datum planes
 
 `add_datum_plane` takes `object`, optional `name` and `plane`, whose `kind` is

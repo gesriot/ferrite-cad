@@ -680,6 +680,8 @@ pub enum EndCondition {
     Symmetric { distance: Expression },
     /// Through everything present, in the given direction.
     ThroughAll,
+    /// The first forward boundary of the complete predecessor.
+    UpToNext,
     /// The untrimmed surface of a named face, offset along its outward normal.
     UpToFace {
         result: ObjectId,
@@ -697,7 +699,7 @@ impl EndCondition {
     pub fn support(&self) -> Option<ObjectId> {
         match self {
             Self::UpToFace { result, .. } | Self::UpToVertex { result, .. } => Some(*result),
-            Self::Blind { .. } | Self::Symmetric { .. } | Self::ThroughAll => None,
+            Self::Blind { .. } | Self::Symmetric { .. } | Self::ThroughAll | Self::UpToNext => None,
         }
     }
 }
@@ -708,6 +710,7 @@ impl std::fmt::Display for EndCondition {
             Self::Blind { distance } => write!(f, "blind {} mm", distance.value()),
             Self::Symmetric { distance } => write!(f, "symmetric {} mm", distance.value()),
             Self::ThroughAll => f.write_str("through all"),
+            Self::UpToNext => f.write_str("up to next"),
             Self::UpToFace {
                 face, offset_mm, ..
             } => write!(f, "up to face {}, offset {} mm", face.id, offset_mm.value()),
@@ -1039,6 +1042,9 @@ impl Extrude {
             EndCondition::Symmetric { distance } => {
                 hasher.str("symmetric");
                 distance.feed(&mut hasher);
+            }
+            EndCondition::UpToNext => {
+                hasher.str("up_to_next");
             }
             EndCondition::ThroughAll => {
                 hasher.str("through_all");
@@ -1414,7 +1420,10 @@ impl ObjectPayload {
                              ThroughAll requires Cut or Intersect",
                         ));
                     }
-                    EndCondition::ThroughAll => {}
+                    EndCondition::UpToNext if extrude.operation == SolidOperation::NewBody => {
+                        return Err(CadError::input("a new body has no target for up to next"));
+                    }
+                    EndCondition::ThroughAll | EndCondition::UpToNext => {}
                     EndCondition::UpToFace {
                         face, offset_mm, ..
                     } => {

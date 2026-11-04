@@ -405,6 +405,9 @@ fn tilted_untrimmed_plane_and_invalid_surface_families_use_kernel_topology() {
                 ObjectPayload::Sketch(circle_sketch);
             let mut circle_names = ferritecad_topology::generative::ModelNaming::default();
             circle_names.prepare(&objects).expect("circle roots");
+            circle_names
+                .select_profile(feature, &circle)
+                .expect("outer circle");
             let boss = kernel
                 .extrude_to_face(&circle, false, &faces, 0., &context)
                 .expect("cylinder under tilted plane")

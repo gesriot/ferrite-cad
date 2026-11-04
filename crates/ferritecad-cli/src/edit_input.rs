@@ -468,6 +468,7 @@ pub(super) enum End {
         distance: Number,
     },
     ThroughAll,
+    UpToNext,
     UpToFace {
         result: ObjectId,
         face: Reference,
@@ -487,6 +488,7 @@ impl End {
             Self::Symmetric { distance } => ferritecad_document::EndCondition::Symmetric {
                 distance: distance.expression(Dimension::Length)?,
             },
+            Self::UpToNext => ferritecad_document::EndCondition::UpToNext,
             Self::ThroughAll => ferritecad_document::EndCondition::ThroughAll,
             Self::UpToFace {
                 result,

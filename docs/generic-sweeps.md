@@ -77,8 +77,8 @@ The `result` UUID names the feature whose result is consumed; the reference's
 Face and vertex references resolve across the whole supporting result, including separate
 solids. Solid membership does not relax surface orientation or full-profile coverage.
 The existing `reversed` flag fixes the direction. Neither condition changes direction
-or picks another entity to make a feature build. Revolve is unchanged; “up to next”
-remains separate work.
+or picks another entity to make a feature build. The implicit [up-to-next target](#up-to-next)
+is the complete predecessor.
 
 `up_to_face` uses the entire geometric surface, beyond the trimmed face boundary.
 It ends at the first forward intersection from every point of the profile. Its signed
@@ -147,7 +147,43 @@ The window draws the evaluated shape. Its existing Cut editor shows
 “this feature's end condition is edited through `edit`” for these conditions.
 Viewport creation of referenced end conditions is separate work.
 
-## Executable referenced-end recipe
+## Up to next
+
+`up_to_next` takes the first forward hit on the complete `previous` result
+at each point of the profile. Add, Cut and Intersect have a target. NewBody has none.
+The whole profile must start on the same side of the target and have a boundary ahead in
+the direction set by `reversed`. Other Bodies never supply that boundary.
+
+A step can end the extrusion when the target supplies both levels and the wall joining them.
+For example, above a 10 × 8 mm profile, a ceiling 3 mm away over one half and 8 mm away
+over the other bounds a 440 mm³ tool. If the lower shelf is only 1 mm thick and the roof
+extends over it, the connected space above the shelf adds another 160 mm³. Stopping at the
+first hit would require a new wall in that space. Tool names derive from the sweep inputs.
+Projecting a shelf edge to create and name that wall would require different provenance.
+
+> the target's next boundary does not close the profile without a new transition face;
+> choose an end face with up_to_face
+
+Use `up_to_face` to choose an explicit terminating surface in that case.
+
+For a 4 × 4 mm block extending down from the roof wholly inside that same profile,
+the first-hit tool occupies 560 mm³. The lower square and four walls have no incident
+edge from an outer profile curve. Each has Cap end provenance and an explicitly empty
+witness set. They share one name with five bindings. Selection `one` refuses that
+ambiguous name, while `all_descendants` returns all five faces. The roof has its own
+outer-curve witnesses. A final boolean can distinguish tool faces through target history.
+
+Up to next supports planar, cylindrical, conical and spherical end faces. A toroidal,
+B-spline, Bézier, revolved, extruded, offset or other surface outside these four kinds
+refuses as `unsupported` before publication. The message names the surface and suggests
+`up_to_face`. Parallel walls use the kernel's angular tolerance.
+
+Set `"end_condition": {"kind": "up_to_next"}` in a `set_end_condition` edit.
+A mixed starting side refuses with “the profile starts partly inside and partly outside
+the target”. Incomplete forward coverage refuses with “nothing next ahead of the sketch
+plane covers the profile”. Warm rebuilds depend on the complete predecessor key.
+
+## Executable end-condition recipe
 
 Set `FERRITECAD` to the built CLI. Face and vertex identities below come from their
 reported sweep derivations, never coordinate searches.
@@ -212,7 +248,7 @@ probe = subprocess.run([cli, "rebuild", str(source), "--cold"],
 if probe.returncode:
     text = probe.stdout + probe.stderr
     assert "Open CASCADE" in text and "unsupported" in text.lower(), text
-    print("UP_TO_END_NO_KERNEL unsupported kernel")
+    print("SWEEP_ENDS_STUB unsupported kernel")
     raise SystemExit(0)
 
 
@@ -308,5 +344,25 @@ edit(vertex_end, through_result, [through,
 results = call("inspect", through_result, "--json")["result"]["feature_results"]
 assert next(r["solid_count"] for r in results if r["feature_id"] == through_feature) == 2
 call("rebuild", through_result, "--cold")
-print("UP_TO_END_OK face, outward offset, vertex and cap height")
+next_result = root / "next.fcad"
+edit(through_result, next_result, [{
+    "kind": "set_end_condition", "object": through_feature, "end_condition": {"kind": "up_to_next"}
+}])
+facts = call("inspect", next_result, "--json")["result"]
+saved = next(row for row in facts["features"] if row["feature_id"] == through_feature)
+assert saved["end_condition"] == {"kind": "up_to_next"}
+assert "up to next" in call("inspect", next_result)
+assert "up to next" in call("rebuild", next_result, "--cold")
+back = root / "through-again.fcad"
+edit(next_result, back, [{
+    "kind": "set_end_condition", "object": through_feature, "end_condition": {"kind": "through_all"}
+}])
+invalid = root / "new-body-next.fcad"
+refused = edit(back, invalid, [{
+    "kind": "set_end_condition", "object": base, "end_condition": {"kind": "up_to_next"}
+}], code=2)
+assert "new body has no target for up to next" in json.dumps(refused)
+assert not invalid.exists()
+mode = "SOLVER" if os.environ.get("FCAD_EXPECT_SOLVER") == "1" else "NO_SOLVER"
+print("SWEEP_ENDS_" + mode + " face, offset, vertex and up to next")
 ```

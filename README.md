@@ -133,6 +133,7 @@ surface offset, or at the plane through a named vertex perpendicular to its dire
 CLI `set_end_condition` and `extrude_end_offset` edit these definitions. The window
 draws the resulting bodies; its Cut depth form directs referenced ends to `edit`.
 [Referenced sweep ends](docs/generic-sweeps.md).
+Add, Cut and Intersect can end [up to next](docs/generic-sweeps.md#up-to-next) on their predecessor.
 
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.

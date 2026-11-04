@@ -452,7 +452,8 @@ fn expressions(
                 visit(S::ExtrudeDistance, distance)
             }
             EndCondition::UpToFace { offset_mm, .. } => visit(S::ExtrudeEndOffset, offset_mm),
-            EndCondition::ThroughAll | EndCondition::UpToVertex { .. } => {}
+            EndCondition::ThroughAll | EndCondition::UpToNext | EndCondition::UpToVertex { .. } => {
+            }
         },
         ObjectPayload::Fillet(fillet) => visit(S::FilletRadius, &mut fillet.radius_mm),
         ObjectPayload::Chamfer(chamfer) => visit(S::ChamferDistance, &mut chamfer.distance_mm),

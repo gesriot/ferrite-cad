@@ -335,6 +335,53 @@ impl OcctKernel {
     }
 }
 
+impl OcctKernel {
+    fn limited_sweep(
+        &mut self,
+        profile: &ferritecad_kernel::Profile,
+        reversed: bool,
+        raw: u64,
+        end: ffi::EndLimit<'_>,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        let segments: Vec<_> = profile
+            .segments()
+            .map(|s| segment_of(&s.geometry))
+            .collect();
+        let loops: Vec<_> = profile.loops().map(|l| l.segments().len()).collect();
+        let regions: Vec<_> = profile
+            .regions()
+            .iter()
+            .map(|r| 1 + r.inner.len())
+            .collect();
+        let raw = self.session.extrude_limited(
+            &plane_of(profile.plane()),
+            &segments,
+            ffi::ProfilePartition {
+                loops: &loops,
+                regions: &regions,
+            },
+            raw,
+            end,
+            if reversed { -1. } else { 1. },
+            context,
+        )?;
+        let shape = ShapeHandle::new(self.session_id, raw);
+        self.naming_operations
+            .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
+        self.naming_curves
+            .insert(shape, profile.segments().map(|s| s.label).collect());
+        if let Err(error) = context.check_cancelled() {
+            self.release(shape);
+            return Err(error);
+        }
+        Ok(OperationResult {
+            shape,
+            removed_volume: 0.,
+        })
+    }
+}
+
 impl GeometryKernel for OcctKernel {
     fn identity(&self) -> &KernelIdentity {
         &self.identity
@@ -401,20 +448,19 @@ impl GeometryKernel for OcctKernel {
         };
         for row in words.chunks_exact(6) {
             if row[2] == 7 {
-                let curve = self
-                    .naming_curves
-                    .get(&shape)
-                    .and_then(|curves| usize::try_from(row[1]).ok().and_then(|i| curves.get(i)))
-                    .copied()
-                    .ok_or_else(|| CadError::kernel("unknown cap boundary curve"))?;
                 if row[0] != 0 || row[3] != 2 || row[5] != 0 {
                     return Err(CadError::kernel("invalid cap boundary history"));
                 }
-                history
-                    .cap_boundaries
-                    .entry(self.face(shape, row[4]))
-                    .or_default()
-                    .insert(curve);
+                let face = self.face(shape, row[4]);
+                let witnesses = history.cap_boundaries.entry(face).or_default();
+                if row[1] != u64::MAX {
+                    let curve = self
+                        .naming_curves
+                        .get(&shape)
+                        .and_then(|curves| usize::try_from(row[1]).ok().and_then(|i| curves.get(i)))
+                        .ok_or_else(|| CadError::kernel("unknown cap boundary curve"))?;
+                    witnesses.insert(*curve);
+                }
                 continue;
             }
             let input = match row[2] {
@@ -683,42 +729,30 @@ impl GeometryKernel for OcctKernel {
         }
         let raw = self.raw(shape)?;
         let ids: Vec<_> = faces.iter().map(|f| f.index()).collect();
-        let segments: Vec<_> = profile
-            .segments()
-            .map(|s| segment_of(&s.geometry))
-            .collect();
-        let loops: Vec<_> = profile.loops().map(|l| l.segments().len()).collect();
-        let regions: Vec<_> = profile
-            .regions()
-            .iter()
-            .map(|r| 1 + r.inner.len())
-            .collect();
-        let raw = self.session.extrude_to_face(
-            &plane_of(profile.plane()),
-            &segments,
-            ffi::ProfilePartition {
-                loops: &loops,
-                regions: &regions,
-            },
+        self.limited_sweep(
+            profile,
+            reversed,
             raw,
-            &ids,
-            offset_mm,
-            if reversed { -1. } else { 1. },
+            ffi::EndLimit::Face(&ids, offset_mm),
             context,
-        )?;
-        let shape = ShapeHandle::new(self.session_id, raw);
-        self.naming_operations
-            .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
-        self.naming_curves
-            .insert(shape, profile.segments().map(|s| s.label).collect());
-        if let Err(error) = context.check_cancelled() {
-            self.release(shape);
-            return Err(error);
-        }
-        Ok(OperationResult {
-            shape,
-            removed_volume: 0.,
-        })
+        )
+    }
+
+    fn extrude_to_next(
+        &mut self,
+        profile: &ferritecad_kernel::Profile,
+        reversed: bool,
+        target: ShapeHandle,
+        context: &OperationContext,
+    ) -> Result<OperationResult> {
+        context.check_cancelled()?;
+        self.limited_sweep(
+            profile,
+            reversed,
+            self.raw(target)?,
+            ffi::EndLimit::Next,
+            context,
+        )
     }
 
     fn solid_count(&mut self, shape: ShapeHandle) -> Result<usize> {

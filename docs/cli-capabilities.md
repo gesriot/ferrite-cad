@@ -39,6 +39,7 @@ surface offset, or at the plane through a named vertex perpendicular to its dire
 CLI `set_end_condition` and `extrude_end_offset` edit these definitions. The window
 draws the resulting bodies; its Cut depth form directs referenced ends to `edit`.
 [Referenced sweep ends](generic-sweeps.md).
+Use [up to next](generic-sweeps.md#up-to-next) to reach the first boundary of the predecessor.
 
 §30A: CLI не меняется. Окно получает рабочую сессию открытого документа
 ([контракт](document-session.md)): на маршруте высоты Extrude Apply, Undo/Redo и

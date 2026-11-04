@@ -495,6 +495,21 @@ fn run<K: GeometryKernel + ?Sized>(
                         })
                         .transpose()?;
                     let request = match &object.payload {
+                        ObjectPayload::Extrude(e) if e.end_condition == EndCondition::UpToNext => {
+                            let previous = previous
+                                .ok_or_else(|| CadError::input("up to next needs a target"))?;
+                            SweepRequest::UpTo {
+                                profile,
+                                reversed: e.reversed,
+                                end: SurfaceEnd::Next(
+                                    target.ok_or_else(|| {
+                                        CadError::input("up to next needs a target")
+                                    })?,
+                                ),
+                                support_key: state.keys[&previous],
+                                payload_key: e.cache_key(scoped.tolerance()),
+                            }
+                        }
                         ObjectPayload::Extrude(e) if through_all => SweepRequest::ThroughAll {
                             profile,
                             reversed: e.reversed,
@@ -1021,6 +1036,7 @@ fn boolean_kind(
 }
 
 enum SurfaceEnd {
+    Next(ShapeHandle),
     Face {
         faces: Vec<ferritecad_kernel::SubShapeHandle>,
         offset: f64,
@@ -1085,6 +1101,9 @@ impl SweepRequest {
                 end,
                 ..
             } => match end {
+                SurfaceEnd::Next(target) => {
+                    return kernel.extrude_to_next(&profile, reversed, target, context);
+                }
                 SurfaceEnd::Face { faces, offset } => {
                     return kernel.extrude_to_face(&profile, reversed, &faces, offset, context);
                 }
