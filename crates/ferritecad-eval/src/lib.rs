@@ -45,7 +45,7 @@ pub use cache::{
     boolean_archive_key, extrude_archive_key, load_extrude_archive, load_feature_archive,
     revolve_archive_key, store_extrude_archive, store_feature_archive,
 };
-pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};
+pub use cold::{CacheEvent, CacheOutcome, LiveModel, RebuildResult, rebuild_cached, rebuild_cold};
 pub use convert::{
     SketchEvaluation, extrude_request, plane_from_datum, profile_from_sketch, revolve_request,
 };

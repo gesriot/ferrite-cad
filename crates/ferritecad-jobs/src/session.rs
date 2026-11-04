@@ -813,6 +813,7 @@ impl StepTicket {
         };
         let mut run = crate::edit::EditRun {
             baseline: Some(&baseline),
+            evaluate: None,
             observe: Some(&mut observe),
             scene: None,
         };

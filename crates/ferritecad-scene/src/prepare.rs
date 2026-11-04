@@ -344,8 +344,35 @@ pub(crate) struct PreparedNode {
 /// [`finish`][Self::finish]. Definitions are reported the moment their
 /// geometry is decided, and never twice for one identity; nodes are reported
 /// in source order with parents before children.
+pub(crate) enum BodyMesh {
+    New(Mesh),
+    Reused(std::sync::Arc<crate::BodyDrawing>),
+}
+
 pub(crate) trait LoadSink {
     type Output;
+
+    fn cached_body(
+        &self,
+        _id: ObjectId,
+        _key: Option<ferritecad_types::ContentHash>,
+    ) -> Option<std::sync::Arc<crate::BodyDrawing>> {
+        None
+    }
+
+    fn draw_body(
+        &mut self,
+        definition: usize,
+        _id: ObjectId,
+        _key: Option<ferritecad_types::ContentHash>,
+        _solids: u32,
+        mesh: BodyMesh,
+    ) -> Result<()> {
+        match mesh {
+            BodyMesh::New(mesh) => self.definition(definition, Geometry::Mesh(&mesh)),
+            BodyMesh::Reused(drawing) => self.definition(definition, Geometry::Mesh(&drawing.mesh)),
+        }
+    }
 
     fn exports_geometry(&self) -> bool {
         false
@@ -481,19 +508,23 @@ where
                     // Two bodies are two definitions however alike they look:
                     // the object that holds one is what it is, and a document
                     // may give two of them one name.
+                    let key = built.result_key(object.id);
+                    let cached = sink.cached_body(object.id, key);
+                    let solids = match &cached {
+                        Some(body) => Some(body.solids),
+                        None => built
+                            .shape(object.id)
+                            .map(|shape| kernel.solid_count(shape))
+                            .transpose()?
+                            .map(u32::try_from)
+                            .transpose()
+                            .map_err(|_| CadError::kernel("solid count exceeds scene capacity"))?,
+                    };
                     let (definition, first) = registry.register(
                         SceneItem::Body(object.id),
                         Seen {
                             name: object.name.clone(),
-                            solids: built
-                                .shape(object.id)
-                                .map(|shape| kernel.solid_count(shape))
-                                .transpose()?
-                                .map(u32::try_from)
-                                .transpose()
-                                .map_err(|_| {
-                                    CadError::kernel("solid count exceeds scene capacity")
-                                })?,
+                            solids,
                             ..Seen::default()
                         },
                     )?;
@@ -530,9 +561,18 @@ where
                                 Geometry::Omitted(TessellationRefusal::UnbuiltBody),
                             )?;
                         } else if let Some(shape) = shape {
-                            let mesh = kernel.tessellate(shape, params, &scoped)?;
+                            let mesh = match cached {
+                                Some(drawing) => BodyMesh::Reused(drawing),
+                                None => BodyMesh::New(kernel.tessellate(shape, params, &scoped)?),
+                            };
                             registry.meshed(definition)?;
-                            sink.definition(definition, Geometry::Mesh(&mesh))?;
+                            sink.draw_body(
+                                definition,
+                                object.id,
+                                key,
+                                solids.expect("counted body shape"),
+                                mesh,
+                            )?;
                         }
                     }
                     sink.node(&PreparedNode {

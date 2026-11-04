@@ -5,6 +5,10 @@ applies an ordered list to one candidate, validates the final payload and rebuil
 An edit refuses every newly failed or skipped feature ; an unresolved consumed reference fails its feature. Existing failures may be repaired. A refusal leaves the
 source and destination unchanged.
 
+A headless live session evaluates Apply, Undo and Redo against its accepted revision. Committing
+the prepared step publishes the target file and scene together. See
+[Live evaluated model](decisions/0010-live-evaluated-model.md).
+
 Use `inspect source.fcad --json` to obtain `content_version`, object UUIDs and
 `expression_slots`. Each `sketches` row contains the saved curve UUIDs,
 plane UUID, construction flags and geometry in millimetres, plus the exact constraint UUIDs

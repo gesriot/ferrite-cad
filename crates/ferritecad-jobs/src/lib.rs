@@ -49,10 +49,12 @@ pub use polygon::{
 mod edit;
 mod fbx;
 mod import;
+mod live;
 mod publish;
 mod recovery;
 mod save;
 mod session;
+pub use live::{LiveDocument, PendingRevision};
 mod stl;
 mod validate;
 

@@ -26,6 +26,10 @@
 
 use std::collections::BTreeMap;
 
+mod live;
+pub use live::LiveModel;
+use live::Source;
+
 use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     BooleanRequest, ChamferRequest, FilletRequest, GeometryKernel, OperationContext, Profile,
@@ -283,7 +287,7 @@ pub fn rebuild_cold<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     context: &OperationContext,
 ) -> Result<RebuildResult> {
-    rebuild(document, kernel, None, context).map(|(result, _)| result)
+    rebuild(document, kernel, Source::Cold, context).map(|(result, _)| result)
 }
 
 /// Rebuilds `document`, restoring from `cache` whatever it usefully holds.
@@ -299,13 +303,13 @@ pub fn rebuild_cached<K: GeometryKernel + ?Sized>(
     cache: &mut CacheStore,
     context: &OperationContext,
 ) -> Result<(RebuildResult, Vec<CacheEvent>)> {
-    rebuild(document, kernel, Some(cache), context)
+    rebuild(document, kernel, Source::Sidecar(cache), context)
 }
 
 fn rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
-    cache: Option<&mut CacheStore>,
+    source: Source<'_>,
     context: &OperationContext,
 ) -> Result<(RebuildResult, Vec<CacheEvent>)> {
     // Do this before reading or validating the document. Besides avoiding
@@ -316,7 +320,7 @@ fn rebuild<K: GeometryKernel + ?Sized>(
     let mut state = RebuildResult::default();
     let mut events = Vec::new();
 
-    match run(document, kernel, cache, context, &mut state, &mut events) {
+    match run(document, kernel, source, context, &mut state, &mut events) {
         Ok(()) => Ok((state, events)),
         Err(error) => {
             state.release_all(kernel);
@@ -328,7 +332,7 @@ fn rebuild<K: GeometryKernel + ?Sized>(
 fn run<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
-    mut cache: Option<&mut CacheStore>,
+    mut source: Source<'_>,
     context: &OperationContext,
     state: &mut RebuildResult,
     events: &mut Vec<CacheEvent>,
@@ -436,6 +440,27 @@ fn run<K: GeometryKernel + ?Sized>(
         let owned_before = state.owned.len();
         let outcome = (|| -> Result<()> {
             parameters.verify(*id, &object.payload)?;
+            if let Source::Live(accepted, identity) = &source
+                && matches!(
+                    object.payload,
+                    ObjectPayload::Sketch(_)
+                        | ObjectPayload::DatumPlane(_)
+                        | ObjectPayload::Body(_)
+                        | ObjectPayload::Parameter(_)
+                )
+            {
+                let key = live::node_key(object, &graph, state, identity, &scoped)?;
+                state.keys.insert(*id, key);
+                if let Some(old) = accepted
+                    && old.keys.get(id) == Some(&key)
+                {
+                    state.reuse_node(*id, old);
+                    if let ObjectPayload::Parameter(p) = &object.payload {
+                        parameters.bind(p)?;
+                    }
+                    return Ok(());
+                }
+            }
             match &object.payload {
                 ObjectPayload::DatumPlane(datum) => {
                     let plane = crate::datum::evaluate(
@@ -567,10 +592,10 @@ fn run<K: GeometryKernel + ?Sized>(
                         )?),
                         _ => unreachable!("sweep branch"),
                     };
-                    let tool_key = request.key(kernel.identity(), &scoped);
+                    let tool_key = request.key(source.identity(kernel), &scoped);
                     let key = if let Some(previous) = previous {
                         boolean_archive_key(
-                            kernel.identity(),
+                            source.identity(kernel),
                             boolean_kind(operation)?,
                             previous,
                             &state.keys[&previous],
@@ -582,10 +607,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         tool_key
                     };
                     let key = state.topology.cache_key(*id, key);
-                    let restored = match cache.as_deref_mut() {
-                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                        None => false,
-                    };
+                    let restored = source.feature(kernel, &scoped, key, *id, state, events)?;
                     if !restored {
                         let tool = request.build(kernel, &scoped, target.is_some())?;
                         state.owned.push(tool.shape);
@@ -622,7 +644,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         };
                         state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, shape);
-                        if let Some(cache) = cache.as_deref_mut() {
+                        if let Source::Sidecar(cache) = &mut source {
                             store(kernel, cache, key, *id, state, events);
                         }
                     }
@@ -657,15 +679,12 @@ fn run<K: GeometryKernel + ?Sized>(
                         }
                     };
                     let key = crate::cache::keep_archive_key(
-                        kernel.identity(),
+                        source.identity(kernel),
                         &state.keys[&keep.previous],
                         keep.cache_key(),
                     );
                     let key = state.topology.cache_key(*id, key);
-                    let restored = match cache.as_deref_mut() {
-                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                        None => false,
-                    };
+                    let restored = source.feature(kernel, &scoped, key, *id, state, events)?;
                     if !restored {
                         let previous = &state.topology.features[&keep.previous];
                         let target = state.shapes[&keep.previous];
@@ -686,7 +705,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         )?;
                         state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, result.shape);
-                        if let Some(cache) = cache.as_deref_mut() {
+                        if let Source::Sidecar(cache) = &mut source {
                             store(kernel, cache, key, *id, state, events);
                         }
                     }
@@ -754,12 +773,9 @@ fn run<K: GeometryKernel + ?Sized>(
                         previous,
                         references,
                     )?;
-                    let key = edge_archive_key(kernel.identity(), target_key, payload_key);
+                    let key = edge_archive_key(source.identity(kernel), target_key, payload_key);
                     let key = state.topology.cache_key(*id, key);
-                    let restored = match cache.as_deref_mut() {
-                        Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
-                        None => false,
-                    };
+                    let restored = source.feature(kernel, &scoped, key, *id, state, events)?;
                     if !restored {
                         let previous_names = &state.topology.features[&previous];
                         let target = previous_names.shape().ok_or_else(|| {
@@ -786,7 +802,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         )?;
                         state.topology.insert_feature(*id, names)?;
                         state.shapes.insert(*id, result.shape);
-                        if let Some(cache) = cache.as_deref_mut() {
+                        if let Source::Sidecar(cache) = &mut source {
                             store(kernel, cache, key, *id, state, events);
                         }
                     }
@@ -805,6 +821,19 @@ fn run<K: GeometryKernel + ?Sized>(
         })();
         match outcome {
             Ok(()) => {
+                if matches!(source, Source::Live(..)) {
+                    // An unpublished boolean tool is needed through naming, but is
+                    // not a result referenced by either revision.
+                    let published = state.shape(*id);
+                    let mut i = owned_before;
+                    while i < state.owned.len() {
+                        if Some(state.owned[i]) == published {
+                            i += 1;
+                        } else {
+                            kernel.release(state.owned.remove(i));
+                        }
+                    }
+                }
                 state.statuses.insert(*id, RebuildStatus::Built);
             }
             Err(error) if error.kind() == ferritecad_types::ErrorKind::Cancellation => {

@@ -35,7 +35,11 @@
 
 mod drawing;
 mod export;
+mod live;
 mod prepare;
+use live::{BodyDrawing, BodyNames};
+pub use live::{BodyMeshes, snapshot_from_revision};
+use std::sync::Arc;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -311,7 +315,7 @@ pub type VertexMeaning = EntityMeaning;
 
 /// A portable meaning while it is still paired with the deterministic digest
 /// used to bind the picture's transient identities to it.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct BoundMeaning {
     meaning: EntityMeaning,
     identity: ContentHash,
@@ -804,7 +808,8 @@ pub fn snapshot_from_rebuild<K: GeometryKernel + ?Sized>(
 }
 
 /// What a picture keeps from one reading of a document.
-struct Picture {
+struct Picture<'a> {
+    meshes: Option<(&'a BodyMeshes, &'a mut BodyMeshes)>,
     rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     rebuild: ferritecad_eval::RebuildReport,
     edit_source: Option<ferritecad_document::ExtrudeEditSource>,
@@ -832,9 +837,10 @@ struct Picture {
     sketch_presentations: Vec<SketchPresentation>,
 }
 
-impl Picture {
+impl Picture<'_> {
     fn new() -> Self {
         Self {
+            meshes: None,
             rebuild_facts: None,
             rebuild: Default::default(),
             edit_source: None,
@@ -856,7 +862,7 @@ impl Picture {
     }
 
     /// Packs one mesh and records what its faces, edges and corners are called.
-    fn pack(&mut self, definition: usize, mesh: &Mesh) -> Result<()> {
+    fn local_names(&self, mesh: &Mesh) -> BodyNames {
         // Joined by the handle the kernel gave the face, which is the only
         // thing that says the stored name and this triangle range are the same
         // face. Not by ordinal, not by geometry, and not by name: two faces of
@@ -892,6 +898,24 @@ impl Picture {
             })
             .unwrap_or_default();
 
+        BodyNames {
+            faces: named_faces,
+            edges: named_edges,
+            vertices: named_vertices,
+        }
+    }
+
+    fn pack(&mut self, definition: usize, mesh: &Mesh) -> Result<()> {
+        let names = self.local_names(mesh);
+        self.pack_named(definition, mesh, names)
+    }
+
+    fn pack_named(&mut self, definition: usize, mesh: &Mesh, names: BodyNames) -> Result<()> {
+        let BodyNames {
+            faces: named_faces,
+            edges: named_edges,
+            vertices: named_vertices,
+        } = names;
         let index = self.builder.add_mesh(mesh)?;
         if index != self.drawn.len() {
             return Err(CadError::topology(format!(
@@ -952,7 +976,7 @@ fn generative_meanings(
     Ok(named)
 }
 
-impl prepare::LoadSink for Picture {
+impl prepare::LoadSink for Picture<'_> {
     type Output = LoadedScene;
 
     fn opened(
@@ -970,6 +994,10 @@ impl prepare::LoadSink for Picture {
         let drawn = objects
             .iter()
             .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
+            .filter(|object| {
+                self.cached_body(object.id, built.result_key(object.id))
+                    .is_none()
+            })
             .filter_map(|object| built.shape(object.id))
             .collect();
         self.named = generative_meanings(built.topology(), &drawn)?;
@@ -1016,6 +1044,39 @@ impl prepare::LoadSink for Picture {
                 redundant: redundant_constraints(sketch, report.redundant())?,
                 report: report.clone(),
             });
+        }
+        Ok(())
+    }
+
+    fn cached_body(&self, id: ObjectId, key: Option<ContentHash>) -> Option<Arc<BodyDrawing>> {
+        self.meshes.as_ref()?.0.lookup(id, key)
+    }
+
+    fn draw_body(
+        &mut self,
+        definition: usize,
+        id: ObjectId,
+        key: Option<ContentHash>,
+        solids: u32,
+        mesh: prepare::BodyMesh,
+    ) -> Result<()> {
+        let drawing = match mesh {
+            prepare::BodyMesh::Reused(drawing) => drawing,
+            prepare::BodyMesh::New(mesh) => {
+                if self.meshes.is_none() || key.is_none() {
+                    return self.pack(definition, &mesh);
+                }
+                Arc::new(BodyDrawing {
+                    names: self.local_names(&mesh),
+                    mesh,
+                    solids,
+                    key: key.expect("available body key"),
+                })
+            }
+        };
+        self.pack_named(definition, &drawing.mesh, drawing.names.clone())?;
+        if let Some((_, next)) = &mut self.meshes {
+            next.entries.insert(id, drawing);
         }
         Ok(())
     }
