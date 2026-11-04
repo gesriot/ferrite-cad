@@ -76,6 +76,20 @@ pub struct Dependency {
 /// schedule it identically — a prerequisite for comparing rebuild results at
 /// all.
 pub fn evaluation_order(nodes: &[ObjectId], deps: &[Dependency]) -> Result<Vec<ObjectId>> {
+    order_with_cycle(nodes, deps, |remaining| {
+        let stuck: Vec<_> = remaining.keys().map(ObjectId::to_string).collect();
+        format!(
+            "the feature graph contains a cycle among: {}",
+            stuck.join(", ")
+        )
+    })
+}
+
+pub(crate) fn order_with_cycle(
+    nodes: &[ObjectId],
+    deps: &[Dependency],
+    describe: impl FnOnce(&BTreeMap<ObjectId, BTreeSet<ObjectId>>) -> String,
+) -> Result<Vec<ObjectId>> {
     let known: BTreeSet<ObjectId> = nodes.iter().copied().collect();
 
     let mut dependents: BTreeMap<ObjectId, BTreeSet<ObjectId>> = BTreeMap::new();
@@ -128,11 +142,7 @@ pub fn evaluation_order(nodes: &[ObjectId], deps: &[Dependency]) -> Result<Vec<O
     }
 
     if !remaining.is_empty() {
-        let stuck: Vec<String> = remaining.keys().map(ObjectId::to_string).collect();
-        return Err(CadError::input(format!(
-            "the feature graph contains a cycle among: {}",
-            stuck.join(", ")
-        )));
+        return Err(CadError::input(describe(&remaining)));
     }
 
     Ok(order)

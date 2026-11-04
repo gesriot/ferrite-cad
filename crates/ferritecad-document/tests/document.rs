@@ -82,6 +82,18 @@ fn populate(document: &mut Document) -> Result<Plate> {
             dependency: plate.plane,
             role: DependencyRole::Plane,
         })?;
+        let thickness = ObjectId::new();
+        w.put_object(
+            thickness,
+            None,
+            4,
+            Some("Thickness"),
+            &ObjectPayload::Parameter(ferritecad_document::Parameter {
+                name: "thickness".into(),
+                dimension: ferritecad_types::Dimension::Length,
+                expression: Expression::constant(8.)?,
+            }),
+        )?;
         w.put_object(
             plate.extrude,
             None,
@@ -102,6 +114,11 @@ fn populate(document: &mut Document) -> Result<Plate> {
             dependent: plate.extrude,
             dependency: plate.sketch,
             role: DependencyRole::Profile,
+        })?;
+        w.add_dependency(Dependency {
+            dependent: plate.extrude,
+            dependency: thickness,
+            role: DependencyRole::Parameter,
         })?;
         w.put_object(
             plate.body,

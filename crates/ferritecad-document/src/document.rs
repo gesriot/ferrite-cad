@@ -69,7 +69,7 @@ pub struct ObjectRecord {
     pub name: Option<String>,
     pub payload: ObjectPayload,
     pub payload_hash: ContentHash,
-    storage_bytes: Vec<u8>,
+    pub(crate) storage_bytes: Vec<u8>,
 }
 
 impl ObjectRecord {
@@ -334,7 +334,7 @@ impl Document {
                 reason: "it was explicitly opened without write access".to_owned(),
             },
         };
-        document.objects()?;
+        crate::parameters::check_rows(&document.objects()?, &document.parameter_rows()?)?;
         Ok(document)
     }
 
@@ -736,12 +736,22 @@ impl Document {
     }
 
     pub fn dependencies(&self) -> Result<Vec<Dependency>> {
+        self.read_dependencies(
+            "SELECT dependent_id, dependency_id, role FROM deps
+             ORDER BY dependent_id, dependency_id, role",
+        )
+    }
+
+    fn parameter_rows(&self) -> Result<Vec<Dependency>> {
+        self.read_dependencies(
+            "SELECT dependent_id, dependency_id, role FROM deps WHERE role = 'parameter'",
+        )
+    }
+
+    fn read_dependencies(&self, query: &str) -> Result<Vec<Dependency>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT dependent_id, dependency_id, role
-                 FROM deps ORDER BY dependent_id, dependency_id, role",
-            )
+            .prepare(query)
             .map_err(|e| CadError::io("preparing dependency query", e))?;
 
         let rows = stmt
@@ -1426,7 +1436,7 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
     let payload_hash: Vec<u8> = row.get(6)?;
     Ok((|| {
         let id = ObjectId::from_slice(&id)?;
-        let payload = ObjectPayload::from_storage_bytes(&storage_bytes).map_err(|e| {
+        let payload = ObjectPayload::read_record(&storage_bytes).map_err(|e| {
             CadError::input_because(format!("reading object {id} of type {stored_kind}"), e)
         })?;
         if payload.type_name() != stored_kind {

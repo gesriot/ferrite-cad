@@ -26,10 +26,13 @@ is stored or negotiated.
 Editable model dimensions store `Expression { source, value }`: Extrude end
 conditions, parameters, Fillet `radius_mm`, Chamfer `distance_mm`, the `angle`
 of a partial Revolve, and sketch constraint `distance`, `radius`, `angle`, and
-Fixed `x`/`y`. Values use millimetres and radians. Writers currently use canonical
-numeric source text (`Expression::constant`); rebuilds consume the stored value
-without evaluating source text. Partial Revolve angles and their policy bounds
-use radians; UI and CLI degree input and display convert at their boundaries.
+Fixed `x`/`y`. Values use millimetres and radians. A parameter payload stores its unique
+name, declared dimension and expression. Each referenced name contributes a `parameter` row
+from its owner to the parameter UUID. Opening parses the source and checks those rows.
+Rebuild evaluates the source in graph order and verifies the exact saved value bits before
+using geometry or cache entries. A Revolve driven by an expression stores a `by_angle`
+extent with its `angle` expression, including when its value makes exactly one full turn.
+See [Expressions and parameters](expressions.md).
 
 Sketch curve coordinates, circle radii and arc angles remain `f64`: they describe
 solver state and the initial approximation, rather than editable dimensions.

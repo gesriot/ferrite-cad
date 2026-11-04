@@ -287,6 +287,17 @@ pub(crate) fn read(
             if cut.operation != ferritecad_document::SolidOperation::Cut {
                 continue;
             }
+            if let EndCondition::Blind { distance } = &cut.end_condition
+                && let Some(reason) = distance.numeric_form_refusal()
+            {
+                cuts.push(CutParameterChoice {
+                    feature: o.id,
+                    name: o.name.clone(),
+                    saved: None,
+                    refusal: Some(reason.into()),
+                });
+                continue;
+            }
             let extent = match &cut.end_condition {
                 EndCondition::Blind { distance } => CutExtent::Blind {
                     depth_mm: distance.value(),

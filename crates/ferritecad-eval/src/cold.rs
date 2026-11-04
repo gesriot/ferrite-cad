@@ -345,6 +345,7 @@ fn run<K: GeometryKernel + ?Sized>(
         .collect();
 
     state.topology.prepare(&objects)?;
+    let mut parameters = ferritecad_document::ParameterValues::default();
     let total = plan.order().len();
     for (position, id) in plan.order().iter().enumerate() {
         // Checked between features rather than only inside the kernel: a
@@ -395,8 +396,17 @@ fn run<K: GeometryKernel + ?Sized>(
                 state
                     .status(d.dependency)
                     .and_then(|s| s.root_failure(d.dependency))
+                    .map(|cause| (d, cause))
             });
-        if let Some(cause) = cause {
+        if let Some((edge, cause)) = cause {
+            if edge.role == ferritecad_document::DependencyRole::Parameter
+                && let ObjectPayload::Parameter(p) = &objects[&edge.dependency].payload
+            {
+                let error =
+                    CadError::input(format!("depends on parameter {}, which failed", p.name));
+                state.statuses.insert(*id, RebuildStatus::Failed { error });
+                continue;
+            }
             state.statuses.insert(*id, RebuildStatus::Skipped { cause });
             if let ObjectPayload::Body(body) = &object.payload {
                 let mut current = body.tip_feature;
@@ -425,6 +435,7 @@ fn run<K: GeometryKernel + ?Sized>(
         }
         let owned_before = state.owned.len();
         let outcome = (|| -> Result<()> {
+            parameters.verify(*id, &object.payload)?;
             match &object.payload {
                 ObjectPayload::DatumPlane(datum) => {
                     let plane = crate::datum::evaluate(
@@ -697,7 +708,7 @@ fn run<K: GeometryKernel + ?Sized>(
 
                 // Parameters carry no geometry. Expressions arrive with their own
                 // stage; evaluating one here would be inventing a semantics.
-                ObjectPayload::Parameter(_) => {}
+                ObjectPayload::Parameter(p) => parameters.bind(p)?,
 
                 // An imported STEP object holds geometry that was never built from
                 // features. It comes from bytes the document stores, and reading

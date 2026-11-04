@@ -792,10 +792,17 @@ mod tests {
         assert!(reading.unavailable_reason().is_some());
     }
 
-    #[test]
-    fn parameter_dependencies_are_not_silently_rewritten() {
-        let (_root, mut request) = fixture();
+    fn height_parameter_fixture(source: &str, with_row: bool) -> (tempfile::TempDir, EditRequest) {
+        let (root, request) = fixture();
         let mut document = Document::open(&request.source).expect("source");
+        let id = request.changes[0].object();
+        let mut feature = document.object(id).expect("read").expect("feature");
+        let ObjectPayload::Extrude(extrude) = &mut feature.payload else {
+            panic!("Extrude")
+        };
+        extrude.end_condition = ferritecad_document::EndCondition::Blind {
+            distance: Expression::new(source, 13.).expect("finite"),
+        };
         document
             .write(|writer| {
                 let parameter = ObjectId::new();
@@ -807,26 +814,68 @@ mod tests {
                     &ObjectPayload::Parameter(ferritecad_document::Parameter {
                         name: "height".into(),
                         dimension: ferritecad_types::Dimension::Length,
-                        expression: Expression::constant(13.0)?,
+                        expression: Expression::constant(13.)?,
                     }),
                 )?;
-                writer.add_dependency(Dependency {
-                    dependent: request.changes[0].object(),
-                    dependency: parameter,
-                    role: DependencyRole::Parameter,
-                })?;
+                writer.put_object(
+                    id,
+                    feature.parent,
+                    feature.ordinal,
+                    feature.name.as_deref(),
+                    &feature.payload,
+                )?;
+                if with_row {
+                    writer.add_dependency(Dependency {
+                        dependent: id,
+                        dependency: parameter,
+                        role: DependencyRole::Parameter,
+                    })?;
+                }
                 Ok(())
             })
             .expect("parameter fixture");
         document.close().expect("close");
+        (root, request)
+    }
+
+    #[test]
+    fn inconsistent_parameter_rows_refuse_open_before_geometry() {
+        for (text, edge, diagnostic) in [("13", true, "unexpected"), ("height", false, "missing")] {
+            let (root, request) = height_parameter_fixture(text, edge);
+            let before = std::fs::read(&request.source).expect("source");
+            let files = entries(root.path());
+            let mut kernel = MockKernel::new();
+            let error = edit_copy(&request, &mut kernel, &OperationContext::default())
+                .expect_err("structural refusal");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+            assert!(error.to_string().contains(diagnostic), "{error}");
+            assert_eq!(kernel.extrude_count(), 0);
+            assert_eq!(kernel.live_shape_count(), 0);
+            assert_eq!(std::fs::read(&request.source).expect("source"), before);
+            assert_eq!(entries(root.path()), files);
+        }
+    }
+
+    #[test]
+    fn a_literal_form_edit_preserves_a_valid_parameter_reference() {
+        let (root, mut request) = height_parameter_fixture("height", true);
         request.expected = read_extrude_source(&request.source)
-            .expect("version")
+            .expect("valid document")
             .version;
-        refused(
-            &request,
-            &OperationContext::default(),
-            ferritecad_types::ErrorKind::Unsupported,
+        let before = std::fs::read(&request.source).expect("source");
+        let files = entries(root.path());
+        let mut kernel = MockKernel::new();
+        let error = edit_copy(&request, &mut kernel, &OperationContext::default())
+            .expect_err("expression must be edited explicitly");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .contains("this value is an expression; send a text `expression` through `edit`")
         );
+        assert_eq!(kernel.live_shape_count(), 0);
+        assert_eq!(std::fs::read(&request.source).expect("source"), before);
+        assert_eq!(entries(root.path()), files);
     }
 
     #[test]

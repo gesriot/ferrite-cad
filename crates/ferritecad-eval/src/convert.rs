@@ -190,10 +190,12 @@ pub fn revolve_request(
         }
     };
     let turn = match &feature.extent {
-        RevolveExtent::FullTurn => ferritecad_kernel::RevolveTurn::Full,
-        RevolveExtent::Partial { angle } => ferritecad_kernel::RevolveTurn::Partial(
-            ferritecad_kernel::PartialTurn::new(angle.value())?,
-        ),
+        extent if extent.is_full_turn() => ferritecad_kernel::RevolveTurn::Full,
+        RevolveExtent::Partial { angle } | RevolveExtent::ByAngle { angle } => {
+            ferritecad_kernel::RevolveTurn::Partial(ferritecad_kernel::PartialTurn::new(
+                angle.value(),
+            )?)
+        }
         other => {
             return Err(CadError::unsupported(format!(
                 "unknown revolve extent {other:?}"

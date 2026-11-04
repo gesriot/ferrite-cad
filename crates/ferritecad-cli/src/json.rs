@@ -110,6 +110,7 @@ pub struct Inspection {
     content_version: ContentHash,
     display_units: DisplayUnits,
     distance_unit: &'static str,
+    parameters: Vec<serde_json::Value>,
     expression_slots: Vec<Slot>,
     features: Vec<Feature>,
     bodies: Vec<Body>,
@@ -206,12 +207,14 @@ impl RevolveDiscovery {
                 _ => "unknown",
             },
             extent: match r.extent {
-                ferritecad_document::RevolveExtent::FullTurn => "full_turn",
-                ferritecad_document::RevolveExtent::Partial { .. } => "partial_turn",
+                ref extent if extent.is_full_turn() => "full_turn",
+                ferritecad_document::RevolveExtent::Partial { .. }
+                | ferritecad_document::RevolveExtent::ByAngle { .. } => "partial_turn",
                 _ => "unknown",
             },
             angle_deg: match r.extent {
-                ferritecad_document::RevolveExtent::Partial { angle } => {
+                ferritecad_document::RevolveExtent::Partial { angle }
+                | ferritecad_document::RevolveExtent::ByAngle { angle } => {
                     Some(ferritecad_types::display_degrees(angle.value()))
                 }
                 _ => None,
@@ -527,7 +530,29 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             }))
         })
         .collect();
+    let edges = document.dependencies()?;
+    let parameters = source
+        .objects
+        .iter()
+        .filter_map(|o| {
+            let ferritecad_document::ObjectPayload::Parameter(p) = &o.payload else {
+                return None;
+            };
+            let dependents: Vec<_> = edges
+                .iter()
+                .filter(|e| {
+                    e.dependency == o.id && e.role == ferritecad_document::DependencyRole::Parameter
+                })
+                .map(|e| e.dependent)
+                .collect();
+            Some(serde_json::json!({
+                "object":o.id, "name":p.name, "dimension":p.dimension, "source":p.expression.source,
+                "value":p.expression.value(), "dependents":dependents
+            }))
+        })
+        .collect();
     let result = Inspection {
+        parameters,
         rebuild,
         rebuild_error,
         document_id: source.version.document_id,
