@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/ferritecad-bench",
     "crates/ferritecad-app",
+    "crates/ferritecad-platform",
     "crates/ferritecad-types",
     "crates/ferritecad-document",
     "crates/ferritecad-eval",
@@ -31,6 +32,7 @@ repository = "https://github.com/ferrite-cad/ferrite-cad"
 authors = ["FerriteCAD contributors"]
 
 [workspace.dependencies]
+ferritecad-platform = { path = "crates/ferritecad-platform", version = "0.0.1" }
 ferritecad-types = { path = "crates/ferritecad-types", version = "0.0.1" }
 ferritecad-document = { path = "crates/ferritecad-document", version = "0.0.1" }
 ferritecad-eval = { path = "crates/ferritecad-eval", version = "0.0.1" }

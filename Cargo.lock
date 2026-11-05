@@ -702,6 +702,7 @@ dependencies = [
  "ferritecad-jobs",
  "ferritecad-kernel",
  "ferritecad-occt",
+ "ferritecad-platform",
  "ferritecad-scene",
  "ferritecad-sketch-solver",
  "ferritecad-topology",
@@ -867,6 +868,10 @@ dependencies = [
  "ferritecad-types",
  "tempfile",
 ]
+
+[[package]]
+name = "ferritecad-platform"
+version = "0.0.1"
 
 [[package]]
 name = "ferritecad-scene"
