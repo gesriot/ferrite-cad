@@ -266,6 +266,8 @@ where
                             candidate_scene = Some(scene.clone());
                             pending = Some(address);
                         }
+                        // Delivery may immediately inspect or release the snapshot's other leases.
+                        drop(target);
                         reply.send(result);
                     }
                     Command::Finish(address, accept, acknowledge) => {

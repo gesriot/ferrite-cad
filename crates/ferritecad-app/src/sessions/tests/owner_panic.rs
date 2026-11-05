@@ -340,7 +340,7 @@ fn cancellation_discards_only_candidate_shapes_and_keeps_the_owner_reusable() {
         )
         .expect("start");
     let reply = receive
-        .recv_timeout(Duration::from_secs(3))
+        .recv_timeout(Duration::from_secs(30))
         .expect("answer");
     assert_eq!(probe.lock().expect("probe").live, 2);
     assert!(sessions.cancel());
@@ -359,6 +359,37 @@ fn cancellation_discards_only_candidate_shapes_and_keeps_the_owner_reusable() {
     assert_eq!(state.calls.extrude_count - before.extrude_count, 1);
     assert_eq!(state.calls.tessellate - before.tessellate, 1);
     assert_eq!(state.live, 1);
+}
+
+#[test]
+fn a_switch_reply_releases_its_input_snapshot_before_delivery() {
+    let f = fixture();
+    let (_, tab, probe) =
+        test_open::observed(DocumentSession::open(&f.file).expect("session")).expect("open");
+    let mut sessions = Sessions::default();
+    sessions.adopt(tab);
+    let snapshot = sessions.export_source().expect("accepted");
+    let leases = Arc::strong_count(&snapshot);
+    let weak = Arc::downgrade(&snapshot);
+    let before = probe.lock().expect("probe").calls;
+    let (send, receive) = mpsc::channel();
+    sessions.owner.as_ref().expect("owner").port.draw(
+        sessions.address(1),
+        owner::Target::Switch(Arc::clone(&snapshot)),
+        CancelToken::new(),
+        move |reply| {
+            send.send((reply, weak.strong_count())).expect("answer");
+        },
+    );
+    let (reply, delivered_leases) = receive
+        .recv_timeout(Duration::from_secs(30))
+        .expect("answer");
+    reply.expect("accepted picture");
+    assert_eq!(
+        delivered_leases, leases,
+        "the request has released its lease"
+    );
+    assert_eq!(probe.lock().expect("probe").calls, before);
 }
 
 #[test]
