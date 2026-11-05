@@ -76,13 +76,13 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
                 let mut session = if operation.starts_with("apply_") || operation == "undo" {
                     let session =
                         DocumentSession::open_in(root, &case.path, HistoryLimits::default())?;
-                    session.current().load_scene(
-                        &mut kernel,
-                        |k, bytes| k.import_step(bytes),
-                        &params,
+                    Some(ferritecad_jobs::LiveDocument::open(
+                        session,
+                        OcctKernel::new()?,
+                        read_step as Reader,
+                        params,
                         &context,
-                    )?;
-                    Some(session)
+                    )?)
                 } else {
                     None
                 };
@@ -91,7 +91,6 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
                     let step = apply(
                         s,
                         case,
-                        &mut kernel,
                         &context,
                         if case.extrude.is_some() {
                             "apply_height"
@@ -99,7 +98,7 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
                             "apply_angle"
                         },
                     )?;
-                    s.commit_step(step)?;
+                    step.commit_step()?;
                 }
                 let stl = root.join("output.stl");
                 let start = Instant::now();
@@ -124,16 +123,9 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
                     }
                     "undo" => {
                         let s = session.as_mut().expect("undo session");
-                        let target = s.begin_undo().expect("one accepted step");
-                        let scene = ferritecad_scene::snapshot_of(
-                            target.path(),
-                            &mut kernel,
-                            |k, bytes| k.import_step(bytes),
-                            &params,
-                            &context,
-                        )?;
-                        s.commit_move(target)?;
-                        std::hint::black_box(scene);
+                        let pending = s.undo(&context)?;
+                        std::hint::black_box(pending.scene());
+                        pending.commit_step()?;
                     }
                     "export_stl" => {
                         let result = ferritecad_jobs::export_document_as_stl(
@@ -151,12 +143,9 @@ pub fn run(root: &Path, runs: usize, smoke: bool) -> Result<Vec<Measurement>> {
                     }
                     operation => {
                         let s = session.as_mut().expect("apply session");
-                        let mut step = apply(s, case, &mut kernel, &context, operation)?;
-                        let scene = step
-                            .take_scene()
-                            .ok_or_else(|| CadError::input("Apply returned no scene"))?;
-                        s.commit_step(step)?;
-                        std::hint::black_box(scene);
+                        let step = apply(s, case, &context, operation)?;
+                        std::hint::black_box(step.scene());
+                        step.commit_step()?;
                     }
                 }
                 samples.push(start.elapsed().as_secs_f64() * 1000.0);
@@ -193,31 +182,28 @@ fn ensure_built(built: ferritecad_eval::RebuildResult, kernel: &mut OcctKernel) 
         )))
     }
 }
-fn apply(
-    session: &mut DocumentSession,
+type Reader = fn(&mut OcctKernel, &[u8]) -> Result<ferritecad_exchange::Import>;
+type Live = ferritecad_jobs::LiveDocument<OcctKernel, Reader>;
+
+fn read_step(kernel: &mut OcctKernel, bytes: &[u8]) -> Result<ferritecad_exchange::Import> {
+    kernel.import_step(bytes)
+}
+
+fn apply<'a>(
+    session: &'a mut Live,
     case: &corpus::Case,
-    kernel: &mut OcctKernel,
     context: &OperationContext,
     operation: &str,
-) -> Result<ferritecad_jobs::ProducedStep> {
-    let expected = session.current().version();
-    let ticket = session.begin_step();
+) -> Result<ferritecad_jobs::PendingRevision<'a, OcctKernel, Reader>> {
+    let expected = session.session().current().version();
     if let Some((_, changes)) = case.additions.iter().find(|(name, _)| *name == operation) {
-        return ticket.edit(
-            changes.clone(),
-            expected,
-            kernel,
-            |k, bytes| k.import_step(bytes),
-            context,
-        );
+        return session.apply(expected, changes.clone(), context);
     }
     if operation == "apply_vertex" {
         let (id, sketch, vertices) = case.vertex.as_ref().expect("vertex fixture");
-        return ticket.edit(
-            ferritecad_document::move_sketch_vertices(*id, sketch, vertices)?,
+        return session.apply(
             expected,
-            kernel,
-            |k, bytes| k.import_step(bytes),
+            ferritecad_document::move_sketch_vertices(*id, sketch, vertices)?,
             context,
         );
     }
@@ -239,13 +225,11 @@ fn apply(
         ),
         _ => return Err(CadError::input("unknown benchmark operation")),
     };
-    ticket.edit(
+    session.apply(
+        expected,
         vec![ferritecad_document::EditChange::constant(
             object, slot, value,
         )?],
-        expected,
-        kernel,
-        |k, bytes| k.import_step(bytes),
         context,
     )
 }

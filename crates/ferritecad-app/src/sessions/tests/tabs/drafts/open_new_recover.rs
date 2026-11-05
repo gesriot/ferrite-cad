@@ -42,7 +42,7 @@ impl Window {
             HistoryLimits::default(),
         )?;
         let scene = self.picture(session.current().path())?;
-        Ok((scene, session.into()))
+        Ok((scene, session))
     }
 
     /// The window's `Loaded` handler and `App::show` without the device: the
@@ -243,37 +243,24 @@ pub(super) fn orphan(
     private: &Path,
     millimetres: f64,
 ) -> RecordId {
-    let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
+    let session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
         .expect("session");
     let feature = ferritecad_fixtures::expression_slot(
         &crate::sketch_facts::read(session.current().path()).expect("reading"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object;
-    let step = {
-        let ticket = session.begin_step();
-        let expected = ticket.source().version();
-        ticket.edit(
-            vec![
-                ferritecad_document::EditChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                    millimetres,
-                )
-                .expect("test value"),
-            ],
-            expected,
-            &mut MockKernel::new(),
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP imports in this model",
-                ))
-            },
-            &OperationContext::default(),
-        )
-    }
-    .expect("edit");
-    session.commit_step(step).expect("accepted");
+    let session = test_open::edit(
+        session,
+        vec![
+            ferritecad_document::EditChange::constant(
+                feature,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                millimetres,
+            )
+            .expect("test value"),
+        ],
+    );
     let mut record = store.create_record().expect("record");
     record
         .publish(1, &session.current(), &session.recovery_name())

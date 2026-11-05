@@ -28,6 +28,10 @@ pub struct LiveEvaluator<K: GeometryKernel, R> {
     candidate: Option<BodyMeshes>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the edit transaction borrows the kernel separately from the evaluator state"
+)]
 fn evaluate<K: GeometryKernel>(
     document: &Document,
     model: &mut LiveModel,
@@ -39,7 +43,9 @@ fn evaluate<K: GeometryKernel>(
     baseline: Option<&ferritecad_scene::RebuildFacts>,
 ) -> Result<(LoadedScene, BodyMeshes)> {
     let baseline = baseline.map(|facts| &facts.unbuilt);
-    let built = model.prepare(document, kernel, context, baseline)?;
+    let built = model
+        .prepare(document, kernel, context, baseline)
+        .map_err(|error| crate::edit::describe_rebuild_refusal(document, error))?;
     match snapshot_from_revision(
         document, built, kernel, read_step, params, context, accepted,
     ) {
@@ -83,38 +89,41 @@ where
         changes: Vec<EditChange>,
         context: &OperationContext,
     ) -> Result<ProducedStep> {
+        if self.candidate.is_some() {
+            return Err(CadError::input(
+                "finish the pending revision before preparing another",
+            ));
+        }
         ticket.check_form_version(expected)?;
         context.check_cancelled()?;
-        let baseline = ticket
-            .source()
-            .rebuild_facts()
-            .ok_or_else(|| CadError::input("load the session picture before editing its model"))?
-            .clone();
         let mut meshes = None;
-        let mut check = |document: &Document, kernel: &mut K, scoped: &OperationContext| {
-            let picture = evaluate(
-                document,
-                &mut self.model,
-                kernel,
-                &mut self.read_step,
-                &self.params,
-                scoped,
-                &self.accepted,
-                Some(&baseline),
-            )?;
-            meshes = Some(picture.1);
-            Ok(picture.0)
-        };
-        let mut run = crate::edit::EditRun {
-            baseline: Some(&baseline),
-            observe: None,
-            evaluate: Some(&mut check),
-            scene: None,
-        };
-        let step = ticket.run(|source, _, destination| {
-            crate::edit::edit_copy_with(
+        let mut scene = None;
+        let step = ticket.run_from_snapshot(|source, destination| {
+            let baseline = source.rebuild_facts().ok_or_else(|| {
+                CadError::input("load the session picture before editing its model")
+            })?;
+            let mut check = |document: &Document, kernel: &mut K, scoped: &OperationContext| {
+                let picture = evaluate(
+                    document,
+                    &mut self.model,
+                    kernel,
+                    &mut self.read_step,
+                    &self.params,
+                    scoped,
+                    &self.accepted,
+                    Some(baseline),
+                )?;
+                meshes = Some(picture.1);
+                Ok(picture.0)
+            };
+            let mut run = crate::edit::EditRun {
+                baseline: Some(baseline),
+                evaluate: Some(&mut check),
+                scene: None,
+            };
+            let result = crate::edit::edit_copy_with(
                 &EditRequest {
-                    source: source.to_owned(),
+                    source: source.path().to_owned(),
                     expected,
                     changes,
                     destination: destination.to_owned(),
@@ -122,10 +131,10 @@ where
                 &mut self.kernel,
                 context,
                 &mut run,
-            )
-            .map(|_| ())
+            );
+            scene = run.scene.take();
+            result.map(|_| ())
         });
-        let scene = run.scene.take();
         let mut step = step.inspect_err(|_| self.discard())?;
         let scene = scene.expect("prepared candidate scene");
         self.stage(step.snapshot(), &scene, meshes.expect("prepared meshes"))?;

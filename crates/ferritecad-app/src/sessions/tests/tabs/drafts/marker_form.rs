@@ -240,33 +240,20 @@ fn a_rule_form_held_on_another_version_loses_its_markers_and_keeps_its_rows_sele
     let hidden = w.tabs.hidden_sessions_mut(a).expect("A");
     let (tx, rx) = mpsc::channel();
     let generation = hidden
-        .begin_apply(|ticket, _, _| {
-            std::thread::spawn(move || {
-                tx.send({
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        vec![
-                            ferritecad_document::EditChange::constant(
-                                feature,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                20.0,
-                            )
-                            .expect("test value"),
-                        ],
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                })
-                .expect("edit");
-            })
-        })
+        .apply(
+            hidden.export_source().expect("open").version(),
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    20.0,
+                )
+                .expect("test value"),
+            ],
+            move |_, reply| {
+                tx.send(reply).expect("deliver");
+            },
+        )
         .expect("started");
     assert!(matches!(
         hidden.finish_apply(generation, wait(&rx)),

@@ -1456,6 +1456,15 @@ impl Renderer {
         self.geometry_bytes
     }
 
+    /// Buffer allocations still owned by keyed prepared scenes on this device.
+    pub fn resident_geometry_buffers(&self) -> usize {
+        self.resident
+            .values()
+            .filter(|entry| entry.strong_count() != 0)
+            .count()
+            * 6
+    }
+
     /// How many times this renderer has put a document's drawings on the
     /// device.
     ///

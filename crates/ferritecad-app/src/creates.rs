@@ -834,21 +834,8 @@ pub(crate) mod tests {
             ferritecad_occt::OcctKernel::new,
             context,
         )?;
-        let scene = ferritecad_scene::snapshot_of(
-            session.current().path(),
-            &mut ferritecad_kernel::mock::MockKernel::new(),
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP in this gate",
-                ))
-            },
-            &ferritecad_kernel::TessellationParams::default(),
-            context,
-        )?;
-        Ok(Candidate {
-            scene,
-            session: session.into(),
-        })
+        let (scene, session, _) = crate::sessions::test_open::observed(session)?;
+        Ok(Candidate { scene, session })
     }
 
     /// Drives one creation the way the event loop does, with the real work

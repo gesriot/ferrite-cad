@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::{
     Document, EditChange, ExpressionSlot, ObjectPayload, SketchGeometry, SketchVertex,
     move_sketch_vertices,
@@ -84,7 +86,8 @@ fn side_vertex_and_radius_edits_use_kernel_validity_in_one_transaction() {
             )
             .expect("baseline");
         let snapshot = std::fs::read(session.current().path()).expect("snapshot");
-        let step = session.begin_step().edit(
+        let step = live_step::prepare(
+            session.begin_step(),
             changes,
             session.current().version(),
             &mut kernel,

@@ -2,6 +2,8 @@
 //! §30M: `list-recovery` and `extract-recovery`, through the library claim the
 //! window recovers from. No kernel: the copies are made by the library here.
 
+#[path = "../../ferritecad-jobs/tests/support/live_step.rs"]
+mod live_step;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -337,7 +339,8 @@ fn dirty_copy_of_a_source(root: &Path, user: &Path, sessions: &Path) -> Dirty {
     let step = {
         let ticket = session.begin_step();
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     feature,

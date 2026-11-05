@@ -36,7 +36,7 @@ impl Window {
                     HistoryLimits::default(),
                 )?;
                 let scene = self.picture(session.current().path())?;
-                Ok((scene, session.into()))
+                Ok((scene, session))
             }
         }
     }

@@ -10,6 +10,8 @@
 #![allow(clippy::panic)]
 #[path = "support/cut_facts.rs"]
 mod cut_facts;
+#[path = "../../ferritecad-jobs/tests/support/live_step.rs"]
+mod live_step;
 #[path = "support/transaction.rs"]
 mod transaction;
 

@@ -257,14 +257,14 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "08b6c1de013f8a0946ab028529956854822033dfba6124e14fec9a86c689e243"
+          "content": "54eae503fee1c4c238e1a828a46b4b73fcc48cf067b83735ac35adc4bdfa3bf6"
         }
       ],
       "name": "shader.wgsl",
       "properties": [
         {
           "name": "ferritecad:sbom:asset-bytes",
-          "value": "19479"
+          "value": "19594"
         },
         {
           "name": "ferritecad:sbom:asset-location",
@@ -8705,7 +8705,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:0c4ed423983fe3b80cdefb1ab091dc5bed8fcf3193ace6ad1d91d92493f6f407"
+        "value": "sbom/native/native-assets-inventory.json@sha256:f18b4232af6412f130e547ecbdac5bbe20e48baa9bc947c400e0c2a0ad97e7db"
       },
       {
         "name": "ferritecad:sbom:merged-from",

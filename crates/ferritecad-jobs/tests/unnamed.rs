@@ -4,6 +4,8 @@
 
 mod support;
 
+#[path = "support/live_step.rs"]
+mod live_step;
 use std::path::{Path, PathBuf};
 
 use ferritecad_document::{Document, DocumentVersion};
@@ -73,7 +75,8 @@ fn apply(session: &mut DocumentSession, feature: ObjectId, millimetres: f64) {
     let step = {
         let ticket = support::viewed(session.begin_step());
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     feature,
@@ -251,7 +254,8 @@ fn edits_undo_and_redo_before_the_first_save_never_make_it_saved() {
     let step = {
         let ticket = support::viewed(session.begin_step());
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     feature,

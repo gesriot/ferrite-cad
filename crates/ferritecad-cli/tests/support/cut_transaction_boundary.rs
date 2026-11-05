@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 use super::*;
 use crate::cut_facts::CutObservation;
+use crate::live_step;
 use ferritecad_document::{EditChange, ExpressionSlot};
 use ferritecad_jobs::DocumentSession;
 use ferritecad_kernel::OperationContext;
@@ -80,7 +81,8 @@ impl Pair {
             if refused.is_empty() { 0 } else { 2 },
         );
         let context = OperationContext::default();
-        let step = self.session.begin_step().edit(
+        let step = live_step::prepare(
+            self.session.begin_step(),
             changes,
             self.session.current().version(),
             &mut self.kernel,

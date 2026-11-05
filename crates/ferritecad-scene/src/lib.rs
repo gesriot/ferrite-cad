@@ -3082,6 +3082,94 @@ mod tests {
         object
     }
 
+    #[test]
+    fn live_import_meshes_keep_the_bound_catalogue_and_check_each_new_record() {
+        let root = tempfile::tempdir().expect("root");
+        let path = root.path().join("import.fcad");
+        let mut kernel = MockKernel::new();
+        let object = document_with_import(&path, &mut kernel);
+        let document = Document::open_read_only(&path).expect("document");
+        let context = OperationContext::default();
+        let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("build");
+        let reads = std::cell::Cell::new(0);
+        let reader = |kernel: &mut MockKernel, bytes: &[u8]| {
+            reads.set(reads.get() + 1);
+            assert_eq!(bytes, SOURCE);
+            Ok(Import::Imported {
+                scene: nested_assembly(kernel),
+                diagnostics: vec![],
+            })
+        };
+        let (first, cached) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &BodyMeshes::default(),
+        )
+        .expect("initial");
+        let (second, _) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &cached,
+        )
+        .expect("reuse");
+        assert_eq!(reads.get(), 1);
+        assert_eq!(first, second);
+        let fine = TessellationParams::new(0.001, 0.1, false).expect("params");
+        let (finer, _) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &fine,
+            &context,
+            &cached,
+        )
+        .expect("different tessellation");
+        assert_eq!(reads.get(), 2);
+        assert_ne!(first.mesh_keys, finer.mesh_keys);
+        assert_eq!(kernel.live_shape_count(), 0);
+        document.close().expect("close");
+        let mut document = Document::open(&path).expect("writable");
+        let mut record = document.object(object).expect("read").expect("import");
+        let ObjectPayload::ImportedStep(step) = &mut record.payload else {
+            panic!("import")
+        };
+        step.scene.definitions[0].name.push_str(" changed");
+        document
+            .write(|writer| {
+                writer.put_imported_step(
+                    record.id,
+                    record.parent,
+                    record.ordinal,
+                    record.name.as_deref(),
+                    step,
+                )
+            })
+            .expect("different stored catalogue");
+        let refusal = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &cached,
+        )
+        .expect_err("cached geometry cannot excuse a mismatch");
+        assert_eq!(refusal.kind(), ferritecad_types::ErrorKind::Input);
+        assert_eq!(reads.get(), 2);
+        assert_eq!(kernel.live_shape_count(), 0);
+        built.release_all(&mut kernel);
+    }
+
     const SOURCE: &[u8] = b"ISO-10303-21; this is what the document stores";
 
     #[test]

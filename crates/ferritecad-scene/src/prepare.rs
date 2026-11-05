@@ -21,6 +21,7 @@
 //! and validity for a particular file format. Every one of those is a property
 //! of the thing being built rather than of the document being read.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -621,6 +622,17 @@ where
                         imported.extend(reopened.scene.shapes());
                         Some(reopened)
                     };
+                    let occurrences = match &fresh {
+                        Some(reopened) => Cow::Borrowed(reopened.occurrences()),
+                        None => Cow::Owned(
+                            stored
+                                .scene
+                                .instances
+                                .iter()
+                                .map(|i| i.occurrence)
+                                .collect(),
+                        ),
+                    };
                     let now = match (&previous, &fresh) {
                         (Some(previous), _) => &previous.diagnostics,
                         (_, Some(fresh)) => &fresh.diagnostics_now,
@@ -650,6 +662,7 @@ where
                         &mut nodes,
                         Reading {
                             source: stored.source,
+                            occurrences: &occurrences,
                             file: file_name_of(stored.source_name.as_deref()),
                             omittable: &omittable,
                             scene: &stored.scene,
@@ -746,6 +759,8 @@ impl StepMesh {
 struct Reading<'a> {
     /// The bytes this reading was verified against.
     source: ImportedSourceId,
+    /// Current stored placement identities, aligned with the bound catalogue.
+    occurrences: &'a [OccurrenceId],
     /// What to call the file it came from. A name to read, never a path to
     /// open: the bytes in the document are the source, and the place they were
     /// read from years ago may hold something else entirely by now.
@@ -924,7 +939,7 @@ fn read_imported<S: LoadSink>(
         // Read out of the stored payload, positionally, and derived from
         // nothing. There is no arm here that falls back to the index, the
         // parent, the name or the key.
-        let identity = NodeIdentity::Occurrence(instance.occurrence);
+        let identity = NodeIdentity::Occurrence(from.occurrences[index]);
         sink.node(&PreparedNode {
             definition,
             parent: instance.parent.map(|parent| base + parent as usize),

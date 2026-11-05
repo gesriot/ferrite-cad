@@ -70,7 +70,7 @@ fn native_face_and_offset_sketches_follow_their_bodies_in_the_window_scene() {
             .path()
             .to_owned();
         let (tx, rx) = mpsc::channel();
-        let worker = spawn_scene(path, CancelToken::new(), move |scene| {
+        let worker = cold_scene(path, CancelToken::new(), move |scene| {
             tx.send(scene).expect("scene");
         });
         let scene = rx

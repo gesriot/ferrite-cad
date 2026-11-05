@@ -19261,33 +19261,20 @@ mod tests {
         )
         .object;
         let generation = sessions
-            .begin_apply(|ticket, _, _| {
-                std::thread::spawn(move || {
-                    tx.send({
-                        let ticket = ticket;
-                        let expected = ticket.source().version();
-                        ticket.edit(
-                            vec![
-                                ferritecad_document::EditChange::constant(
-                                    feature,
-                                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                    25.0,
-                                )
-                                .expect("test value"),
-                            ],
-                            expected,
-                            &mut ferritecad_kernel::mock::MockKernel::new(),
-                            |_, _| {
-                                Err(ferritecad_types::CadError::unsupported(
-                                    "no STEP imports in this model",
-                                ))
-                            },
-                            &OperationContext::default(),
-                        )
-                    })
-                    .expect("deliver");
-                })
-            })
+            .apply(
+                sessions.export_source().expect("open").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        25.0,
+                    )
+                    .expect("test value"),
+                ],
+                move |_, reply| {
+                    tx.send(reply).expect("deliver");
+                },
+            )
             .expect("started");
         let produced = rx.recv().expect("answer");
         assert!(matches!(

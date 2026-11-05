@@ -51,3 +51,7 @@ three offsets for the current scene. The renderer shares buffers by result and t
 parameters while a prepared scene owns them. An imported definition uses the stored source
 hash, its definition key and tessellation parameters. A new revision checks the stored assembly
 against the bound reading and takes placement identities from the current document.
+
+A command panic returns a kernel failure and ends the owner. Queued or later work receives
+the same typed stopped-owner refusal. The accepted file remains available for Save and Save As.
+The tab closes by joining the stopped thread. Reopening creates a new owner explicitly.

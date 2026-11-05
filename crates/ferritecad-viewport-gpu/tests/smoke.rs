@@ -7792,3 +7792,82 @@ fn a_region_with_no_area_clears_and_a_region_that_disagrees_is_refused() {
         "nothing was drawn into a region that agrees with its camera"
     );
 }
+
+#[test]
+fn reused_meshes_use_new_pick_bases_and_match_fresh_uploads() {
+    use ferritecad_types::ContentHash;
+    let mut renderer = renderer_or_skip!();
+    let make = |first: &Mesh| {
+        let mut builder = SnapshotBuilder::new();
+        let a = builder.add_mesh(first).expect("first definition");
+        let b = builder
+            .add_mesh(&two_faces_with_corners())
+            .expect("second definition");
+        builder
+            .place(a, None, &moved(-24., 0., 0.), [0.3, 0.4, 0.5])
+            .expect("place");
+        builder
+            .place(b, None, &moved(24., 0., 0.), [0.3, 0.4, 0.5])
+            .expect("place");
+        Arc::new(builder.build())
+    };
+    let key = Some(ContentHash::of_bytes(b"unchanged second definition"));
+    let first = renderer
+        .prepare_keyed(make(&Mesh::default()), &[None, key])
+        .expect("initial");
+    let snapshot = make(&two_faces_with_corners());
+    assert_ne!(
+        first.snapshot().meshes()[1].pick_bases(),
+        snapshot.meshes()[1].pick_bases()
+    );
+    assert!(
+        renderer
+            .prepare_keyed(Arc::clone(&snapshot), &[key])
+            .is_err()
+    );
+    let uploaded = renderer.geometry_uploads();
+    let reused = renderer
+        .prepare_keyed(
+            Arc::clone(&snapshot),
+            &[Some(ContentHash::of_bytes(b"new first definition")), key],
+        )
+        .expect("reuse");
+    assert_eq!(renderer.geometry_uploads() - uploaded, 1);
+    let reference = renderer
+        .prepare(Arc::clone(&snapshot))
+        .expect("independent upload");
+    let mut camera = Camera::new();
+    camera.resize(192, 192);
+    camera
+        .frame(snapshot.bounds().expect("two definitions"))
+        .expect("camera");
+    let visible = Visibility::new(&snapshot);
+    for (selected, hovered) in [
+        (Marked::Nothing, Hovered::Nothing),
+        (
+            Marked::Face(snapshot.face_of(1, 0).expect("face")),
+            Hovered::Nothing,
+        ),
+        (
+            Marked::Nothing,
+            Hovered::Edge(snapshot.edge_of(1, 0).expect("edge")),
+        ),
+        (
+            Marked::Vertex(snapshot.vertex_of(1, 0).expect("corner")),
+            Hovered::Nothing,
+        ),
+    ] {
+        let actual = renderer
+            .render(&reused, &camera, selected, hovered, &visible)
+            .expect("reuse");
+        let fresh = renderer
+            .render(&reference, &camera, selected, hovered, &visible)
+            .expect("fresh");
+        assert_eq!(actual.colour(), fresh.colour());
+        for y in 0..actual.height() {
+            for x in 0..actual.width() {
+                assert_eq!(actual.hit_at(x, y), fresh.hit_at(x, y));
+            }
+        }
+    }
+}

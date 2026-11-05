@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "../../ferritecad-jobs/tests/support/live_step.rs"]
+mod live_step;
 #[path = "support/names.rs"]
 mod names;
 use ferritecad_document::{
@@ -161,16 +163,15 @@ fn native_every_numeric_slot_preserves_history_and_edge_names() {
                     &context,
                 )
                 .expect("baseline");
-            let step = session
-                .begin_step()
-                .edit(
-                    vec![change],
-                    reading.version,
-                    &mut kernel,
-                    |k, b| k.import_step(b),
-                    &context,
-                )
-                .expect("session transaction");
+            let step = live_step::prepare(
+                session.begin_step(),
+                vec![change],
+                reading.version,
+                &mut kernel,
+                |k, b| k.import_step(b),
+                &context,
+            )
+            .expect("session transaction");
             session.commit_step(step).expect("commit");
 
             let accepted = Document::open_read_only(session.current().path()).expect("accepted");

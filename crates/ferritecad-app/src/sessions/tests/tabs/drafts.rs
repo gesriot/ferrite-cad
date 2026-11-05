@@ -67,54 +67,20 @@ impl Window {
         let Some(request) = self.edits.apply_request() else {
             return false;
         };
-        let drawn = self.drawn;
-        self.accept(move |ticket, cancel, tx| match drawn {
-            Drawn::Native => spawn_apply(
-                request.expected,
-                ticket,
-                request.changes,
-                cancel.clone(),
-                move |v| {
-                    tx.send(v).expect("edit");
-                },
-            ),
-            Drawn::Mock => std::thread::spawn(move || {
-                let edit = {
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        request.changes,
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                };
-                tx.send(edit).expect("edit");
-            }),
-        });
+        self.accept(request);
         true
     }
 
     /// One session step started by a form, accepted with its picture; then, as
     /// the window's `SceneStaged` handler does, the height form ends (the other
     /// forms ended in `present`).
-    fn accept(
-        &mut self,
-        start: impl FnOnce(
-            StepTicket,
-            &CancelToken,
-            mpsc::Sender<Result<ProducedStep>>,
-        ) -> std::thread::JoinHandle<()>,
-    ) {
+    fn accept(&mut self, request: ferritecad_jobs::EditRequest) {
         let (tx, rx) = mpsc::channel();
         let generation = self
             .sessions
-            .begin_apply(|ticket, _, cancel| start(ticket, cancel, tx))
+            .apply(request.expected, request.changes, move |_, reply| {
+                tx.send(reply).expect("edit");
+            })
             .expect("started");
         let Edited::Show(path) = self.sessions.finish_apply(generation, wait(&rx)) else {
             panic!("the edit was not shown: {}", self.sessions.status);
@@ -151,16 +117,7 @@ impl Window {
         self.tell_forms();
         crate::sketch::tests::press(&mut self.creates.sketch, "Apply vertices");
         let request = self.creates.sketch.take_apply_request().expect("asked");
-        let asked = request.clone();
-        self.accept(move |ticket, cancel, tx| {
-            spawn_apply(
-                asked.expected,
-                ticket,
-                asked.changes.clone(),
-                cancel.clone(),
-                move |v| tx.send(v).expect("edit"),
-            )
-        });
+        self.accept(request.clone());
         request
     }
 
@@ -173,16 +130,7 @@ impl Window {
             .sketch
             .take_apply_circle_request()
             .expect("asked");
-        let asked = request.clone();
-        self.accept(move |ticket, cancel, tx| {
-            spawn_apply(
-                asked.expected,
-                ticket,
-                asked.changes.clone(),
-                cancel.clone(),
-                move |v| tx.send(v).expect("edit"),
-            )
-        });
+        self.accept(request.clone());
         request
     }
 
@@ -200,16 +148,7 @@ impl Window {
             .constraints
             .take_apply_request()
             .expect("asked");
-        let asked = request.clone();
-        self.accept(move |ticket, cancel, tx| {
-            spawn_apply(
-                asked.expected,
-                ticket,
-                asked.changes.clone(),
-                cancel.clone(),
-                move |v| tx.send(v).expect("edit"),
-            )
-        });
+        self.accept(request.clone());
         request
     }
 
@@ -1029,33 +968,20 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     let (tx, rx) = mpsc::channel();
     let own = w
         .sessions
-        .begin_apply(|ticket, _, _| {
-            std::thread::spawn(move || {
-                tx.send({
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        vec![
-                            ferritecad_document::EditChange::constant(
-                                feature_b,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                16.0,
-                            )
-                            .expect("test value"),
-                        ],
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                })
-                .expect("edit");
-            })
-        })
+        .apply(
+            w.sessions.export_source().expect("open").version(),
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature_b,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    16.0,
+                )
+                .expect("test value"),
+            ],
+            move |_, reply| {
+                tx.send(reply).expect("deliver");
+            },
+        )
         .expect("B's Apply");
     let answer = wait(&rx);
     let foreign = Address {
@@ -1195,33 +1121,20 @@ fn a_draft_made_on_another_version_comes_back_held_and_is_never_applied() {
     let hidden = w.tabs.hidden_sessions_mut(a).expect("A");
     let (tx, rx) = mpsc::channel();
     let generation = hidden
-        .begin_apply(|ticket, _, _| {
-            std::thread::spawn(move || {
-                tx.send({
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        vec![
-                            ferritecad_document::EditChange::constant(
-                                feature,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                20.0,
-                            )
-                            .expect("test value"),
-                        ],
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                })
-                .expect("edit");
-            })
-        })
+        .apply(
+            hidden.export_source().expect("open").version(),
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    20.0,
+                )
+                .expect("test value"),
+            ],
+            move |_, reply| {
+                tx.send(reply).expect("deliver");
+            },
+        )
         .expect("started");
     assert!(matches!(
         hidden.finish_apply(generation, wait(&rx)),
@@ -1558,13 +1471,9 @@ fn the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody() {
     );
 }
 
-/// Without a kernel, showing a tab is refused at its picture: both tabs' drafts
-/// stay exactly where they were (executes only in a build with no kernel).
+/// A failed switch upload preserves both drafts and permits a later switch.
 #[test]
-fn stub_a_refused_switch_keeps_both_drafts() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_switch_upload_keeps_both_drafts() {
     let user = tempfile::tempdir().expect("user");
     let a_file = user.path().join("a.fcad");
     let b_file = user.path().join("b.fcad");
@@ -1579,18 +1488,29 @@ fn stub_a_refused_switch_keeps_both_drafts() {
     w.open(&b_file);
     w.open_height_form();
     w.edits.type_height(feature, "b");
-    w.drawn = Drawn::Native;
+    let probe = test_open::probe(w.tabs.hidden_sessions(a).expect("hidden"));
+    let (shapes, calls) = {
+        let probe = probe.lock().expect("probe");
+        (probe.live, probe.calls)
+    };
     let (generation, rx) = w.begin_switch(a, None);
-    let refused = wait(&rx).map(|_| ()).expect_err("no kernel");
+    let picture = wait(&rx).expect("accepted picture");
+    let refused = CadError::rendering("requested upload refusal");
     let (outcome, _) = w
-        .deliver_switch(generation, Err(refused), Ok(()))
+        .deliver_switch(generation, Ok(picture), Err(refused))
         .expect("awaited");
     assert!(outcome.is_err());
     assert_eq!(w.edits.typed(), Some((Some(feature), "b")));
     assert!(w.tabs.has_draft(a) && !w.sessions.busy());
-    w.drawn = Drawn::Mock;
+    assert_eq!(probe.lock().expect("probe").live, shapes);
     w.round(a);
     assert_eq!(w.edits.typed(), Some((Some(feature), "a")));
+    let final_state = probe.lock().expect("probe");
+    assert_eq!(final_state.live, shapes);
+    assert_eq!(
+        final_state.calls, calls,
+        "switching must not enter the kernel"
+    );
 }
 
 /// Open CASCADE without the solver: height drafts of two plates are kept through

@@ -71,7 +71,7 @@ pub(in crate::sessions::tests::tabs) fn open_facts(w: &mut Window, path: &Path) 
     w.present(
         &path,
         facts_scene(&path),
-        Bind::Open(Box::new(session.into())),
+        Bind::Open(Box::new(session)),
         Ok(()),
     )
     .expect("facts accepted");
@@ -195,7 +195,7 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
         w.present(
             &staged,
             loaded,
-            Bind::Open(Box::new(candidate.into())),
+            Bind::Open(Box::new(candidate)),
             Err(CadError::unsupported("device refusal"))
         )
         .is_err()
@@ -426,15 +426,8 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     assert_eq!(r.cut_id(), early);
     assert_eq!(r.expected, source(&w).version);
     let request = r.clone();
-    w.accept(move |ticket, cancel, tx| {
-        spawn_apply(
-            request.expected,
-            ticket,
-            request.changes,
-            cancel.clone(),
-            move |v| tx.send(v).expect("edit"),
-        )
-    });
+    w.accept(request);
+
     let accepted = w.sessions.export_path().expect("accepted");
     assert_eq!(
         source(&w).version,
@@ -531,21 +524,17 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     w.checkpoint(CheckpointAction::Create("three cuts".to_owned()));
     let checkpoint = w.listed()[0].id;
     let reading = source(&w).clone();
-    let expected = reading.version;
-    w.accept(move |ticket, cancel, tx| {
-        crate::sessions::spawn_apply(
-            expected,
-            ticket,
-            (crate::feature_facts::CircularCut {
-                center_mm: [20., 20.],
-                radius_mm: 1.,
-                extent: crate::feature_facts::CutExtent::ThroughAll,
-            })
-            .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
-            .expect("changes"),
-            cancel.clone(),
-            move |v| tx.send(v).expect("Add"),
-        )
+    w.accept(ferritecad_jobs::EditRequest {
+        source: w.sessions.export_path().expect("current"),
+        expected: reading.version,
+        destination: PathBuf::new(),
+        changes: (crate::feature_facts::CircularCut {
+            center_mm: [20., 20.],
+            radius_mm: 1.,
+            extent: crate::feature_facts::CutExtent::ThroughAll,
+        })
+        .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+        .expect("changes"),
     });
     let count = |w: &Window| {
         source(w)

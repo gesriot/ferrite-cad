@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use super::*;
+use crate::live_step;
 use ferritecad_document::ExpressionSlot;
 
 #[test]
@@ -199,16 +200,15 @@ fn native_depth_and_combined_transactions_name_floors_and_allow_unconsumed_loss(
                 &context,
             )
             .expect("baseline");
-        let step = session
-            .begin_step()
-            .edit(
-                changes,
-                reading.version,
-                &mut kernel,
-                |k, b| k.import_step(b),
-                &context,
-            )
-            .expect("session edit");
+        let step = live_step::prepare(
+            session.begin_step(),
+            changes,
+            reading.version,
+            &mut kernel,
+            |k, b| k.import_step(b),
+            &context,
+        )
+        .expect("session edit");
         session.commit_step(step).expect("commit");
         let reopened =
             Document::open_read_only(session.current().path()).expect("session snapshot");
@@ -223,16 +223,15 @@ fn native_depth_and_combined_transactions_name_floors_and_allow_unconsumed_loss(
         assert_eq!(session_floor_names, floor_names);
         let losing = EditChange::constant(first.feature, ExpressionSlot::ExtrudeDistance, height)
             .expect("through");
-        let step = session
-            .begin_step()
-            .edit(
-                vec![losing],
-                session.current().version(),
-                &mut kernel,
-                |k, b| k.import_step(b),
-                &context,
-            )
-            .expect("unconsumed floor loss is accepted");
+        let step = live_step::prepare(
+            session.begin_step(),
+            vec![losing],
+            session.current().version(),
+            &mut kernel,
+            |k, b| k.import_step(b),
+            &context,
+        )
+        .expect("unconsumed floor loss is accepted");
         session.commit_step(step).expect("commit through cut");
         assert!(
             crate::names::floor_names(

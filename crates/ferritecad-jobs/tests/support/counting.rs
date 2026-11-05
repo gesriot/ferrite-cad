@@ -349,6 +349,23 @@ pub enum Stop {
     Mesh,
 }
 
+impl Occupancy for mock::MockKernel {
+    fn population(&self) -> usize {
+        self.live_shape_count()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Probe {
+    pub calls: Calls,
+    pub live: usize,
+    pub closed: bool,
+    pub fail: Option<(&'static str, usize)>,
+    pub panic: Option<(&'static str, usize)>,
+}
+
+pub type SharedProbe = std::sync::Arc<std::sync::Mutex<Probe>>;
+
 pub trait Occupancy {
     fn population(&self) -> usize;
 }
@@ -368,6 +385,7 @@ pub type CountingMock = Counting<TopologyMock>;
 #[derive(Debug)]
 pub struct Counting<K> {
     pub inner: K,
+    pub probe: Option<SharedProbe>,
     pub calls: Cell<Calls>,
     pub stop: Option<Stop>,
     pub remaining: Rc<Cell<usize>>,
@@ -398,6 +416,7 @@ impl<K> Counting<K> {
     pub fn wrap(inner: K) -> Self {
         Self {
             inner,
+            probe: None,
             calls: Cell::default(),
             stop: None,
             remaining: Rc::default(),
@@ -407,10 +426,61 @@ impl<K> Counting<K> {
         }
     }
 
+    // A failed assertion may poison the probe. Cleanup still records every release.
     fn count(&self, f: impl FnOnce(&mut Calls)) {
         let mut counts = self.calls.get();
         f(&mut counts);
         self.calls.set(counts);
+        if let Some(probe) = &self.probe {
+            probe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .calls = counts;
+        }
+    }
+}
+
+impl<K: Occupancy> Counting<K> {
+    fn published(&self) {
+        if let Some(probe) = &self.probe {
+            probe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live = self.inner.population();
+        }
+    }
+
+    fn fault(&self, name: &str, count: usize) -> Result<()> {
+        let (panic, fail) = self
+            .probe
+            .as_ref()
+            .map(|probe| {
+                let probe = probe
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    probe.panic == Some((name, count)),
+                    probe.fail == Some((name, count)),
+                )
+            })
+            .unwrap_or_default();
+        assert!(!panic, "requested kernel panic");
+        if fail {
+            return Err(CadError::kernel("requested kernel failure"));
+        }
+        Ok(())
+    }
+}
+
+impl<K> Drop for Counting<K> {
+    fn drop(&mut self) {
+        if let Some(probe) = &self.probe {
+            let mut probe = probe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            probe.live = 0;
+            probe.closed = true;
+        }
     }
 }
 
@@ -418,7 +488,10 @@ macro_rules! forward {
     ($count:ident, $name:ident($($arg:ident: $ty:ty),*) -> $out:ty) => {
         fn $name(&mut self,$($arg:$ty),*) -> $out {
             self.count(|c| c.$count += 1);
-            self.inner.$name($($arg),*)
+            self.fault(stringify!($count), self.calls.get().$count)?;
+            let result = self.inner.$name($($arg),*);
+            self.published();
+            result
         }
     };
 }
@@ -438,7 +511,10 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
                 .with_progress(ProgressSink::new(move |_| cancel.cancel()));
             return self.inner.extrude(r, &inner);
         }
-        self.inner.extrude(r, ctx)
+        self.fault("extrude_count", self.calls.get().extrude_count)?;
+        let result = self.inner.extrude(r, ctx);
+        self.published();
+        result
     }
     fn tessellate(
         &mut self,
@@ -447,6 +523,7 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
         ctx: &OperationContext,
     ) -> Result<Mesh> {
         self.count(|c| c.tessellate += 1);
+        self.fault("tessellate", self.calls.get().tessellate)?;
         let mesh = self.inner.tessellate(s, p, ctx)?;
         if self.stop == Some(Stop::Mesh) {
             // The mesher polls the token but does not emit intermediate progress.
@@ -468,7 +545,10 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
         if self.stop == Some(Stop::BetweenNodes) {
             self.cancel = Some(ctx.cancel().clone());
         }
-        self.inner.boolean(r, ctx)
+        self.fault("boolean", self.calls.get().boolean)?;
+        let result = self.inner.boolean(r, ctx);
+        self.published();
+        result
     }
     fn revolve(
         &mut self,
@@ -477,7 +557,10 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
     ) -> Result<OperationResult> {
         self.revolve_count += 1;
         self.count(|c| c.revolve_count += 1);
-        self.inner.revolve(request, context)
+        self.fault("revolve_count", self.calls.get().revolve_count)?;
+        let result = self.inner.revolve(request, context);
+        self.published();
+        result
     }
     forward!(queries, support_plane(faces: &[SubShapeHandle], context: &OperationContext)
         -> Result<FacePlane>);
@@ -501,5 +584,6 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
         self.count(|c| c.released += 1);
         self.inner.release(shape);
         self.remaining.set(self.inner.population());
+        self.published();
     }
 }
