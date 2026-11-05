@@ -34,7 +34,9 @@
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use ferritecad_jobs::{DocumentSession, NewDocument, PlateSize};
+#[cfg(test)]
+use ferritecad_jobs::DocumentSession;
+use ferritecad_jobs::{NewDocument, PlateSize};
 use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_scene::LoadedScene;
 use ferritecad_types::{ErrorKind, Result};
@@ -56,7 +58,7 @@ const CREATE_CANCELLED: &str = "New document cancelled; nothing changed";
 /// accepts together, or drops together (its private directory with it).
 pub(crate) struct Candidate {
     pub(crate) scene: LoadedScene,
-    pub(crate) session: DocumentSession,
+    pub(crate) session: crate::sessions::OpenTab,
 }
 
 impl std::fmt::Debug for Candidate {
@@ -832,17 +834,7 @@ pub(crate) mod tests {
             ferritecad_occt::OcctKernel::new,
             context,
         )?;
-        let scene = ferritecad_scene::snapshot_of(
-            session.current().path(),
-            &mut ferritecad_kernel::mock::MockKernel::new(),
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP in this gate",
-                ))
-            },
-            &ferritecad_kernel::TessellationParams::default(),
-            context,
-        )?;
+        let (scene, session, _) = crate::sessions::test_open::observed(session)?;
         Ok(Candidate { scene, session })
     }
 

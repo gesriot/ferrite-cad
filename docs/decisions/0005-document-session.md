@@ -43,12 +43,10 @@ directory. The directory is created by the session, removed when the session is
 dropped, and its path is never shown (not in the title, a dialog, stdout or a
 status line) and never counted as a save.
 
-**One Apply is one reused copy operation.** Apply height runs
-`edit_extrude_copy` with source = the current snapshot, expected version = the
-current snapshot's version, destination = the next private file: the same
-prepare, cold rebuild, strict reference check, version re-check and atomic
-publication the CLI's `edit-extrude` uses, and nothing else. The window changes
-which path it reads and writes, not what the operation is.
+**Apply uses the shared copy transaction.** Its source is the current snapshot and its
+destination is the next private version. The tab's evaluator prepares the candidate while
+retaining unchanged results under [ADR 0010](0010-live-evaluated-model.md). Strict reference
+checks, version re-checking and atomic file publication belong to the library transaction.
 
 **Accepted means shown.** A step becomes current only at the moment its scene has
 been prepared for display, in one statement with the scene replacement. A failed,

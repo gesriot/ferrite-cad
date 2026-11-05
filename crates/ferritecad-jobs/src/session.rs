@@ -687,36 +687,6 @@ impl StepTicket {
         &self.destination
     }
 
-    pub fn edit<K: GeometryKernel + ?Sized>(
-        self,
-        changes: Vec<ferritecad_document::EditChange>,
-        expected: DocumentVersion,
-        kernel: &mut K,
-        read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-    ) -> Result<ProducedStep> {
-        self.check_form_version(expected)?;
-        self.run_edit(
-            kernel,
-            read_step,
-            context,
-            |source, expected, destination, kernel, run| {
-                crate::edit::edit_copy_with(
-                    &crate::EditRequest {
-                        source: source.to_path_buf(),
-                        expected,
-                        changes,
-                        destination: destination.to_path_buf(),
-                    },
-                    kernel,
-                    context,
-                    run,
-                )
-                .map(|_| ())
-            },
-        )
-    }
-
     /// §30N: adds a checkpoint named `name` of the current model. The model is
     /// unchanged, so the step [keeps the picture](ProducedStep::keeps_picture);
     /// the catalog is document content, so the step is dirty until saved, and
@@ -769,66 +739,13 @@ impl StepTicket {
         })
     }
 
-    fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
+    pub(crate) fn check_form_version(&self, expected: DocumentVersion) -> Result<()> {
         if expected != self.source.version() {
             return Err(CadError::input(
                 "the document changed after this form was opened; open it again to edit the current version",
             ));
         }
         Ok(())
-    }
-
-    fn run_edit<K: GeometryKernel + ?Sized>(
-        self,
-        kernel: &mut K,
-        mut read_step: impl FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import>,
-        context: &OperationContext,
-        produce: impl FnOnce(
-            &Path,
-            DocumentVersion,
-            &Path,
-            &mut K,
-            &mut crate::edit::EditRun<'_, K>,
-        ) -> Result<()>,
-    ) -> Result<ProducedStep> {
-        context.check_cancelled()?;
-        let baseline = self
-            .source
-            .rebuild_facts
-            .get()
-            .ok_or_else(|| CadError::input("load the session picture before editing its model"))?
-            .clone();
-        let mut observe = |document: &Document,
-                           built: &ferritecad_eval::RebuildResult,
-                           kernel: &mut K,
-                           context: &OperationContext| {
-            ferritecad_scene::snapshot_from_rebuild(
-                document,
-                built,
-                kernel,
-                &mut read_step,
-                &ferritecad_kernel::TessellationParams::default(),
-                context,
-            )
-        };
-        let mut run = crate::edit::EditRun {
-            baseline: Some(&baseline),
-            evaluate: None,
-            observe: Some(&mut observe),
-            scene: None,
-        };
-        let mut step = self.run(|source, expected, destination| {
-            produce(source, expected, destination, kernel, &mut run)
-        })?;
-        step.scene = run.scene.take().map(Box::new);
-        if let Some(facts) = step
-            .scene
-            .as_ref()
-            .and_then(|scene| scene.rebuild_facts.as_ref())
-        {
-            step.snapshot.remember_rebuild(facts)?;
-        }
-        Ok(step)
     }
 
     /// Runs any copy operation that reads `source` (checking it is still the
@@ -841,7 +758,16 @@ impl StepTicket {
         self,
         produce: impl FnOnce(&Path, DocumentVersion, &Path) -> Result<()>,
     ) -> Result<ProducedStep> {
-        let outcome = produce(self.source.path(), self.source.version(), &self.destination);
+        self.run_from_snapshot(|source, destination| {
+            produce(source.path(), source.version(), destination)
+        })
+    }
+
+    pub(crate) fn run_from_snapshot(
+        self,
+        produce: impl FnOnce(&Snapshot, &Path) -> Result<()>,
+    ) -> Result<ProducedStep> {
+        let outcome = produce(&self.source, &self.destination);
         match outcome {
             Ok(()) => {}
             Err(error) => {
@@ -876,16 +802,24 @@ impl StepTicket {
 /// file and changes nothing else.
 #[derive(Debug)]
 pub struct ProducedStep {
-    scene: Option<Box<ferritecad_scene::LoadedScene>>,
+    pub(crate) scene: Option<Box<ferritecad_scene::LoadedScene>>,
     generation: u64,
     base: Arc<Snapshot>,
     snapshot: Arc<Snapshot>,
 }
 
 impl ProducedStep {
+    pub fn scene(&self) -> Option<&ferritecad_scene::LoadedScene> {
+        self.scene.as_deref()
+    }
+
     /// The picture made from the candidate's checked rebuild, consumed once by the UI.
     pub fn take_scene(&mut self) -> Option<ferritecad_scene::LoadedScene> {
         self.scene.take().map(|scene| *scene)
+    }
+
+    pub fn lease(&self) -> Arc<Snapshot> {
+        Arc::clone(&self.snapshot)
     }
 
     pub fn snapshot(&self) -> &Snapshot {
@@ -910,7 +844,7 @@ impl ProducedStep {
 }
 
 /// An Undo or Redo that has been asked for and not yet shown.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Move {
     generation: u64,
     index: usize,

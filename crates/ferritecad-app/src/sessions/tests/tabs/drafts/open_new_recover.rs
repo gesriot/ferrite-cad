@@ -35,7 +35,7 @@ impl Window {
 
     /// What the reading worker answers for `path`: its session and its picture
     /// (on the mock kernel here; `open_for_view` in the kernel gates).
-    pub(super) fn read(&self, path: &Path) -> Result<(LoadedScene, DocumentSession)> {
+    pub(super) fn read(&self, path: &Path) -> Result<(LoadedScene, OpenTab)> {
         let session = crate::sessions::test_open::open_in(
             self.private.path(),
             path,
@@ -52,7 +52,7 @@ impl Window {
         &mut self,
         loads: &mut Loads,
         generation: LoadGeneration,
-        read: Result<(LoadedScene, DocumentSession)>,
+        read: Result<(LoadedScene, OpenTab)>,
         upload: Result<()>,
     ) -> bool {
         let awaited = loads.accepted_path(generation).is_some();
@@ -182,7 +182,7 @@ impl Window {
         &mut self,
         recoveries: &mut Recoveries,
         generation: u64,
-        result: Result<(LoadedScene, DocumentSession)>,
+        result: Result<(LoadedScene, OpenTab)>,
         upload: Result<()>,
     ) -> bool {
         if !recoveries.accepts(generation) {
@@ -214,7 +214,7 @@ fn recovered(
     private: &Path,
     store: &RecoveryStore,
     record: RecordId,
-) -> Result<(LoadedScene, DocumentSession)> {
+) -> Result<(LoadedScene, OpenTab)> {
     recovered_unless(private, store, record, CancelToken::new())
 }
 
@@ -224,7 +224,7 @@ fn recovered_unless(
     store: &RecoveryStore,
     record: RecordId,
     cancel: CancelToken,
-) -> Result<(LoadedScene, DocumentSession)> {
+) -> Result<(LoadedScene, OpenTab)> {
     if ferritecad_occt::is_available() {
         let context = OperationContext::default().with_cancel(cancel);
         return recover_for_view(private, store, record, &context);
@@ -232,7 +232,7 @@ fn recovered_unless(
     let claim = store.claim_cancellable(record, &cancel)?;
     let session = DocumentSession::recover_in(private, HistoryLimits::default(), claim)?;
     let scene = mock_scene(session.current().path())?;
-    Ok((scene, session))
+    Ok((scene, session.into()))
 }
 
 /// A crash copy nobody holds: `file` changed to `millimetres` high and published,
@@ -243,37 +243,24 @@ pub(super) fn orphan(
     private: &Path,
     millimetres: f64,
 ) -> RecordId {
-    let mut session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
+    let session = crate::sessions::test_open::open_in(private, file, HistoryLimits::default())
         .expect("session");
     let feature = ferritecad_fixtures::expression_slot(
         &crate::sketch_facts::read(session.current().path()).expect("reading"),
         ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
     .object;
-    let step = {
-        let ticket = session.begin_step();
-        let expected = ticket.source().version();
-        ticket.edit(
-            vec![
-                ferritecad_document::EditChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                    millimetres,
-                )
-                .expect("test value"),
-            ],
-            expected,
-            &mut MockKernel::new(),
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP imports in this model",
-                ))
-            },
-            &OperationContext::default(),
-        )
-    }
-    .expect("edit");
-    session.commit_step(step).expect("accepted");
+    let session = test_open::edit(
+        session,
+        vec![
+            ferritecad_document::EditChange::constant(
+                feature,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                millimetres,
+            )
+            .expect("test value"),
+        ],
+    );
     let mut record = store.create_record().expect("record");
     record
         .publish(1, &session.current(), &session.recovery_name())

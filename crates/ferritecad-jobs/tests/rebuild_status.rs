@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, Document, DocumentVersion, LineConstraintKind,
     LineEndpoint, LineLengthMm, ObjectPayload, SketchConstraintEdits, SketchCoordinateMm,
@@ -110,27 +112,26 @@ fn a_broken_history_opens_exports_partially_and_can_be_repaired_and_undone() {
         .remember_rebuild(loaded.rebuild_facts.as_ref().expect("opening facts"))
         .expect("same model");
     let expected = session.current().version();
-    let mut step = session
-        .begin_step()
-        .edit(
-            vec![
-                ferritecad_document::EditChange::constant(
-                    chain.first,
-                    ferritecad_document::ExpressionSlot::FilletRadius,
-                    2.0,
-                )
-                .expect("test value"),
-            ],
-            expected,
-            &mut kernel,
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP imports in this model",
-                ))
-            },
-            &context,
-        )
-        .expect("repair accepted");
+    let mut step = live_step::prepare(
+        session.begin_step(),
+        vec![
+            ferritecad_document::EditChange::constant(
+                chain.first,
+                ferritecad_document::ExpressionSlot::FilletRadius,
+                2.0,
+            )
+            .expect("test value"),
+        ],
+        expected,
+        &mut kernel,
+        |_, _| {
+            Err(ferritecad_types::CadError::unsupported(
+                "no STEP imports in this model",
+            ))
+        },
+        &context,
+    )
+    .expect("repair accepted");
     assert!(
         step.take_scene()
             .expect("repair picture")
@@ -244,16 +245,16 @@ fn shrinking_a_constrained_plate_lists_both_fillets_and_publishes_nothing() {
     let expected = session.current().version();
     let ticket = session.begin_step();
     let output = ticket.destination().to_path_buf();
-    let error = ticket
-        .edit(
-            ferritecad_document::sketch_constraint_changes(chain.sketch, sketch, &edits)
-                .expect("changes"),
-            expected,
-            &mut kernel,
-            |k, bytes| k.import_step(bytes),
-            &context,
-        )
-        .expect_err("the session also refuses both dependents");
+    let error = live_step::prepare(
+        ticket,
+        ferritecad_document::sketch_constraint_changes(chain.sketch, sketch, &edits)
+            .expect("changes"),
+        expected,
+        &mut kernel,
+        |k, bytes| k.import_step(bytes),
+        &context,
+    )
+    .expect_err("the session also refuses both dependents");
     let report = &RebuildRefusal::from_error(&error)
         .expect("structured refusal")
         .report;

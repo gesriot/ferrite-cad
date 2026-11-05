@@ -70,6 +70,8 @@ use serde::{Deserialize, Serialize};
 /// document can store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedScene {
+    /// Device-independent upload keys in packed mesh order. Omitted geometry has no key.
+    pub mesh_keys: Vec<Option<ContentHash>>,
     /// Facts from the rebuild that supplied this picture; absent for unstored scenes.
     pub rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     pub rebuild: ferritecad_eval::RebuildReport,
@@ -783,7 +785,14 @@ pub fn snapshot_of<K>(
 where
     K: GeometryKernel + ?Sized,
 {
-    prepare::load(path, kernel, read_step, params, context, Picture::new())
+    prepare::load(
+        path,
+        kernel,
+        read_step,
+        params,
+        context,
+        Picture::new(*params),
+    )
 }
 
 /// Tessellates a checked rebuild in the kernel session that owns its shapes.
@@ -803,12 +812,15 @@ pub fn snapshot_from_rebuild<K: GeometryKernel + ?Sized>(
         read_step,
         params,
         context,
-        Picture::new(),
+        Picture::new(*params),
     )
 }
 
 /// What a picture keeps from one reading of a document.
 struct Picture<'a> {
+    params: TessellationParams,
+    body_results: BTreeMap<ObjectId, ContentHash>,
+    source_hashes: BTreeMap<ferritecad_types::ImportedSourceId, ContentHash>,
     meshes: Option<(&'a BodyMeshes, &'a mut BodyMeshes)>,
     rebuild_facts: Option<ferritecad_eval::RebuildFacts>,
     rebuild: ferritecad_eval::RebuildReport,
@@ -838,8 +850,11 @@ struct Picture<'a> {
 }
 
 impl Picture<'_> {
-    fn new() -> Self {
+    fn new(params: TessellationParams) -> Self {
         Self {
+            params,
+            body_results: BTreeMap::new(),
+            source_hashes: BTreeMap::new(),
             meshes: None,
             rebuild_facts: None,
             rebuild: Default::default(),
@@ -987,6 +1002,19 @@ impl prepare::LoadSink for Picture<'_> {
     ) -> Result<()> {
         self.rebuild_facts = Some(ferritecad_eval::RebuildFacts::of(document, built)?);
         self.rebuild = built.report();
+        for object in objects {
+            match &object.payload {
+                ObjectPayload::Body(body) => {
+                    if let Some(key) = body.tip_feature.and_then(|tip| built.result_key(tip)) {
+                        self.body_results.insert(object.id, key);
+                    }
+                }
+                ObjectPayload::ImportedStep(step) => {
+                    self.source_hashes.insert(step.source, step.source_hash);
+                }
+                _ => {}
+            }
+        }
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
@@ -1046,6 +1074,10 @@ impl prepare::LoadSink for Picture<'_> {
             });
         }
         Ok(())
+    }
+
+    fn import_drawings(&mut self) -> Option<(&BodyMeshes, &mut BodyMeshes)> {
+        self.meshes.as_mut().map(|(old, next)| (*old, &mut **next))
     }
 
     fn cached_body(&self, id: ObjectId, key: Option<ContentHash>) -> Option<Arc<BodyDrawing>> {
@@ -1161,7 +1193,31 @@ impl prepare::LoadSink for Picture<'_> {
                 }
             }
         }
+        let mesh_keys = catalogue
+            .iter()
+            .map(|entry| {
+                if entry.geometry_omission.is_some() {
+                    return None;
+                }
+                let mut hash = CanonicalHasher::new("viewport.definition.mesh");
+                self.params.feed(&mut hash);
+                match &entry.item {
+                    SceneItem::Body(body) => {
+                        hash.field("body")
+                            .bytes(&body.to_bytes())
+                            .hash(self.body_results.get(body)?);
+                    }
+                    SceneItem::Imported(definition) => {
+                        hash.field("step")
+                            .hash(self.source_hashes.get(&definition.source())?)
+                            .str(definition.definition_key());
+                    }
+                }
+                Some(hash.finish())
+            })
+            .collect();
         Ok(LoadedScene {
+            mesh_keys,
             rebuild_facts: self.rebuild_facts,
             rebuild: self.rebuild,
             edit_source: self.edit_source,
@@ -3024,6 +3080,94 @@ mod tests {
             kernel.release(shape);
         }
         object
+    }
+
+    #[test]
+    fn live_import_meshes_keep_the_bound_catalogue_and_check_each_new_record() {
+        let root = tempfile::tempdir().expect("root");
+        let path = root.path().join("import.fcad");
+        let mut kernel = MockKernel::new();
+        let object = document_with_import(&path, &mut kernel);
+        let document = Document::open_read_only(&path).expect("document");
+        let context = OperationContext::default();
+        let built = ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("build");
+        let reads = std::cell::Cell::new(0);
+        let reader = |kernel: &mut MockKernel, bytes: &[u8]| {
+            reads.set(reads.get() + 1);
+            assert_eq!(bytes, SOURCE);
+            Ok(Import::Imported {
+                scene: nested_assembly(kernel),
+                diagnostics: vec![],
+            })
+        };
+        let (first, cached) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &BodyMeshes::default(),
+        )
+        .expect("initial");
+        let (second, _) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &cached,
+        )
+        .expect("reuse");
+        assert_eq!(reads.get(), 1);
+        assert_eq!(first, second);
+        let fine = TessellationParams::new(0.001, 0.1, false).expect("params");
+        let (finer, _) = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &fine,
+            &context,
+            &cached,
+        )
+        .expect("different tessellation");
+        assert_eq!(reads.get(), 2);
+        assert_ne!(first.mesh_keys, finer.mesh_keys);
+        assert_eq!(kernel.live_shape_count(), 0);
+        document.close().expect("close");
+        let mut document = Document::open(&path).expect("writable");
+        let mut record = document.object(object).expect("read").expect("import");
+        let ObjectPayload::ImportedStep(step) = &mut record.payload else {
+            panic!("import")
+        };
+        step.scene.definitions[0].name.push_str(" changed");
+        document
+            .write(|writer| {
+                writer.put_imported_step(
+                    record.id,
+                    record.parent,
+                    record.ordinal,
+                    record.name.as_deref(),
+                    step,
+                )
+            })
+            .expect("different stored catalogue");
+        let refusal = snapshot_from_revision(
+            &document,
+            &built,
+            &mut kernel,
+            reader,
+            &params(),
+            &context,
+            &cached,
+        )
+        .expect_err("cached geometry cannot excuse a mismatch");
+        assert_eq!(refusal.kind(), ferritecad_types::ErrorKind::Input);
+        assert_eq!(reads.get(), 2);
+        assert_eq!(kernel.live_shape_count(), 0);
+        built.release_all(&mut kernel);
     }
 
     const SOURCE: &[u8] = b"ISO-10303-21; this is what the document stores";

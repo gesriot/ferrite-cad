@@ -62,22 +62,12 @@ fn start(
     mpsc::Receiver<Result<ferritecad_jobs::ProducedStep>>,
 ) {
     let (tx, rx) = mpsc::channel();
+    let r = match request {
+        Request::Circle(r) | Request::Annulus(r) => r,
+    };
     let generation = sessions
-        .begin_apply(|ticket, _, cancel| match request {
-            Request::Circle(r) => spawn_apply(
-                r.expected,
-                ticket,
-                r.changes.clone(),
-                cancel.clone(),
-                move |result| tx.send(result).expect("deliver"),
-            ),
-            Request::Annulus(r) => spawn_apply(
-                r.expected,
-                ticket,
-                r.changes.clone(),
-                cancel.clone(),
-                move |result| tx.send(result).expect("deliver"),
-            ),
+        .apply(r.expected, r.changes.clone(), move |_, result| {
+            tx.send(result).expect("deliver");
         })
         .expect("started");
     (generation, rx)
@@ -91,15 +81,11 @@ fn apply_analytic(sessions: &mut Sessions, request: &Request) -> Edited {
         .recv_timeout(std::time::Duration::from_secs(120))
         .expect("edit");
     let edited = sessions.finish_apply(generation, result);
-    let Edited::Show(path) = &edited else {
+    let Edited::Show(_) = &edited else {
         return edited;
     };
     let (tx, rx) = mpsc::channel();
-    let token = sessions.scene_token(generation).expect("token");
-    let worker = spawn_scene(path.clone(), token, move |scene| {
-        tx.send(scene).expect("deliver")
-    });
-    assert!(sessions.attach_scene(generation, worker));
+    sessions.draw_staged(generation, move |scene| tx.send(scene).expect("deliver"));
     rx.recv_timeout(std::time::Duration::from_secs(120))
         .expect("scene")
         .expect("the picture of the new version");
@@ -1057,13 +1043,9 @@ fn native_an_annulus_dragged_at_a_navigated_scale_keeps_each_wall_under_its_refe
     assert_annulus_canvas_result("annulus-navigated", &source, &before, request, &stl);
 }
 
-/// Build without a kernel: the workers are refused whole, nothing becomes dirty,
-/// and no file is touched. (The geometry edits do not ask for the sketch solver.)
+/// A kernel refusal during an analytic edit preserves the accepted tab and source.
 #[test]
-fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_circle_apply_keeps_the_document_clean() {
     let root = tempfile::tempdir().expect("root");
     let source = root.path().join("circle.fcad");
     write_round(&source, [12.5, -7.25], &[10.5], 15.25, false);
@@ -1073,12 +1055,10 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
     let original = std::fs::read(&source).expect("bytes");
     let private = tempfile::tempdir().expect("private");
     let mut sessions = Sessions::default();
-    sessions.adopt(
-        crate::sessions::test_open::open_in(private.path(), &source, HistoryLimits::default())
-            .expect("session"),
-    );
+    sessions.adopt(test_open::topology(&source, private.path()).expect("session"));
     let files = private_files(&sessions);
-    let (generation, rx) = start(&mut sessions, &Request::Circle(request));
+    let shapes = test_open::fail_next(&sessions, "extrude_count");
+    let (generation, rx) = start(&mut sessions, &Request::Circle(request.clone()));
     let result = rx.recv().expect("answer");
     assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
     assert!(
@@ -1089,6 +1069,7 @@ fn without_a_kernel_a_circle_apply_is_refused_and_the_document_stays_clean() {
     assert!(!sessions.dirty() && !sessions.can_undo());
     assert_eq!(private_files(&sessions), files);
     assert_eq!(std::fs::read(&source).expect("bytes"), original);
+    test_open::retry(&mut sessions, &request, "extrude_count", 1, shapes);
 }
 
 /// The geometry editors are for unconstrained profiles. A constraint applied

@@ -51,9 +51,9 @@ struct Draw {
     // alignment, which would push this struct to 112 bytes while the Rust type
     // that fills it is 96, and the two must agree exactly or the binding is
     // rejected. Scalars keep both at 96.
-    padding_0: u32,
-    padding_1: u32,
-    padding_2: u32,
+    face_base: u32,
+    edge_base: u32,
+    vertex_base: u32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -75,7 +75,7 @@ fn vertex_main(
     @location(2) face: u32,
 ) -> VertexOut {
     var out: VertexOut;
-    out.face = face;
+    out.face = select(0u, draw.face_base + face, face != 0u);
     let world = draw.transform * vec4<f32>(position, 1.0);
     out.clip = globals.view_projection * world;
     // A normal follows the inverse transpose, not the transform itself. The
@@ -259,7 +259,7 @@ fn vertex_edge(
     @location(1) edge: u32,
 ) -> EdgeOut {
     var out: EdgeOut;
-    out.edge = edge;
+    out.edge = draw.edge_base + edge;
     out.clip = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
     return out;
 }
@@ -296,7 +296,7 @@ fn vertex_corner(
     @location(2) offset: vec2<f32>,
 ) -> CornerOut {
     var out: CornerOut;
-    out.vertex = vertex;
+    out.vertex = draw.vertex_base + vertex;
     let centre = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
     // Kept equal to VERTEX_PICK_RADIUS_PIXELS on the Rust side. WGSL cannot
     // read that constant, so a gate measures the footprint this produces and
@@ -334,7 +334,7 @@ fn vertex_corner_mark(
     @location(2) offset: vec2<f32>,
 ) -> CornerOut {
     var out: CornerOut;
-    out.vertex = vertex;
+    out.vertex = draw.vertex_base + vertex;
     let centre = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
     // The drawn dot: smaller than the 3.0 pixel hit aperture above.
     let radius = 2.0;
@@ -404,7 +404,7 @@ fn vertex_edge_mark(
     @location(1) edge: u32,
 ) -> EdgeMarkOut {
     var out: EdgeMarkOut;
-    out.edge = edge;
+    out.edge = draw.edge_base + edge;
     out.clip = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
     return out;
 }

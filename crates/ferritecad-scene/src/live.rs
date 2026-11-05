@@ -21,6 +21,7 @@ pub(super) struct BodyDrawing {
 #[derive(Default, Debug)]
 pub struct BodyMeshes {
     pub(super) entries: BTreeMap<ObjectId, Arc<BodyDrawing>>,
+    pub(super) imports: BTreeMap<ContentHash, Arc<prepare::StepDrawing>>,
     params: Option<TessellationParams>,
 }
 
@@ -56,7 +57,7 @@ pub fn snapshot_from_revision<K: GeometryKernel>(
         params: Some(*params),
         ..BodyMeshes::default()
     };
-    let mut picture = Picture::new();
+    let mut picture = Picture::new(*params);
     picture.meshes = Some((prior, &mut next));
     let scene =
         prepare::from_rebuild(document, built, kernel, read_step, params, context, picture)?;

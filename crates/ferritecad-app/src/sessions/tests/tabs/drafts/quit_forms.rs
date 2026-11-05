@@ -653,10 +653,7 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
 }
 
 #[test]
-fn stub_quit_switch_refusal_keeps_both_original_forms() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_quit_switch_upload_keeps_both_original_forms() {
     let root = tempfile::tempdir().expect("root");
     let a_file = root.path().join("a.fcad");
     let b_file = root.path().join("b.fcad");
@@ -677,15 +674,31 @@ fn stub_quit_switch_refusal_keeps_both_original_forms() {
     assert!(w.begin_quit());
     w.confirm_quit();
     w.decide_quit();
-    w.drawn = Drawn::Native;
+    let probe = test_open::probe(w.tabs.hidden_sessions(b).expect("hidden"));
+    let (shapes, calls) = {
+        let probe = probe.lock().expect("probe");
+        (probe.live, probe.calls)
+    };
     let (g, rx) = w.begin_switch(b, Some(After::Quit));
-    let (outcome, after) = w.deliver_switch(g, wait(&rx), Ok(())).expect("answer");
+    let (outcome, after) = w
+        .deliver_switch(
+            g,
+            wait(&rx),
+            Err(CadError::rendering("requested upload refusal")),
+        )
+        .expect("answer");
     assert!(outcome.is_err() && after.is_none());
     w.restore_after_quit();
     assert_eq!(w.edits.typed(), Some((Some(f), " a ")));
-    w.drawn = Drawn::Mock;
+    assert_eq!(probe.lock().expect("probe").live, shapes);
     w.round(b);
     assert_eq!(w.edits.typed(), Some((Some(bf), " b ")));
+    let final_state = probe.lock().expect("probe");
+    assert_eq!(final_state.live, shapes);
+    assert_eq!(
+        final_state.calls, calls,
+        "switching must not enter the kernel"
+    );
 }
 
 #[test]

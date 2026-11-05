@@ -21,14 +21,16 @@
 //! and validity for a particular file format. Every one of those is a property
 //! of the thing being built rather than of the document being read.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::Arc;
 
 use ferritecad_document::{
     Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
 };
 use ferritecad_eval::{RebuildResult, rebuild_cold};
-use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
+use ferritecad_exchange::{ColourSource, Diagnostic, Import, PersistedScene, Severity, Stage};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
     TessellationParams, TessellationRefusal,
@@ -352,6 +354,10 @@ pub(crate) enum BodyMesh {
 pub(crate) trait LoadSink {
     type Output;
 
+    fn import_drawings(&mut self) -> Option<(&crate::BodyMeshes, &mut crate::BodyMeshes)> {
+        None
+    }
+
     fn cached_body(
         &self,
         _id: ObjectId,
@@ -598,53 +604,120 @@ where
                 }
 
                 ObjectPayload::ImportedStep(stored) => {
-                    // Read from the record already in hand rather than by
-                    // asking the document again: the other route would fetch
-                    // the whole source blob to learn one short string.
-                    let source_file = file_name_of(stored.source_name.as_deref());
-                    // Scoped so the borrow ends before the kernel is needed
-                    // for meshing. A refusal here releases what it built; what
-                    // it returns is this function's to give back.
-                    let reopened = {
+                    let previous = sink.import_drawings().and_then(|(old, next)| {
+                        next.imports
+                            .get(&stored.source_hash)
+                            .or_else(|| old.imports.get(&stored.source_hash))
+                            .cloned()
+                    });
+                    let fresh = if let Some(previous) = &previous {
+                        stored.scene.require_same_reading(&previous.scene)?;
+                        None
+                    } else {
                         let mut reader = Reader {
                             kernel: &mut *kernel,
                             read: &mut read_step,
                         };
-                        document.reopen_step_import(object.id, &mut reader)?
+                        let reopened = document.reopen_step_import(object.id, &mut reader)?;
+                        imported.extend(reopened.scene.shapes());
+                        Some(reopened)
                     };
-                    imported.extend(reopened.scene.shapes());
-                    // An omitted definition needs two observations of the same
-                    // thing: the diagnostic persisted with the document and the
-                    // one made by this fresh reading. A historical warning
-                    // cannot excuse an unrelated current failure, and a current
-                    // finding cannot silently rewrite history.
-                    let omittable: BTreeMap<String, Diagnostic> = reopened
+                    let occurrences = match &fresh {
+                        Some(reopened) => Cow::Borrowed(reopened.occurrences()),
+                        None => Cow::Owned(
+                            stored
+                                .scene
+                                .instances
+                                .iter()
+                                .map(|i| i.occurrence)
+                                .collect(),
+                        ),
+                    };
+                    let now = match (&previous, &fresh) {
+                        (Some(previous), _) => &previous.diagnostics,
+                        (_, Some(fresh)) => &fresh.diagnostics_now,
+                        _ => unreachable!("a bound source reading"),
+                    };
+                    let omittable = stored
                         .diagnostics_at_import
                         .iter()
-                        .filter(|diagnostic| {
-                            is_topology_failure(diagnostic)
-                                && reopened.diagnostics_now.iter().any(|current| {
-                                    is_topology_failure(current)
-                                        && current.entity == diagnostic.entity
+                        .filter(|d| {
+                            is_topology_failure(d)
+                                && now.iter().any(|current| {
+                                    is_topology_failure(current) && current.entity == d.entity
                                 })
                         })
-                        .map(|diagnostic| (diagnostic.entity.clone(), diagnostic.clone()))
+                        .map(|d| (d.entity.clone(), d.clone()))
                         .collect();
+                    let shapes: BTreeMap<_, _> = fresh
+                        .iter()
+                        .flat_map(|f| &f.scene.definitions)
+                        .map(|d| (d.key.as_str(), d.shape))
+                        .collect();
+                    let cache = sink.import_drawings().is_some();
+                    let mut drawings = BTreeMap::new();
                     read_imported(
                         &mut registry,
                         &mut sink,
                         &mut nodes,
-                        kernel,
                         Reading {
-                            source: reopened.source(),
-                            occurrences: reopened.occurrences(),
-                            file: source_file,
+                            source: stored.source,
+                            occurrences: &occurrences,
+                            file: file_name_of(stored.source_name.as_deref()),
                             omittable: &omittable,
-                            scene: &reopened.scene,
-                            params,
+                            scene: &stored.scene,
                             context: &scoped,
                         },
+                        |key, context| {
+                            if let Some(old) = &previous {
+                                return old
+                                    .definitions
+                                    .get(key)
+                                    .ok_or_else(|| {
+                                        CadError::topology("missing cached STEP definition")
+                                    })?
+                                    .mesh();
+                            }
+                            let shape = shapes.get(key).ok_or_else(|| {
+                                CadError::topology(
+                                    "the STEP reading has no shape for its definition",
+                                )
+                            })?;
+                            let mesh = kernel.tessellate(*shape, params, context).map(Arc::new);
+                            if cache {
+                                match &mesh {
+                                    Ok(mesh) => {
+                                        drawings.insert(
+                                            key.to_owned(),
+                                            StepMesh::Drawn(Arc::clone(mesh)),
+                                        );
+                                    }
+                                    Err(CadError::Kernel { message, .. }) => {
+                                        if let Some(reason) =
+                                            mesh.as_ref().err().and_then(face_tessellation_refusal)
+                                        {
+                                            drawings.insert(
+                                                key.to_owned(),
+                                                StepMesh::Omitted(reason, message.clone()),
+                                            );
+                                        }
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            mesh
+                        },
                     )?;
+                    if let Some((_, next)) = sink.import_drawings() {
+                        let drawing = previous.unwrap_or_else(|| {
+                            Arc::new(StepDrawing {
+                                scene: stored.scene.clone(),
+                                diagnostics: fresh.expect("freshly bound STEP").diagnostics_now,
+                                definitions: drawings,
+                            })
+                        });
+                        next.imports.insert(stored.source_hash, drawing);
+                    }
                 }
 
                 _ => continue,
@@ -661,12 +734,32 @@ where
 }
 
 /// One stored imported scene, and everything needed to read it.
+#[derive(Debug)]
+pub(crate) struct StepDrawing {
+    scene: PersistedScene,
+    diagnostics: Vec<Diagnostic>,
+    definitions: BTreeMap<String, StepMesh>,
+}
+
+#[derive(Debug)]
+enum StepMesh {
+    Drawn(Arc<Mesh>),
+    Omitted(TessellationRefusal, String),
+}
+
+impl StepMesh {
+    fn mesh(&self) -> Result<Arc<Mesh>> {
+        match self {
+            Self::Drawn(mesh) => Ok(Arc::clone(mesh)),
+            Self::Omitted(kind, message) => Err(CadError::kernel_because(message, *kind)),
+        }
+    }
+}
+
 struct Reading<'a> {
     /// The bytes this reading was verified against.
     source: ImportedSourceId,
-    /// What the document stored as the durable identity of each placement.
-    /// Positionally aligned with `scene.instances`, which the binding above
-    /// has already required to be the same instances in the same order.
+    /// Current stored placement identities, aligned with the bound catalogue.
     occurrences: &'a [OccurrenceId],
     /// What to call the file it came from. A name to read, never a path to
     /// open: the bytes in the document are the source, and the place they were
@@ -674,8 +767,7 @@ struct Reading<'a> {
     file: Option<String>,
     /// Persisted validation failures confirmed by the current reader.
     omittable: &'a BTreeMap<String, Diagnostic>,
-    scene: &'a Scene,
-    params: &'a TessellationParams,
+    scene: &'a PersistedScene,
     /// This object's slice of the whole load.
     context: &'a OperationContext,
 }
@@ -690,29 +782,20 @@ struct Reading<'a> {
 /// own compound and once through each component — so an instance that has
 /// children is structure and is not meshed. Its placement still counts: it is
 /// what its children sit in.
-fn read_imported<K, S>(
+fn read_imported<S: LoadSink>(
     registry: &mut Registry,
     sink: &mut S,
     nodes: &mut usize,
-    kernel: &mut K,
     from: Reading<'_>,
-) -> Result<()>
-where
-    K: GeometryKernel + ?Sized,
-    S: LoadSink,
-{
-    let Reading {
-        scene,
-        params,
-        context,
-        ..
-    } = from;
+    mut tessellate: impl FnMut(&str, &OperationContext) -> Result<Arc<Mesh>>,
+) -> Result<()> {
+    let Reading { scene, context, .. } = from;
     let mut structural = vec![false; scene.instances.len()];
     for (index, instance) in scene.instances.iter().enumerate() {
         let Some(parent) = instance.parent else {
             continue;
         };
-        let holds = structural.get_mut(parent).ok_or_else(|| {
+        let holds = structural.get_mut(parent as usize).ok_or_else(|| {
             CadError::input(format!(
                 "instance {index} sits inside {parent}, which this scene does not have"
             ))
@@ -727,7 +810,7 @@ where
         let placed = match instance.parent {
             None => local,
             Some(parent) => {
-                let outer = world.get(parent).ok_or_else(|| {
+                let outer = world.get(parent as usize).ok_or_else(|| {
                     CadError::input(format!(
                         "instance {index} sits inside {parent}, which the scene lists after it"
                     ))
@@ -741,12 +824,12 @@ where
     // Which definitions of this scene anything asks for geometry from. A
     // definition every one of whose instances holds other instances is an
     // assembly frame and is never meshed.
-    let wants_geometry: BTreeSet<usize> = scene
+    let wants_geometry: BTreeSet<&str> = scene
         .instances
         .iter()
         .enumerate()
         .filter(|(index, _)| !structural[*index])
-        .map(|(_, instance)| instance.definition)
+        .map(|(_, instance)| instance.definition.as_str())
         .collect();
 
     // The caller gives this object one slice of the load; divide that slice
@@ -762,15 +845,22 @@ where
 
     // Registry indices for this scene's definitions, assigned in the order the
     // instances first mention them, so the export's order is the source's.
-    let mut registered: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut registered: BTreeMap<&str, usize> = BTreeMap::new();
+    let definitions: BTreeMap<_, _> = scene
+        .definitions
+        .iter()
+        .map(|def| (def.key.as_str(), def))
+        .collect();
     for (index, instance) in scene.instances.iter().enumerate() {
         context.check_cancelled()?;
-        let definition = scene.definitions.get(instance.definition).ok_or_else(|| {
-            CadError::input(format!(
-                "instance {index} names definition {}, which this scene does not have",
-                instance.definition
-            ))
-        })?;
+        let definition = definitions
+            .get(instance.definition.as_str())
+            .ok_or_else(|| {
+                CadError::input(format!(
+                    "instance {index} names definition {}, which this scene does not have",
+                    instance.definition
+                ))
+            })?;
 
         // The file's own name for this definition, kept beside the source it
         // belongs to. `#31` in one file is not `#31` in another, which is why
@@ -788,12 +878,12 @@ where
             schema: Some(scene.schema.clone()),
         };
         let (registry_index, _) = registry.register(item, seen)?;
-        registered.insert(instance.definition, registry_index);
+        registered.insert(instance.definition.as_str(), registry_index);
         if registry.is_reported(registry_index) {
             continue;
         }
 
-        if !wants_geometry.contains(&instance.definition) {
+        if !wants_geometry.contains(instance.definition.as_str()) {
             registry.structural(registry_index)?;
             sink.definition(registry_index, Geometry::Structural)?;
             continue;
@@ -810,7 +900,7 @@ where
             definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
             (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
         );
-        match kernel.tessellate(definition.shape, params, &scoped) {
+        match tessellate(&definition.key, &scoped) {
             Ok(mesh) => {
                 definitions_meshed += 1;
                 registry.meshed(registry_index)?;
@@ -836,34 +926,23 @@ where
         }
     }
 
-    // One identity per placement, checked before a single node is reported. Two lists of different lengths cannot be aligned, and the
-    // failure of aligning them anyway is silent: every placement after the
-    // first missing one would carry its neighbour's identity.
-    let recorded = from.occurrences;
-    if recorded.len() != scene.instances.len() {
-        return Err(CadError::input(format!(
-            "the document stored {} placement identities for a scene of {} placements, so \
-             they cannot be the identities of these placements",
-            recorded.len(),
-            scene.instances.len()
-        )));
-    }
-
     let base = *nodes;
     for (index, instance) in scene.instances.iter().enumerate() {
-        let definition = *registered.get(&instance.definition).ok_or_else(|| {
-            CadError::topology(format!(
-                "instance {index} places definition {}, which this load never settled",
-                instance.definition
-            ))
-        })?;
+        let definition = *registered
+            .get(instance.definition.as_str())
+            .ok_or_else(|| {
+                CadError::topology(format!(
+                    "instance {index} places definition {}, which this load never settled",
+                    instance.definition
+                ))
+            })?;
         // Read out of the stored payload, positionally, and derived from
         // nothing. There is no arm here that falls back to the index, the
         // parent, the name or the key.
-        let identity = NodeIdentity::Occurrence(recorded[index]);
+        let identity = NodeIdentity::Occurrence(from.occurrences[index]);
         sink.node(&PreparedNode {
             definition,
-            parent: instance.parent.map(|parent| base + parent),
+            parent: instance.parent.map(|parent| base + parent as usize),
             local: placement_of(&instance.placement)?,
             world: world[index],
             structural: structural[index],

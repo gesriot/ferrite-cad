@@ -262,6 +262,33 @@
     },
     {
       "author": "FerriteCAD contributors",
+      "bom-ref": "path+crates/ferritecad-platform#ferritecad-platform@0.0.1",
+      "description": "Safe access to platform memory reclamation",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ferrite-cad/ferrite-cad"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "ferritecad-platform",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "workspace"
+        }
+      ],
+      "purl": "pkg:cargo/ferritecad-platform@0.0.1",
+      "scope": "required",
+      "type": "library",
+      "version": "0.0.1"
+    },
+    {
+      "author": "FerriteCAD contributors",
       "bom-ref": "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
       "description": "Turning a stored document into a picture of what it describes",
       "externalReferences": [
@@ -6013,6 +6040,7 @@
         "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
+        "path+crates/ferritecad-platform#ferritecad-platform@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
@@ -6110,6 +6138,10 @@
         "path+crates/ferritecad-types#ferritecad-types@0.0.1"
       ],
       "ref": "path+crates/ferritecad-occt#ferritecad-occt@0.0.1"
+    },
+    {
+      "dependsOn": [],
+      "ref": "path+crates/ferritecad-platform#ferritecad-platform@0.0.1"
     },
     {
       "dependsOn": [

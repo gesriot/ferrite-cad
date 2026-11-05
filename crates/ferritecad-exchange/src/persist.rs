@@ -398,15 +398,23 @@ impl PersistedScene {
         // session-local handles become visible, so it must not rely on a caller
         // having remembered to validate the stored half first.
         self.validate()?;
-        let fresh = current.project()?;
+        self.projection()?.require_same_as(&current.project()?)?;
+        Ok(current)
+    }
+
+    /// Checks a previously bound source reading against another object's stored catalogue.
+    pub fn require_same_reading(&self, bound: &Self) -> Result<()> {
+        self.validate()?;
+        self.projection()?.require_same_as(&bound.projection()?)
+    }
+
+    fn projection(&self) -> Result<Projection> {
         project_keyed(
             &self.source_unit,
             &self.schema,
             &self.definitions,
             self.instances.iter().map(Self::placed),
-        )?
-        .require_same_as(&fresh)?;
-        Ok(current)
+        )
     }
 }
 

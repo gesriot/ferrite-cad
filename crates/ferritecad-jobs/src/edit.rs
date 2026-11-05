@@ -61,20 +61,11 @@ pub(crate) fn edit_copy_with<K: GeometryKernel + ?Sized>(
     )
 }
 
-pub(crate) type Observe<'a, K> = dyn FnMut(
-        &Document,
-        &ferritecad_eval::RebuildResult,
-        &mut K,
-        &OperationContext,
-    ) -> Result<ferritecad_scene::LoadedScene>
-    + 'a;
-
 pub(crate) type Evaluate<'a, K> =
     dyn FnMut(&Document, &mut K, &OperationContext) -> Result<ferritecad_scene::LoadedScene> + 'a;
 
 pub(crate) struct EditRun<'a, K: ?Sized> {
     pub(crate) baseline: Option<&'a ferritecad_eval::RebuildFacts>,
-    pub(crate) observe: Option<&'a mut Observe<'a, K>>,
     pub(crate) evaluate: Option<&'a mut Evaluate<'a, K>>,
     pub(crate) scene: Option<ferritecad_scene::LoadedScene>,
 }
@@ -84,7 +75,6 @@ impl<K: ?Sized> EditRun<'_, K> {
         Self {
             baseline: None,
             evaluate: None,
-            observe: None,
             scene: None,
         }
     }
@@ -131,7 +121,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let facts = match run.baseline {
         Some(facts) => facts,
         None => {
-            computed = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None, None)?.0;
+            computed = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None)?.0;
             &computed
         }
     };
@@ -151,14 +141,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
             scene: Some(scene),
         }
     } else {
-        checked_rebuild(
-            &document,
-            kernel,
-            &evaluating,
-            Some(baseline_unbuilt),
-            run.observe.as_deref_mut(),
-        )?
-        .1
+        checked_rebuild(&document, kernel, &evaluating, Some(baseline_unbuilt))?.1
     };
     run.scene = checked.scene.take();
     let completed = complete(checked)?;
@@ -205,43 +188,19 @@ struct Checked {
     rebuild: ferritecad_eval::RebuildReport,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn checked_rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
     context: &OperationContext,
     baseline_unbuilt: Option<&BTreeSet<ObjectId>>,
-    observe: Option<&mut Observe<'_, K>>,
 ) -> Result<(ferritecad_eval::RebuildFacts, Checked)> {
-    let rebuilding = if observe.is_some() {
-        phase(context, 0.0, 0.7)
-    } else {
-        context.clone()
-    };
-    let built = rebuild_cold(document, kernel, &rebuilding)?;
+    let built = rebuild_cold(document, kernel, context)?;
     let rebuild = built.report();
     let unbuilt = rebuild.unbuilt();
     let built = match baseline_unbuilt {
         Some(baseline) => built
             .require_no_new_failures(baseline, kernel)
-            .map_err(|error| {
-                let names = document
-                    .objects()
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .filter(|object| unbuilt.contains(&object.id) && !baseline.contains(&object.id))
-                    .filter_map(|object| object.name.map(|name| format!("{name} ({})", object.id)))
-                    .collect::<Vec<_>>();
-                if names.is_empty() {
-                    return error;
-                }
-                CadError::Context {
-                    kind: error.kind(),
-                    message: format!("{}: {error}", names.join(", ")),
-                    source: Box::new(error),
-                }
-            })?,
+            .map_err(|error| describe_rebuild_refusal(document, error))?,
         None => built,
     };
     let result = (|| {
@@ -255,15 +214,36 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     document_id: document.meta().document_id,
                     content: document.content_version()?,
                 }),
-                scene: observe
-                    .map(|observe| observe(document, &built, kernel, &phase(context, 0.7, 1.0)))
-                    .transpose()?,
+                scene: None,
                 rebuild,
             },
         ))
     })();
     built.release_all(kernel);
     result
+}
+
+pub(crate) fn describe_rebuild_refusal(document: &Document, error: CadError) -> CadError {
+    let Some(refusal) = ferritecad_eval::RebuildRefusal::from_error(&error) else {
+        return error;
+    };
+    let failed = refusal.report.unbuilt();
+    let names = document
+        .objects()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter(|object| failed.contains(&object.id))
+        .filter_map(|object| object.name.map(|name| format!("{name} ({})", object.id)))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return error;
+    }
+    CadError::Context {
+        kind: error.kind(),
+        message: format!("{}: {error}", names.join(", ")),
+        source: Box::new(error),
+    }
 }
 
 fn phase(context: &OperationContext, start: f64, end: f64) -> OperationContext {

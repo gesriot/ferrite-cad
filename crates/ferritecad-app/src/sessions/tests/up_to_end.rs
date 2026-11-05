@@ -33,7 +33,7 @@ fn native_referenced_end_draws_the_boss_height_and_cut_form_explains_editing() {
             .expect("end");
         document.close().expect("close");
         let (tx, rx) = mpsc::channel();
-        let worker = spawn_scene(f.file.clone(), CancelToken::new(), move |scene| {
+        let worker = cold_scene(f.file.clone(), CancelToken::new(), move |scene| {
             tx.send(scene).expect("scene");
         });
         let scene = rx

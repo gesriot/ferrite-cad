@@ -57,9 +57,9 @@ the typed draft, never a second copy of those facts.
 * **Dirty** is the comparison `model_version(current) ≠ model_version(saved)`.
   `Document::model_version` is the logical content with only `meta.modified_at` set
   aside; `content_version` is unchanged and is what Save's disk guard uses.
-* **Apply** is the copy operation `edit-extrude` runs (prepare, cold rebuild, strict
-  reference check, version re-check, atomic publication) with a private source and
-  destination. There is no second evaluator, copier or writer.
+* **Apply** runs the shared copy transaction against a private version. The tab's evaluation
+  thread prepares the candidate and its scene. The window accepts the version after GPU upload.
+  [ADR 0010](decisions/0010-live-evaluated-model.md) describes incremental evaluation.
 * **Save** replaces the logical path only if it still holds the version the session
   last read or wrote. A typed `SaveFailure` says why not:
   `Conflict(Modified | Replaced | Missing)`, `Busy`, `Occupied` (Save As),

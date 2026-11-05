@@ -12,10 +12,8 @@ use ferritecad_kernel::GeometryKernel;
 fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
-        .begin_apply(|t, _, c| {
-            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
-                tx.send(v).expect("deliver")
-            })
+        .apply(r.expected, r.changes.clone(), move |_, v| {
+            tx.send(v).expect("deliver");
         })
         .expect("start");
     (g, rx)
@@ -23,12 +21,9 @@ fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<P
 pub(super) fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("answer"));
-    if let Edited::Show(path) = &edited {
+    if let Edited::Show(_) = &edited {
         let (tx, rx) = mpsc::channel();
-        let worker = spawn_scene(path.clone(), s.scene_token(g).expect("token"), move |v| {
-            tx.send(v).expect("scene")
-        });
-        assert!(s.attach_scene(g, worker));
+        s.draw_staged(g, move |v| tx.send(v).expect("scene"));
         rx.recv().expect("scene").expect("prepared");
         s.bind(Bind::Staged).expect("bind");
         assert!(s.finish_scene(g, Ok(())));
@@ -480,7 +475,7 @@ fn gate(count: usize, name: &str) {
     let draft = draft_state(&form);
     let disk = std::fs::read(&source).expect("disk");
     let (tx, rx) = mpsc::channel();
-    let worker = spawn_scene(current.clone(), CancelToken::new(), move |v| {
+    let worker = cold_scene(current.clone(), CancelToken::new(), move |v| {
         tx.send(v).expect("scene")
     });
     let loaded = rx.recv().expect("scene").expect("accepted picture");
@@ -520,12 +515,7 @@ fn gate(count: usize, name: &str) {
                     Err(CadError::kernel("scene preparation failed"))
                 } else {
                     let (tx, rx) = mpsc::channel();
-                    let worker = spawn_scene(
-                        candidate.clone(),
-                        s.scene_token(g).expect("token"),
-                        move |v| tx.send(v).expect("scene"),
-                    );
-                    assert!(s.attach_scene(g, worker));
+                    s.draw_staged(g, move |v| tx.send(v).expect("scene"));
                     rx.recv().expect("scene")
                 };
                 let mut called = false;
@@ -799,14 +789,11 @@ fn native_constraints_then_radius_use_solved_rectangle_and_keep_refused_draft_re
     }
 }
 #[test]
-fn stub_radius_apply_refuses_without_publication() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_radius_apply_leaves_no_publication() {
     let (_root, source, reading) = fixture(1);
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
+    s.adopt(test_open::topology(&source, &std::env::temp_dir()).expect("session"));
     let (_form, r) = typed_radius(
         &source,
         &reading,
@@ -815,12 +802,17 @@ fn stub_radius_apply_refuses_without_publication() {
         "3.125",
     );
     let before = state(&s);
+    let shapes = test_open::fail_next(&s, "fillet");
     let (g, rx) = start(&mut s, &r);
-    let e = rx.recv().expect("answer").expect_err("no kernel");
-    assert_eq!(e.kind(), ferritecad_types::ErrorKind::Unsupported);
+    let e = rx
+        .recv()
+        .expect("answer")
+        .expect_err("requested kernel failure");
+    assert_eq!(e.kind(), ferritecad_types::ErrorKind::Kernel);
     assert_eq!(s.finish_apply(g, Err(e)), Edited::Failed);
     assert_eq!(state(&s), before);
-    assert_eq!(std::fs::read(source).expect("source"), original);
+    assert_eq!(std::fs::read(&source).expect("source"), original);
+    test_open::retry(&mut s, &r, "fillet", 1, shapes);
 }
 #[test]
 fn mixed_radius_apply_uses_occt_without_solver() {

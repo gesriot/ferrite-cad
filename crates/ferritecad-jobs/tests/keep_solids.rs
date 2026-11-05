@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::*;
 use ferritecad_jobs::DocumentSession;
 use ferritecad_kernel::{OperationContext, TessellationParams};
@@ -42,16 +44,15 @@ fn selection_transaction_undo_redo_and_lost_upstream_witness_are_atomic() {
         }],
     ] {
         let before = contents(session.current().path());
-        let step = session
-            .begin_step()
-            .edit(
-                changes,
-                session.current().version(),
-                &mut kernel,
-                |_, _| unreachable!("no imports"),
-                &OperationContext::default(),
-            )
-            .expect("step");
+        let step = live_step::prepare(
+            session.begin_step(),
+            changes,
+            session.current().version(),
+            &mut kernel,
+            |_, _| unreachable!("no imports"),
+            &OperationContext::default(),
+        )
+        .expect("step");
         session.commit_step(step).expect("publish");
         let after = contents(session.current().path());
         assert_ne!(before, after);
@@ -68,38 +69,36 @@ fn selection_transaction_undo_redo_and_lost_upstream_witness_are_atomic() {
     let model = session.current().model();
     // Change the preceding KeepSolids first; its dependent witness now disappears.
     let downstream = ferritecad_types::ObjectId::new();
-    let step = session
-        .begin_step()
-        .edit(
-            vec![EditChange::AddFeature {
-                object: downstream,
-                body: p.body,
-                name: None,
-                feature: FeatureAddition::KeepSolids {
-                    selection: KeepSelection::ContainingFaces(vec![slot.side]),
-                },
-            }],
-            session.current().version(),
-            &mut kernel,
-            |_, _| unreachable!("no imports"),
-            &OperationContext::default(),
-        )
-        .expect("dependent witness");
+    let step = live_step::prepare(
+        session.begin_step(),
+        vec![EditChange::AddFeature {
+            object: downstream,
+            body: p.body,
+            name: None,
+            feature: FeatureAddition::KeepSolids {
+                selection: KeepSelection::ContainingFaces(vec![slot.side]),
+            },
+        }],
+        session.current().version(),
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &OperationContext::default(),
+    )
+    .expect("dependent witness");
     session.commit_step(step).expect("publish dependent");
     let accepted = contents(session.current().path());
-    let refused = session
-        .begin_step()
-        .edit(
-            vec![EditChange::SetKeepSelection {
-                object: slot.keep,
-                selection: KeepSelection::ContainingFaces(vec![slot.other_side]),
-            }],
-            session.current().version(),
-            &mut kernel,
-            |_, _| unreachable!("no imports"),
-            &OperationContext::default(),
-        )
-        .expect_err("lost dependent witness refuses entire edit");
+    let refused = live_step::prepare(
+        session.begin_step(),
+        vec![EditChange::SetKeepSelection {
+            object: slot.keep,
+            selection: KeepSelection::ContainingFaces(vec![slot.other_side]),
+        }],
+        session.current().version(),
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &OperationContext::default(),
+    )
+    .expect_err("lost dependent witness refuses entire edit");
     let report = ferritecad_eval::RebuildRefusal::from_error(&refused).expect("D2 reasons");
     assert!(
         report
