@@ -21,7 +21,6 @@ path = "src/main.rs"
 # decorations, and those pull an unmaintained font parser that this project's
 # cargo-deny policy refuses. A viewport does not draw its own title bar.
 [dependencies]
-ferritecad-platform.workspace = true
 ferritecad-document.workspace = true
 # What an export *is*, shared with the shipped command rather than written
 # twice. This crate owns when the action is offered and what the window says

@@ -55,7 +55,3 @@ against the bound reading and takes placement identities from the current docume
 A command panic returns a kernel failure and ends the owner. Queued or later work receives
 the same typed stopped-owner refusal. The accepted file remains available for Save and Save As.
 The tab closes by joining the stopped thread. Reopening creates a new owner explicitly.
-
-After a scene operation releases its retired revision and temporary state, the macOS window
-asks the system allocator to return unused pages. This bounds the resident free-page retention
-observed during repeated edits while preserving every live allocation.

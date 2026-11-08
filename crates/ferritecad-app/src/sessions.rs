@@ -977,10 +977,10 @@ impl Sessions {
         if self.addressed(address).is_none() {
             return false;
         }
-        let Some(mut operation) = self.operation.take() else {
+        let Some(operation) = self.operation.take() else {
             return false;
         };
-        if let Some(worker) = operation.worker.take() {
+        if let Some(worker) = operation.worker {
             let _ = worker.join();
         }
         self.resolve(address, false);
@@ -1009,8 +1009,7 @@ impl Sessions {
             (Ok(()), _) => String::new(),
         };
         // A staged version that was never shown is dropped here, removing its file.
-        drop(operation);
-        ferritecad_platform::release_unused_memory();
+        drop(operation.staged);
         true
     }
 

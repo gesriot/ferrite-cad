@@ -923,33 +923,6 @@
     },
     {
       "author": "FerriteCAD contributors",
-      "bom-ref": "path+crates/ferritecad-platform#ferritecad-platform@0.0.1",
-      "description": "Safe access to platform memory reclamation",
-      "externalReferences": [
-        {
-          "type": "vcs",
-          "url": "https://github.com/ferrite-cad/ferrite-cad"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "MIT"
-        }
-      ],
-      "name": "ferritecad-platform",
-      "properties": [
-        {
-          "name": "ferritecad:sbom:source",
-          "value": "workspace"
-        }
-      ],
-      "purl": "pkg:cargo/ferritecad-platform@0.0.1",
-      "scope": "required",
-      "type": "library",
-      "version": "0.0.1"
-    },
-    {
-      "author": "FerriteCAD contributors",
       "bom-ref": "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
       "description": "Turning a stored document into a picture of what it describes",
       "externalReferences": [
@@ -7344,7 +7317,6 @@
         "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
-        "path+crates/ferritecad-platform#ferritecad-platform@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
@@ -7444,10 +7416,6 @@
         "path+crates/ferritecad-types#ferritecad-types@0.0.1"
       ],
       "ref": "path+crates/ferritecad-occt#ferritecad-occt@0.0.1"
-    },
-    {
-      "dependsOn": [],
-      "ref": "path+crates/ferritecad-platform#ferritecad-platform@0.0.1"
     },
     {
       "dependsOn": [
@@ -8737,11 +8705,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:b03caec36da4a8cbb70030f139b0c5e1d48525da693cf51918663376f48d2fef"
+        "value": "sbom/native/native-assets-inventory.json@sha256:f18b4232af6412f130e547ecbdac5bbe20e48baa9bc947c400e0c2a0ad97e7db"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:983e6f794956c7abf6e9f138d45e35ef1e7a187fb0236c9d1f1998737f37ee3a"
+        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:cbc7fd6fe9c575bc890dd53d09c53dbff7096bdff391ae90845887b4ea199f08"
       },
       {
         "name": "ferritecad:sbom:product-format",
