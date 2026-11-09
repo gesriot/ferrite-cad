@@ -542,6 +542,14 @@ fn native_suppression_changes_cache_inputs_and_restores_the_original_names() -> 
         ferritecad_document::EndCondition::ThroughAll,
     )?;
     doc.write_changes(&tool.changes)?;
+    let successor = ferritecad_fixtures::feature_changes::circular_tool(
+        &doc,
+        body,
+        [40., 20.],
+        2.,
+        ferritecad_document::EndCondition::ThroughAll,
+    )?;
+    doc.write_changes(&successor.changes)?;
     let mut kernel = OcctKernel::new()?;
     let mut cache = ferritecad_document::CacheStore::open(
         root.path().join("cache"),
@@ -781,7 +789,7 @@ fn native_cli_import_removal_reclaims_only_the_last_source_claim() -> Result<()>
     let imported = kernel.import_step(&bytes)?;
     doc.store_step_import(ferritecad_document::StepImportRequest {
         object: second,
-        name: Some("Second claim".into()),
+        name: Some("Second claim"),
         source: &bytes,
         source_name: None,
         import: &imported,
