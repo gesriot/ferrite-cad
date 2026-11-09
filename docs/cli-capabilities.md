@@ -659,3 +659,14 @@ one product with multiple solids; no product STEP exporter is added.
 See [ADR 0008](decisions/0008-multibody-results.md) and the [recipe](keep-solids.md).
 
 [Sweeps]: generic-sweeps.md
+
+## Tree operations
+
+The common `edit` request accepts `remove_object` for every object kind and
+`set_suppressed` for history features. Removal checks the entire batch, rewrites
+predecessor links and Body tips, and refuses with every remaining dependent.
+Deleting an import also releases source bytes after their last use.
+Suppression passes through the predecessor result without running that feature.
+Both `rebuild --cold` and transaction reports identify suppressed features.
+The window displays this state; tree commands remain a separate task.
+See [transaction examples](edit-transactions.md) and [ADR 0011](decisions/0011-tree-operations.md).

@@ -107,7 +107,7 @@ stock = next(p for p in facts["parameters"] if p["name"] == "stock")
 assert stock["value"] == 25 and set(stock["dependents"]) == {feature, offset}
 assert "stock = 25 mm" in call("inspect", final).stdout
 for change, words in [
-    ({"kind": "remove_parameter", "object": height}, [feature, offset]),
+    ({"kind": "remove_object", "object": height}, [feature, offset]),
     ({"kind": "set_parameter", "object": height, "expression": "allowance"},
      ["cycle", "stock", "allowance"]),
 ]:

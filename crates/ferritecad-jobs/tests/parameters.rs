@@ -64,7 +64,7 @@ fn each_parameter_edit_undoes_and_redoes_as_one_snapshot() -> Result<()> {
         }],
         vec![
             formula(extrude, Slot::ExtrudeDistance, "12"),
-            Edit::RemoveParameter { object: id },
+            Edit::RemoveObject { object: id },
         ],
     ] {
         let before = session.current().version();

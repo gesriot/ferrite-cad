@@ -6,6 +6,8 @@ use ferritecad_fixtures::live_model as fixture;
 mod naming;
 #[path = "operations.rs"]
 mod operations;
+#[path = "tree_operations.rs"]
+mod tree_operations;
 
 use crate::{DocumentSession, LiveDocument, PendingRevision};
 use counting::{Calls, Counting, Stop, TopologyMock};

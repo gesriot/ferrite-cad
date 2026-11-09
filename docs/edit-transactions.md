@@ -168,8 +168,40 @@ publication; Undo/Redo restores the whole candidate. See the executable
 
 ## Named parameters
 
-Use `add_parameter`, `set_parameter`, `rename_parameter` and `remove_parameter` in the same
+Use `add_parameter`, `set_parameter`, `rename_parameter` and `remove_object` in the same
 ordered transaction as feature edits. In `set_expression`, supply either a text `expression`
 or both `value` and `unit`. A literal form edit refuses to overwrite a formula. A text edit
 explicitly replaces it. Parameter values, dependent slots and graph rows change in the same
 Undo step. See the [request examples](expressions.md).
+
+## Removal and suppression
+
+`remove_object` replaces parameter-only removal and applies to every kind of object. List
+each intended removal explicitly. The complete candidate is checked after the whole batch;
+request order does not require dependents to precede their inputs.
+
+```json
+{"request_version":1,"changes":[
+  {"kind":"remove_object","object":"<feature UUID>"},
+  {"kind":"remove_object","object":"<unused profile UUID>"}
+]}
+```
+
+Retained successors and Body tips bypass removed features. A surviving operation requiring a
+predecessor cannot become NewBody implicitly. Removing a Body requires all its history features
+in the request; removing all features while retaining the Body leaves it empty. Every remaining
+dependent is listed with its name, kind and UUID. A rebuild refusal lists all newly unbuilt
+consumers, with the same atomic publication guarantee as other edits. Unclaimed import bytes
+are reclaimed with the removal of their final import.
+
+```json
+{"request_version":1,"changes":[
+  {"kind":"set_suppressed","object":"<feature UUID>","suppressed":true}
+]}
+```
+
+Suppression applies only to history features. It passes through the predecessor's shape and
+names without invoking the kernel; suppressing the first feature yields an empty result.
+Use `suppressed: false` to restore the operation. Dependent references still resolve exactly
+or refuse. Reports list `suppressed` separately from failed/skipped objects, and the model tree
+displays that status. Window commands for these operations are separate work.

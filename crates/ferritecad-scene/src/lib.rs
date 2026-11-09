@@ -965,6 +965,9 @@ fn generative_meanings(
 ) -> Result<BTreeMap<ferritecad_kernel::SubShapeHandle, Vec<BoundMeaning>>> {
     let mut named = BTreeMap::<_, Vec<_>>::new();
     for (feature, names) in &model.features {
+        if model.is_inherited_result(*feature) {
+            continue;
+        }
         if !names.shape().is_some_and(|shape| drawn.contains(&shape)) {
             continue;
         }
@@ -1396,6 +1399,10 @@ pub fn project_rebuild_status(
         .count();
     for row in &mut tree.rows {
         let id = row.id.0;
+        if report.suppressed.contains(&id) {
+            row.name = format!("{} · suppressed", row.name);
+            row.note = "Suppressed; passes through the predecessor result".into();
+        }
         let note = if let Some(body) = report.degraded_bodies.iter().find(|b| b.id == id) {
             Some(format!(
                 "Rolled back to {} because of {}",

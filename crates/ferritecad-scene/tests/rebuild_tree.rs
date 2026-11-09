@@ -10,6 +10,7 @@ fn tree_occurrences_show_errors_root_dependencies_and_body_fallback() {
     let mut tree =
         ferritecad_document::ModelTree::from_dependencies(&objects, document.dependencies());
     let report = RebuildReport {
+        suppressed: Vec::new(),
         failed: vec![FailedFeature {
             id: chain.first,
             kind: "kernel".into(),

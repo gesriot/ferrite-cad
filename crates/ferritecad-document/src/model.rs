@@ -82,6 +82,21 @@ impl ObjectKind {
             Self::Extrude | Self::Revolve | Self::Fillet | Self::Chamfer | Self::KeepSolids
         )
     }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Parameter => "parameter",
+            Self::DatumPlane => "datum plane",
+            Self::Sketch => "sketch",
+            Self::Body => "body",
+            Self::Extrude => "Extrude",
+            Self::ImportedStep => "imported STEP",
+            Self::Revolve => "Revolve",
+            Self::Fillet => "Fillet",
+            Self::Chamfer => "Chamfer",
+            Self::KeepSolids => "KeepSolids",
+        }
+    }
 }
 
 /// A user-editable value together with how it was written.
@@ -1360,8 +1375,12 @@ impl ObjectPayload {
     }
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+        self.encode_suppressed(false)
+    }
+
+    pub(crate) fn encode_suppressed(&self, suppressed: bool) -> Result<Vec<u8>> {
         let name = self.type_name();
-        let envelope = match self {
+        let mut envelope = match self {
             Self::Parameter(v) => Envelope::encode(name, v)?,
             Self::DatumPlane(v) => Envelope::encode(name, v)?,
             Self::Sketch(v) => Envelope::encode(name, v)?,
@@ -1373,6 +1392,7 @@ impl ObjectPayload {
             Self::KeepSolids(v) => Envelope::encode(name, v)?,
             Self::ImportedStep(v) => Envelope::encode(name, v)?,
         };
+        envelope.suppressed = suppressed.then_some(true);
         envelope.to_bytes()
     }
 
@@ -1385,9 +1405,19 @@ impl ObjectPayload {
 
     pub(crate) fn read_record(bytes: &[u8]) -> Result<Self> {
         let envelope = Envelope::from_bytes(bytes)?;
+        Self::read_envelope(&envelope)
+    }
+
+    pub(crate) fn read_envelope(envelope: &Envelope) -> Result<Self> {
         let kind = ObjectKind::parse(&envelope.type_name).ok_or_else(|| {
             CadError::input(format!("unknown object type {}", envelope.type_name))
         })?;
+        if envelope.suppressed.is_some() && !kind.is_feature() {
+            return Err(CadError::input(format!(
+                "a {} cannot carry a suppression flag",
+                kind.label()
+            )));
+        }
         let payload = match kind {
             ObjectKind::Parameter => Self::Parameter(envelope.decode()?),
             ObjectKind::DatumPlane => Self::DatumPlane(envelope.decode()?),

@@ -57,7 +57,7 @@ fn forward_references_rename_removal_and_cycles_are_atomic() -> Result<()> {
             vec!["cycle", "base", "ab"],
         ),
         (
-            EditChange::RemoveParameter { object: a },
+            EditChange::RemoveObject { object: a },
             vec!["referenced by", "ab", "c"],
         ),
         (
@@ -95,9 +95,9 @@ fn forward_references_rename_removal_and_cycles_are_atomic() -> Result<()> {
     assert_eq!(deps.len(), 3);
     assert!(deps.iter().all(|e| e.role == DependencyRole::Parameter));
     doc.write_changes(&[
-        EditChange::RemoveParameter { object: c },
-        EditChange::RemoveParameter { object: ab },
-        EditChange::RemoveParameter { object: a },
+        EditChange::RemoveObject { object: c },
+        EditChange::RemoveObject { object: ab },
+        EditChange::RemoveObject { object: a },
     ])?;
     assert!(doc.objects()?.is_empty());
     assert!(doc.dependencies()?.is_empty());
