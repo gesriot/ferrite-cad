@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::*;
 use ferritecad_fixtures::datum_planes::{boss, sweep_face};
 use ferritecad_jobs::{DocumentSession, EditRequest, edit_copy};
@@ -36,16 +38,15 @@ fn plane_addition_face_change_offset_and_undo_redo_share_atomic_transactions() {
         )
         .expect("baseline");
     let expected = session.current().version();
-    let step = session
-        .begin_step()
-        .edit(
-            f.changes,
-            expected,
-            &mut kernel,
-            |_, _| unreachable!("no imports"),
-            &OperationContext::default(),
-        )
-        .expect("one addition");
+    let step = live_step::prepare(
+        session.begin_step(),
+        f.changes,
+        expected,
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &OperationContext::default(),
+    )
+    .expect("one addition");
     session.commit_step(step).expect("commit");
     let saved = Document::open_read_only(session.current().path()).expect("snapshot");
     let original_content = saved.content_version().expect("content");
@@ -73,16 +74,15 @@ fn plane_addition_face_change_offset_and_undo_redo_share_atomic_transactions() {
         },
         EditChange::constant(f.plane, ExpressionSlot::DatumOffset, -1.).expect("offset"),
     ];
-    let step = session
-        .begin_step()
-        .edit(
-            changes,
-            session.current().version(),
-            &mut kernel,
-            |_, _| unreachable!("no imports"),
-            &OperationContext::default(),
-        )
-        .expect("face and offset");
+    let step = live_step::prepare(
+        session.begin_step(),
+        changes,
+        session.current().version(),
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &OperationContext::default(),
+    )
+    .expect("face and offset");
     session.commit_step(step).expect("commit");
     let saved = Document::open_read_only(session.current().path()).expect("changed snapshot");
     let changed_content = saved.content_version().expect("changed hash");

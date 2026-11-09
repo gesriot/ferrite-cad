@@ -9,10 +9,8 @@ use ferritecad_kernel::OperationContext;
 fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
-        .begin_apply(|t, _, c| {
-            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
-                tx.send(v).expect("deliver")
-            })
+        .apply(r.expected, r.changes.clone(), move |_, v| {
+            tx.send(v).expect("deliver");
         })
         .expect("start");
     (g, rx)
@@ -20,11 +18,11 @@ fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<P
 fn apply(s: &mut Sessions, r: &EditRequest) -> Edited {
     let (g, rx) = start(s, r);
     let edited = s.finish_apply(g, rx.recv().expect("edit"));
-    if let Edited::Show(path) = &edited {
+    if let Edited::Show(_) = &edited {
         let (tx, rx) = mpsc::channel();
-        let c = s.scene_token(g).expect("token");
-        let worker = spawn_scene(path.clone(), c, move |v| tx.send(v).expect("scene"));
-        assert!(s.attach_scene(g, worker));
+        s.draw_staged(g, move |v| {
+            tx.send(v).expect("scene");
+        });
         rx.recv().expect("scene").expect("prepared scene");
         s.bind(Bind::Staged).expect("bind");
         assert!(s.finish_scene(g, Ok(())));
@@ -583,10 +581,7 @@ fn native_constraints_then_angle_preserve_stored_approximation_and_cli_cells() {
     gate(false, true, "constrained");
 }
 #[test]
-fn stub_angle_apply_refuses_without_publication() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_angle_apply_leaves_no_publication() {
     let root = tempfile::tempdir().expect("root");
     let source = root.path().join("source.fcad");
     crate::constraints::tests::revolve::write_sector(
@@ -596,19 +591,18 @@ fn stub_angle_apply_refuses_without_publication() {
     );
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(
-        crate::sessions::test_open::open_in(root.path(), &source, HistoryLimits::default())
-            .expect("session"),
-    );
+    s.adopt(test_open::topology(&source, root.path()).expect("session"));
     let reading = crate::sketch_facts::read(&source).expect("reading");
     let (_form, r) = typed_angle(&source, &reading, &s, "212.25");
+    let shapes = test_open::fail_next(&s, "revolve_count");
     let (g, rx) = start(&mut s, &r);
     let error = rx.recv().expect("answer").expect_err("typed refusal");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
     assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
     assert!(!s.dirty() && !s.can_undo() && !s.can_redo());
     assert_eq!(private_files(&s).len(), 1);
     assert_eq!(std::fs::read(&source).expect("source"), bytes);
+    test_open::retry(&mut s, &r, "revolve_count", 1, shapes);
 }
 #[test]
 fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {

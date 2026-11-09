@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::*;
 use ferritecad_jobs::{DocumentSession, EditRequest, edit_copy};
 use ferritecad_kernel::{OperationContext, TessellationParams};
@@ -40,16 +42,15 @@ fn end_changes_offset_undo_and_redo_share_atomic_publication_and_cycle_refusal()
             object: f.boss.feature,
             end_condition,
         }];
-        let step = session
-            .begin_step()
-            .edit(
-                changes,
-                version,
-                &mut kernel,
-                |_, _| unreachable!("no imports"),
-                &context,
-            )
-            .expect("change end");
+        let step = live_step::prepare(
+            session.begin_step(),
+            changes,
+            version,
+            &mut kernel,
+            |_, _| unreachable!("no imports"),
+            &context,
+        )
+        .expect("change end");
         session.commit_step(step).expect("commit");
         let after = Document::open_read_only(session.current().path())
             .expect("after")
@@ -76,23 +77,22 @@ fn end_changes_offset_undo_and_redo_share_atomic_publication_and_cycle_refusal()
             after
         );
     }
-    let step = session
-        .begin_step()
-        .edit(
-            vec![
-                EditChange::SetEndCondition {
-                    object: f.boss.feature,
-                    end_condition: f.face_end(0.).expect("face"),
-                },
-                EditChange::constant(f.boss.feature, ExpressionSlot::ExtrudeEndOffset, 2.)
-                    .expect("offset"),
-            ],
-            session.current().version(),
-            &mut kernel,
-            |_, _| unreachable!("no imports"),
-            &context,
-        )
-        .expect("offset edit");
+    let step = live_step::prepare(
+        session.begin_step(),
+        vec![
+            EditChange::SetEndCondition {
+                object: f.boss.feature,
+                end_condition: f.face_end(0.).expect("face"),
+            },
+            EditChange::constant(f.boss.feature, ExpressionSlot::ExtrudeEndOffset, 2.)
+                .expect("offset"),
+        ],
+        session.current().version(),
+        &mut kernel,
+        |_, _| unreachable!("no imports"),
+        &context,
+    )
+    .expect("offset edit");
     session.commit_step(step).expect("offset commit");
     let source = session.current().path().to_owned();
     let before = std::fs::read(&source).expect("source bytes");
@@ -244,7 +244,8 @@ fn switch_a_cut_to_next_and_back_through_undo_and_redo() -> ferritecad_types::Re
     for next in [EndCondition::UpToNext, blind] {
         let before = condition(&session)?;
         let version = session.current().version();
-        let step = session.begin_step().edit(
+        let step = live_step::prepare(
+            session.begin_step(),
             vec![EditChange::SetEndCondition {
                 object: cut.feature,
                 end_condition: next.clone(),

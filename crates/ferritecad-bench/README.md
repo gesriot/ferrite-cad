@@ -26,7 +26,7 @@ after the returned picture is available and the version is committed. Height,
 fillet radius and Revolve angle use the common edit transaction. A plate vertex
 scenario moves the first vertex 1 mm in X and updates both incident Lines in
 one transaction. Models with several bodies select an extrusion by UUID. Undo
-starts with one accepted edit and includes a fresh scene load and commit. STL
+starts with one accepted edit and includes incremental evaluation, scene preparation and commit. STL
 selects one body and includes the full document rebuild, tessellation and atomic
 publication. There is no GPU upload in these timings.
 
@@ -41,12 +41,10 @@ This also writes a two-fillet plate and a broken constrained two-fillet plate fo
 refusal and repair checks. Run the native viewer only through
 `tools/watch-viewer-memory.py`, as required by `CONTRIBUTING.md`.
 
-A session picture establishes the baseline's resolved references and unbuilt
-objects. Each modelling step cold-rebuilds once, checks references and all new
-failures, and tessellates that same result before publishing. CLI copy jobs have
-no session facts and still rebuild twice. Open, tab switching, model Undo/Redo
-and export each rebuild once. Checkpoint changes that keep the picture retain
-the existing path. Neither the history nor these benchmarks cache scenes.
+The headless Apply and Undo measurements use the same live evaluator as a window tab.
+They include the copy transaction and scene preparation, retaining unchanged feature results
+and body meshes. Open and export remain standalone readings in this tool. Window measurements
+also include the owner thread, device upload and presentation.
 
 The isolated naming experiment measures a cold rebuild and then generative
 naming separately, including every intermediate feature result:

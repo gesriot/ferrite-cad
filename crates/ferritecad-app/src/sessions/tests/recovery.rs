@@ -259,34 +259,21 @@ fn discard_and_quit_end_the_copy_and_an_exit_nobody_chose_keeps_it() {
 }
 
 /// An orphaned record holding the fixture's plate after one height edit.
-fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, DocumentSession) {
-    let mut session =
+fn orphan(f: &Fixture, store: &RecoveryStore, millimetres: f64) -> (RecordId, OpenTab) {
+    let session =
         crate::sessions::test_open::open_in(f.private.path(), &f.file, HistoryLimits::default())
             .expect("session");
-    let step = {
-        let ticket = session.begin_step();
-        let expected = ticket.source().version();
-        ticket.edit(
-            vec![
-                ferritecad_document::EditChange::constant(
-                    f.feature,
-                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                    millimetres,
-                )
-                .expect("test value"),
-            ],
-            expected,
-            &mut MockKernel::new(),
-            |_, _| {
-                Err(ferritecad_types::CadError::unsupported(
-                    "no STEP imports in this model",
-                ))
-            },
-            &OperationContext::default(),
-        )
-    }
-    .expect("edit");
-    session.commit_step(step).expect("accepted");
+    let session = test_open::edit(
+        session,
+        vec![
+            ferritecad_document::EditChange::constant(
+                f.feature,
+                ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                millimetres,
+            )
+            .expect("test value"),
+        ],
+    );
     let mut record = store.create_record().expect("record");
     record
         .publish(1, &session.current(), &session.recovery_name())
@@ -316,7 +303,7 @@ fn a_recovered_document_is_untitled_named_recovered_and_takes_over_its_record() 
     let session = DocumentSession::recover_in(f.private.path(), HistoryLimits::default(), claim)
         .expect("recovered");
     // The window binds it exactly as it binds an Open.
-    s.bind(Bind::Open(Box::new(session))).expect("bound");
+    s.bind(Bind::Open(Box::new(session.into()))).expect("bound");
     written(&s);
     assert_eq!(s.title(), "*plate.fcad (recovered) — FerriteCAD");
     assert!(s.untitled() && s.recovered() && s.dirty() && !s.can_undo());

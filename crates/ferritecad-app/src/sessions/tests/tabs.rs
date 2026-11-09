@@ -47,7 +47,7 @@ fn draw(
     deliver: impl FnOnce(Result<LoadedScene>) + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
     match drawn {
-        Drawn::Native => spawn_scene(path, cancel, deliver),
+        Drawn::Native => cold_scene(path, cancel, deliver),
         Drawn::Mock => std::thread::spawn(move || {
             let scene = cancel.check().and_then(|()| mock_scene(&path));
             deliver(scene);
@@ -151,12 +151,7 @@ impl Window {
     fn open(&mut self, path: &Path) -> Opening {
         let opening = self.tabs.opening(&self.sessions, path);
         if opening == Opening::Load {
-            let session = crate::sessions::test_open::open_in(
-                self.private.path(),
-                path,
-                HistoryLimits::default(),
-            )
-            .expect("session");
+            let session = self.open_tab(path).expect("session");
             let shown = session.current().path().to_path_buf();
             let scene = self.picture(&shown);
             self.present(&shown, scene, Bind::Open(Box::new(session)), Ok(()))
@@ -168,16 +163,36 @@ impl Window {
     /// A new document (`App::create_new` after its room check): no file.
     fn create(&mut self, content: ferritecad_jobs::NewDocument) -> Result<()> {
         self.tabs.room().map_err(CadError::input)?;
-        let session = DocumentSession::create_document_in(
-            self.private.path(),
-            HistoryLimits::default(),
-            content,
-            || Err::<MockKernel, _>(CadError::unsupported("not needed")),
-            &OperationContext::default(),
-        )?;
-        let shown = session.current().path().to_path_buf();
-        let scene = self.picture(&shown);
-        self.present(&shown, scene, Bind::Open(Box::new(session)), Ok(()))
+        let (scene, tab) = match self.drawn {
+            Drawn::Native => {
+                create_for_view(self.private.path(), content, &OperationContext::default())?
+            }
+            Drawn::Mock => {
+                let session = DocumentSession::create_document_in(
+                    self.private.path(),
+                    HistoryLimits::default(),
+                    content,
+                    || Err::<MockKernel, _>(CadError::unsupported("not needed")),
+                    &OperationContext::default(),
+                )?;
+                let (scene, tab, _) = test_open::observed(session)?;
+                (scene, tab)
+            }
+        };
+        let shown = tab.current().path().to_owned();
+        self.present(&shown, Ok(scene), Bind::Open(Box::new(tab)), Ok(()))
+    }
+
+    fn open_tab(&self, path: &Path) -> Result<OpenTab> {
+        match self.drawn {
+            Drawn::Native => test_open::open_in(self.private.path(), path, Default::default()),
+            Drawn::Mock => test_open::observed(DocumentSession::open_in(
+                self.private.path(),
+                path,
+                Default::default(),
+            )?)
+            .map(|(_, tab, _)| tab),
+        }
     }
 
     fn feature(&self) -> ObjectId {
@@ -194,52 +209,22 @@ impl Window {
     fn apply(&mut self, millimetres: f64) {
         let feature = self.feature();
         let (tx, rx) = mpsc::channel();
-        let drawn = self.drawn;
         let generation = self
             .sessions
-            .begin_apply(|ticket, _, cancel| match drawn {
-                Drawn::Native => spawn_apply(
-                    ticket.source().version(),
-                    ticket,
-                    vec![
-                        ferritecad_document::EditChange::constant(
-                            feature,
-                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                            millimetres,
-                        )
-                        .expect("height"),
-                    ],
-                    cancel.clone(),
-                    move |v| {
-                        tx.send(v).expect("edit");
-                    },
-                ),
-                Drawn::Mock => std::thread::spawn(move || {
-                    let edit = {
-                        let ticket = ticket;
-                        let expected = ticket.source().version();
-                        ticket.edit(
-                            vec![
-                                ferritecad_document::EditChange::constant(
-                                    feature,
-                                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                    millimetres,
-                                )
-                                .expect("test value"),
-                            ],
-                            expected,
-                            &mut MockKernel::new(),
-                            |_, _| {
-                                Err(ferritecad_types::CadError::unsupported(
-                                    "no STEP imports in this model",
-                                ))
-                            },
-                            &OperationContext::default(),
-                        )
-                    };
-                    tx.send(edit).expect("edit");
-                }),
-            })
+            .apply(
+                self.sessions.export_source().expect("open").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        millimetres,
+                    )
+                    .expect("height"),
+                ],
+                move |_, reply| {
+                    tx.send(reply).expect("reply");
+                },
+            )
             .expect("started");
         let Edited::Show(path) = self.sessions.finish_apply(generation, wait(&rx)) else {
             panic!("the edit was not shown: {}", self.sessions.status);
@@ -249,11 +234,9 @@ impl Window {
 
     fn show_staged(&mut self, generation: Address, path: PathBuf) {
         let (tx, rx) = mpsc::channel();
-        let token = self.sessions.scene_token(generation).expect("token");
-        let worker = draw(self.drawn, path.clone(), token, move |v| {
+        self.sessions.draw_staged(generation, move |v| {
             tx.send(v).expect("scene");
         });
-        assert!(self.sessions.attach_scene(generation, worker));
         let scene = wait(&rx);
         let outcome = self.present(&path, scene, Bind::Staged, Ok(()));
         assert!(outcome.is_ok(), "{outcome:?}");
@@ -318,13 +301,10 @@ impl Window {
         after: Option<After>,
     ) -> (u64, mpsc::Receiver<Result<LoadedScene>>) {
         let (tx, rx) = mpsc::channel();
-        let drawn = self.drawn;
         let generation = self
             .tabs
-            .begin_switch(&mut self.sessions, tab, after, |path, _, cancel| {
-                draw(drawn, path, cancel.clone(), move |v| {
-                    let _ = tx.send(v);
-                })
+            .begin_live_switch(&mut self.sessions, tab, after, move |_, reply| {
+                let _ = tx.send(reply);
             })
             .expect("a switch starts");
         (generation, rx)
@@ -921,33 +901,20 @@ fn late_cancelled_or_foreign_answers_change_no_tab_and_release_no_slot() {
     let (tx, rx) = mpsc::channel();
     let b_address = w
         .sessions
-        .begin_apply(|ticket, _, _| {
-            std::thread::spawn(move || {
-                let edit = {
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        vec![
-                            ferritecad_document::EditChange::constant(
-                                feature,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                17.0,
-                            )
-                            .expect("test value"),
-                        ],
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                };
-                tx.send(edit).expect("edit");
-            })
-        })
+        .apply(
+            w.sessions.export_source().expect("open").version(),
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    17.0,
+                )
+                .expect("test value"),
+            ],
+            move |_, reply| {
+                tx.send(reply).expect("deliver");
+            },
+        )
         .expect("B's Apply");
     assert_eq!(b_address.generation, a_address.generation);
     let answer = wait(&rx);
@@ -1024,7 +991,7 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
     // unsaved, is not replaced.
     let orphan = {
         let other = tempfile::tempdir().expect("other window");
-        let mut session =
+        let session =
             crate::sessions::test_open::open_in(other.path(), &b_file, HistoryLimits::default())
                 .expect("open");
         let mut lane = RecoveryRecorder::start(store.clone(), || {});
@@ -1033,30 +1000,17 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
-        let step = {
-            let ticket = session.begin_step();
-            let expected = ticket.source().version();
-            ticket.edit(
-                vec![
-                    ferritecad_document::EditChange::constant(
-                        feature,
-                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                        33.0,
-                    )
-                    .expect("test value"),
-                ],
-                expected,
-                &mut MockKernel::new(),
-                |_, _| {
-                    Err(ferritecad_types::CadError::unsupported(
-                        "no STEP imports in this model",
-                    ))
-                },
-                &OperationContext::default(),
-            )
-        }
-        .expect("edit");
-        session.commit_step(step).expect("accepted");
+        let mut session = test_open::edit(
+            session,
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    33.0,
+                )
+                .expect("test value"),
+            ],
+        );
         lane.observe(&mut session);
         let deadline = Instant::now() + Duration::from_secs(60);
         while !lane.settled() {
@@ -1082,8 +1036,13 @@ fn each_tab_keeps_its_own_files_and_crash_copy_and_closing_frees_only_its_own() 
         (w.picture(&shown), session)
     };
     let shown = recovered.current().path().to_path_buf();
-    w.present(&shown, scene, Bind::Open(Box::new(recovered)), Ok(()))
-        .expect("a new tab");
+    w.present(
+        &shown,
+        scene,
+        Bind::Open(Box::new(recovered.into())),
+        Ok(()),
+    )
+    .expect("a new tab");
     let r = w.sessions.tab();
     assert_ne!(r, a);
     assert!(w.sessions.recovered() && w.sessions.dirty());
@@ -1147,24 +1106,25 @@ fn the_ninth_document_is_refused_before_anything_changes() {
     assert!(w.tabs.room().is_ok(), "closing one makes room");
 }
 
-/// Without a kernel the window's own scene worker cannot draw a hidden tab: the
-/// switch is refused at its picture and the shown tab stays (stub build).
+/// A refused upload leaves the shown tab in place and keeps the hidden owner intact.
 #[test]
-fn stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_switch_upload_keeps_the_shown_tab() {
     let mut w = Window::new(Drawn::Mock, None);
     w.create(NewDocument::Empty).expect("first");
     let first = w.sessions.tab();
     w.create(NewDocument::Empty).expect("second");
     let second = w.sessions.tab();
     let shown = w.scene.document.clone();
-    w.drawn = Drawn::Native;
+    let probe = test_open::probe(w.tabs.hidden_sessions(first).expect("hidden"));
+    let (shapes, calls) = {
+        let probe = probe.lock().expect("probe");
+        (probe.live, probe.calls)
+    };
     let (generation, rx) = w.begin_switch(first, None);
-    let refused = wait(&rx).map(|_| ()).expect_err("no kernel");
+    let picture = wait(&rx).expect("accepted picture");
+    let refused = CadError::rendering("requested upload refusal");
     let (outcome, _) = w
-        .deliver_switch(generation, Err(refused), Ok(()))
+        .deliver_switch(generation, Ok(picture), Err(refused))
         .expect("awaited");
     assert!(outcome.is_err());
     assert_eq!(
@@ -1180,6 +1140,14 @@ fn stub_switching_is_refused_at_the_picture_and_keeps_the_shown_tab() {
         w.sessions.status
     );
     assert!(w.tabs.hidden_sessions(first).is_some());
+    assert_eq!(probe.lock().expect("probe").live, shapes);
+    w.switch(first);
+    let final_state = probe.lock().expect("probe");
+    assert_eq!(final_state.live, shapes);
+    assert_eq!(
+        final_state.calls, calls,
+        "switching must not enter the kernel"
+    );
 }
 
 // --- native: Open CASCADE and PlaneGCS, against the shipped command line ---------
@@ -1199,10 +1167,8 @@ impl Window {
         let (tx, rx) = mpsc::channel();
         let generation = self
             .sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(expected, ticket, changes, cancel.clone(), move |v| {
-                    tx.send(v).expect("edit");
-                })
+            .apply(expected, changes, move |_, value| {
+                tx.send(value).expect("edit");
             })
             .expect("started");
         let Edited::Show(path) = self.sessions.finish_apply(generation, wait(&rx)) else {
@@ -1984,33 +1950,20 @@ fn a_cancelled_switch_reply_is_ignored_while_an_apply_runs() {
     let (tx, rx) = mpsc::channel();
     let edit = w
         .sessions
-        .begin_apply(|ticket, _, _| {
-            std::thread::spawn(move || {
-                let result = {
-                    let ticket = ticket;
-                    let expected = ticket.source().version();
-                    ticket.edit(
-                        vec![
-                            ferritecad_document::EditChange::constant(
-                                feature,
-                                ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                19.0,
-                            )
-                            .expect("test value"),
-                        ],
-                        expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    )
-                };
-                let _ = tx.send(result);
-            })
-        })
+        .apply(
+            w.sessions.export_source().expect("open").version(),
+            vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    19.0,
+                )
+                .expect("test value"),
+            ],
+            move |_, reply| {
+                tx.send(reply).expect("deliver");
+            },
+        )
         .expect("Apply follows Cancel");
     let status = w.sessions.status.clone();
     assert!(

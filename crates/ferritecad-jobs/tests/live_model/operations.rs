@@ -195,17 +195,21 @@ fn exercise<K: Oracle>() -> Result<()> {
         let original = live.session().current();
         let bytes = std::fs::read(original.path())?;
         let scene = live.scene().clone();
-        assert_eq!(live.kernel.inner.population(), old);
-        live.kernel.calls.take();
+        assert_eq!(live.evaluator.kernel.inner.population(), old);
+        live.evaluator.kernel.calls.take();
         let solves = ferritecad_sketch_solver::native_solves();
         let mut step = live.apply(original.version(), change, &ctx)?;
-        check_work(step.owner.kernel.calls.take(), solves, work);
-        assert_eq!(step.owner.kernel.inner.population(), union, "{operation}");
+        check_work(step.owner.evaluator.kernel.calls.take(), solves, work);
+        assert_eq!(
+            step.owner.evaluator.kernel.inner.population(),
+            union,
+            "{operation}"
+        );
         assert_eq!(step.owner.session.current().version(), original.version());
         assert_eq!(step.owner.session.current().path(), original.path());
         assert!(!step.owner.session.can_undo());
         assert_eq!(std::fs::read(original.path())?, bytes);
-        assert_eq!(step.owner.picture.scene, scene);
+        assert_eq!(step.owner.scene, scene);
         compare(&mut step)?;
         let next = step.snapshot().version();
         let private = step.snapshot().path().to_owned();
@@ -213,8 +217,8 @@ fn exercise<K: Oracle>() -> Result<()> {
         step.commit_step()?;
         assert_eq!(live.session().current().version(), next);
         assert_eq!(live.session().current().path(), private);
-        assert_eq!(live.kernel.inner.population(), new);
-        live.kernel.calls.take();
+        assert_eq!(live.evaluator.kernel.inner.population(), new);
+        live.evaluator.kernel.calls.take();
         let solves = ferritecad_sketch_solver::native_solves();
         let mut undo = live.undo(&ctx)?;
         let undo_work = if operation.starts_with("add_") {
@@ -224,14 +228,14 @@ fn exercise<K: Oracle>() -> Result<()> {
         } else {
             work
         };
-        check_work(undo.owner.kernel.calls.take(), solves, undo_work);
-        assert_eq!(undo.owner.kernel.inner.population(), union);
+        check_work(undo.owner.evaluator.kernel.calls.take(), solves, undo_work);
+        assert_eq!(undo.owner.evaluator.kernel.inner.population(), union);
         compare(&mut undo)?;
         undo.commit_step()?;
         assert_eq!(live.scene(), &scene);
         assert_eq!(live.session().current().version(), original.version());
         assert_eq!(live.session().current().path(), original.path());
-        assert_eq!(live.kernel.inner.population(), old);
+        assert_eq!(live.evaluator.kernel.inner.population(), old);
         assert_eq!(std::fs::read(&path)?, source_bytes);
         assert_eq!(std::fs::read(original.path())?, bytes);
     }
@@ -266,7 +270,7 @@ fn rejected_mesh_preserves_accepted_file_scene_and_reusable_base() -> Result<()>
     )?;
     let original = live.session().current();
     let scene = live.scene().clone();
-    let shapes = live.kernel.inner.live.clone();
+    let shapes = live.evaluator.kernel.inner.live.clone();
     let files = || -> Result<std::collections::BTreeSet<std::ffi::OsString>> {
         Ok(
             std::fs::read_dir(original.path().parent().expect("private directory"))?
@@ -275,28 +279,28 @@ fn rejected_mesh_preserves_accepted_file_scene_and_reusable_base() -> Result<()>
         )
     };
     let before = files()?;
-    live.kernel.inner.refuse_mesh = true;
+    live.evaluator.kernel.inner.refuse_mesh = true;
     let error = live
         .apply(original.version(), edits.clone(), &ctx)
         .err()
         .expect("mesh refused");
     assert!(error.to_string().contains("requested mesh failure"));
-    assert_eq!(live.kernel.inner.live, shapes);
+    assert_eq!(live.evaluator.kernel.inner.live, shapes);
     assert_eq!(files()?, before);
     assert_eq!(live.scene(), &scene);
     assert_eq!(live.session().current().version(), original.version());
     assert!(!live.session().can_undo());
-    live.kernel.inner.refuse_mesh = false;
-    live.kernel.calls.take();
+    live.evaluator.kernel.inner.refuse_mesh = false;
+    live.evaluator.kernel.calls.take();
     let solves = ferritecad_sketch_solver::native_solves();
     let mut step = live.apply(original.version(), edits, &ctx)?;
     check_work(
-        step.owner.kernel.calls.take(),
+        step.owner.evaluator.kernel.calls.take(),
         solves,
         [0, 0, 0, 1, 0, 1, 0],
     );
     compare(&mut step)?;
     step.commit_step()?;
-    assert_eq!(live.kernel.inner.live.len(), 2);
+    assert_eq!(live.evaluator.kernel.inner.live.len(), 2);
     Ok(())
 }

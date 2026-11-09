@@ -2,13 +2,15 @@
 //! The document session's state machine, with real documents and no window.
 //!
 //! No Open CASCADE: the copy operation under test is the real `edit with extrude_distance`
-//! (`StepTicket::edit_extrude_height`) run on the mock kernel, which is enough
+//! through the live evaluator on the mock kernel, which is enough
 //! for a plate and exercises the same prepare, cold rebuild, strict reference
 //! check, version re-check and publication the command line uses. Geometry is
 //! measured by the native tests; what is asserted here is state and files.
 
 mod support;
 
+#[path = "support/live_step.rs"]
+mod live_step;
 use std::path::{Path, PathBuf};
 
 use ferritecad_jobs::{
@@ -89,7 +91,8 @@ fn apply(
     let step = {
         let ticket = ticket;
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     feature,
@@ -208,7 +211,8 @@ fn editing_back_to_the_saved_value_is_clean_and_a_no_op_is_not_a_step() {
     let step = {
         let ticket = ticket;
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     f.feature,
@@ -337,7 +341,8 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
     let step = {
         let ticket = ticket;
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     f.feature,
@@ -369,7 +374,8 @@ fn a_failed_stale_or_dropped_step_changes_nothing_and_leaves_no_file() {
     let stale = {
         let ticket = support::viewed(session.begin_step());
         let expected = ticket.source().version();
-        ticket.edit(
+        live_step::prepare(
+            ticket,
             vec![
                 ferritecad_document::EditChange::constant(
                     f.feature,
@@ -558,7 +564,8 @@ fn apply_vertices(
         sketch,
         &vertices,
     )?;
-    let step = support::viewed(session.begin_step()).edit(
+    let step = live_step::prepare(
+        support::viewed(session.begin_step()),
         changes,
         expected,
         &mut MockKernel::new(),
@@ -798,7 +805,8 @@ fn apply_constraints(
         sketch,
         &edits,
     )?;
-    let step = support::viewed(session.begin_step()).edit(
+    let step = live_step::prepare(
+        support::viewed(session.begin_step()),
         changes,
         expected,
         &mut MockKernel::new(),

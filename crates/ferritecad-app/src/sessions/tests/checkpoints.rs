@@ -326,15 +326,14 @@ fn a_crash_copy_of_the_window_carries_its_checkpoints() {
     );
 }
 
-/// Restore without a kernel: listing, Create, Delete and extraction work; the
-/// restored model is produced and refused at its picture, and nothing changes.
+/// A failed tessellation during Restore preserves the current model and checkpoint catalogue.
 #[test]
-fn stub_checkpoints_work_and_restore_is_refused_at_the_picture() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_checkpoint_restore_keeps_the_picture() {
     let f = fixture();
-    let mut s = open(&f);
+    let (_, tab, probe) =
+        test_open::observed(DocumentSession::open(&f.file).expect("session")).expect("mock tab");
+    let mut s = Sessions::default();
+    s.adopt(tab);
     let a = create(&mut s, "A");
     move_kept(&mut s, true);
     assert!(listed(&s).is_empty());
@@ -345,20 +344,20 @@ fn stub_checkpoints_work_and_restore_is_refused_at_the_picture() {
     s.bind(Bind::Staged).expect("the mock edit is accepted");
     assert!(s.finish_scene(generation, Ok(())));
     let state = (s.export_path(), s.dirty(), s.can_undo(), s.can_redo());
+    let shapes = test_open::fail_next(&s, "tessellate");
     let (generation, edited) = run_checkpoint(&mut s, CheckpointAction::Restore(a.id));
-    let Edited::Show(path) = edited else {
+    let Edited::Show(_) = edited else {
         panic!("a restored model needs its picture: {edited:?}");
     };
     let (tx, rx) = mpsc::channel();
-    let worker = spawn_scene(path, s.scene_token(generation).expect("token"), move |v| {
-        tx.send(v).expect("scene")
+    s.draw_staged(generation, move |v| {
+        tx.send(v).expect("scene");
     });
-    assert!(s.attach_scene(generation, worker));
     let refused = rx
         .recv()
         .expect("answer")
         .map(|_| ())
-        .expect_err("no kernel");
+        .expect_err("requested kernel failure");
     assert!(s.finish_scene(generation, Err(refused)));
     assert!(
         s.status.starts_with("Could not show the change"),
@@ -382,6 +381,28 @@ fn stub_checkpoints_work_and_restore_is_refused_at_the_picture() {
     )
     .expect("extraction needs no kernel");
     assert_eq!(height_of(&out), 12.0);
+    let before = {
+        let mut p = probe.lock().expect("probe");
+        assert_eq!(p.live, shapes);
+        p.fail = None;
+        p.calls
+    };
+    let (generation, edited) = run_checkpoint(&mut s, CheckpointAction::Restore(a.id));
+    assert!(matches!(edited, Edited::Show(_)));
+    let (send, receive) = mpsc::channel();
+    s.draw_staged(generation, move |r| {
+        send.send(r).expect("reply");
+    });
+    receive
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("answer")
+        .expect("restored");
+    assert_eq!(
+        probe.lock().expect("probe").calls.extrude_count - before.extrude_count,
+        1
+    );
+    s.commit_staged().expect("commit restore");
+    assert!(s.finish_scene(generation, Ok(())));
 }
 
 /// Open CASCADE without the solver: an unconstrained plate is restored and drawn.
@@ -405,14 +426,11 @@ fn mixed_checkpoint_restore_draws_with_occt_and_no_solver() {
 /// then the version becoming current with it.
 fn restore_native(s: &mut Sessions, id: CheckpointId) {
     let (generation, edited) = run_checkpoint(s, CheckpointAction::Restore(id));
-    let Edited::Show(path) = edited else {
+    let Edited::Show(_) = edited else {
         panic!("a restored model is drawn: {edited:?} {}", s.status);
     };
     let (tx, rx) = mpsc::channel();
-    let worker = spawn_scene(path, s.scene_token(generation).expect("token"), move |v| {
-        tx.send(v).expect("scene")
-    });
-    assert!(s.attach_scene(generation, worker));
+    s.draw_staged(generation, move |v| tx.send(v).expect("scene"));
     let scene = rx
         .recv_timeout(std::time::Duration::from_secs(120))
         .expect("scene")
@@ -427,33 +445,28 @@ fn add_cut_native(s: &mut Sessions) {
     let reading = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
     let (tx, rx) = mpsc::channel();
     let generation = s
-        .begin_apply(|ticket, _, cancel| {
-            spawn_apply(
-                reading.version,
-                ticket,
-                (CircularCut {
-                    center_mm: [40., 20.],
-                    radius_mm: 5.,
-                    extent: CutExtent::ThroughAll,
-                })
-                .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
-                .expect("changes"),
-                cancel.clone(),
-                move |v| tx.send(v).expect("deliver"),
-            )
-        })
+        .apply(
+            reading.version,
+            (CircularCut {
+                center_mm: [40., 20.],
+                radius_mm: 5.,
+                extent: CutExtent::ThroughAll,
+            })
+            .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+            .expect("changes"),
+            move |_, value| {
+                tx.send(value).expect("deliver");
+            },
+        )
         .expect("started");
     let result = rx
         .recv_timeout(std::time::Duration::from_secs(120))
         .expect("edit");
-    let Edited::Show(path) = s.finish_apply(generation, result) else {
+    let Edited::Show(_) = s.finish_apply(generation, result) else {
         panic!("the Cut was not added: {}", s.status);
     };
     let (tx, rx) = mpsc::channel();
-    let worker = spawn_scene(path, s.scene_token(generation).expect("token"), move |v| {
-        tx.send(v).expect("scene")
-    });
-    assert!(s.attach_scene(generation, worker));
+    s.draw_staged(generation, move |v| tx.send(v).expect("scene"));
     rx.recv_timeout(std::time::Duration::from_secs(120))
         .expect("scene")
         .expect("picture");

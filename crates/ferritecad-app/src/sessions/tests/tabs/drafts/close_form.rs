@@ -728,10 +728,7 @@ fn real_close_buttons_name_unapplied_values_and_parked_fields_cannot_take_typing
 }
 
 #[test]
-fn stub_hidden_close_refusal_keeps_both_forms_and_no_native_work_is_claimed() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_hidden_close_upload_keeps_both_forms() {
     let root = tempfile::tempdir().expect("root");
     let a = root.path().join("a.fcad");
     let b = root.path().join("b.fcad");
@@ -746,14 +743,30 @@ fn stub_hidden_close_refusal_keeps_both_forms_and_no_native_work_is_claimed() {
     w.open(&b);
     w.open_height_form();
     w.edits.type_height(f, " b x ");
-    w.drawn = Drawn::Native;
+    let probe = test_open::probe(w.tabs.hidden_sessions(tab).expect("hidden"));
+    let (shapes, calls) = {
+        let probe = probe.lock().expect("probe");
+        (probe.live, probe.calls)
+    };
     let (g, rx) = w.begin_switch(tab, Some(After::Close));
-    let (outcome, after) = w.deliver_switch(g, wait(&rx), Ok(())).expect("answer");
+    let (outcome, after) = w
+        .deliver_switch(
+            g,
+            wait(&rx),
+            Err(CadError::rendering("requested upload refusal")),
+        )
+        .expect("answer");
     assert!(outcome.is_err() && after.is_none());
     assert_eq!(w.edits.typed(), Some((Some(f), " b x ")));
-    w.drawn = Drawn::Mock;
+    assert_eq!(probe.lock().expect("probe").live, shapes);
     w.round(tab);
     assert_eq!(w.edits.typed(), Some((Some(f), " a x ")));
+    let final_state = probe.lock().expect("probe");
+    assert_eq!(final_state.live, shapes);
+    assert_eq!(
+        final_state.calls, calls,
+        "switching must not enter the kernel"
+    );
 }
 
 #[test]

@@ -18,17 +18,12 @@ impl App {
             });
             self.sessions.attach_scene(generation, worker);
         } else {
-            self.sessions.stage_picture(
-                generation,
-                path,
-                move |result| {
-                    let _ = proxy.send_event(AppEvent::SceneStaged {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-                sessions::spawn_scene,
-            );
+            self.sessions.draw_staged(generation, move |result| {
+                let _ = proxy.send_event(AppEvent::SceneStaged {
+                    generation,
+                    result: Box::new(result),
+                });
+            });
         }
     }
 }

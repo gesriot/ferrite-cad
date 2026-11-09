@@ -122,10 +122,10 @@
     },
     {
       "asset": {
-        "bytes": 19479,
+        "bytes": 19594,
         "location": "repository",
         "path": "crates/ferritecad-viewport-gpu/src/shader.wgsl",
-        "sha256": "08b6c1de013f8a0946ab028529956854822033dfba6124e14fec9a86c689e243"
+        "sha256": "54eae503fee1c4c238e1a828a46b4b73fcc48cf067b83735ac35adc4bdfa3bf6"
       },
       "containedBy": "path+crates/ferritecad-viewport-gpu#ferritecad-viewport-gpu@0.0.1",
       "embeddedIn": [

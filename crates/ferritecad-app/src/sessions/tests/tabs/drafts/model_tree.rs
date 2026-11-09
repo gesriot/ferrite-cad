@@ -50,6 +50,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
 // not geometry evidence; native tests below use the production scene worker.
 pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<LoadedScene> {
     Ok(LoadedScene {
+        mesh_keys: vec![],
         rebuild_facts: None,
         rebuild: Default::default(),
         edit_source: Some(ferritecad_jobs::read_extrude_source(path)?),
@@ -425,15 +426,8 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     assert_eq!(r.cut_id(), early);
     assert_eq!(r.expected, source(&w).version);
     let request = r.clone();
-    w.accept(move |ticket, cancel, tx| {
-        spawn_apply(
-            request.expected,
-            ticket,
-            request.changes,
-            cancel.clone(),
-            move |v| tx.send(v).expect("edit"),
-        )
-    });
+    w.accept(request);
+
     let accepted = w.sessions.export_path().expect("accepted");
     assert_eq!(
         source(&w).version,
@@ -530,21 +524,17 @@ fn native_early_cut_navigation_apply_history_save_matches_existing_cli() {
     w.checkpoint(CheckpointAction::Create("three cuts".to_owned()));
     let checkpoint = w.listed()[0].id;
     let reading = source(&w).clone();
-    let expected = reading.version;
-    w.accept(move |ticket, cancel, tx| {
-        crate::sessions::spawn_apply(
-            expected,
-            ticket,
-            (crate::feature_facts::CircularCut {
-                center_mm: [20., 20.],
-                radius_mm: 1.,
-                extent: crate::feature_facts::CutExtent::ThroughAll,
-            })
-            .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
-            .expect("changes"),
-            cancel.clone(),
-            move |v| tx.send(v).expect("Add"),
-        )
+    w.accept(ferritecad_jobs::EditRequest {
+        source: w.sessions.export_path().expect("current"),
+        expected: reading.version,
+        destination: PathBuf::new(),
+        changes: (crate::feature_facts::CircularCut {
+            center_mm: [20., 20.],
+            radius_mm: 1.,
+            extent: crate::feature_facts::CutExtent::ThroughAll,
+        })
+        .additions(reading.cut_bodies[0].target.as_ref().expect("target"))
+        .expect("changes"),
     });
     let count = |w: &Window| {
         source(w)

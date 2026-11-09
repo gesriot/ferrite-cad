@@ -26,7 +26,9 @@
 //! the generation — so an answer meant for another tab, for a tab that was closed or
 //! for an older operation of this tab changes nothing and releases nothing.
 
+mod owner;
 mod presentation;
+pub(crate) use owner::{OpenTab, Target};
 #[cfg(test)]
 pub(crate) mod test_open;
 
@@ -39,7 +41,9 @@ use ferritecad_jobs::{
     DocumentSession, Move, ProducedStep, SaveFailure, SaveFailureKind, SavePlan, SaveTarget, Saved,
     StepCommit, StepTicket,
 };
-use ferritecad_kernel::{CancelToken, OperationContext, TessellationParams};
+#[cfg(test)]
+use ferritecad_kernel::TessellationParams;
+use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_scene::LoadedScene;
 use ferritecad_types::{CadError, ErrorKind, Result};
 
@@ -159,7 +163,7 @@ enum Staged {
 pub(crate) enum Bind {
     /// An Open, New or Recover: the session the picture was read from becomes a
     /// new tab, shown; the tab that was shown stays open, hidden (§30O).
-    Open(Box<DocumentSession>),
+    Open(Box<OpenTab>),
     /// An Apply, Undo or Redo: the staged version becomes current.
     Staged,
     /// §30O: the hidden tab this switch generation was showing becomes the shown
@@ -219,6 +223,7 @@ pub(crate) struct Sessions {
     /// Which tab this is (§30O). Made with the value, never reused.
     tab: TabId,
     session: Option<DocumentSession>,
+    owner: Option<owner::Owner>,
     operation: Option<Operation>,
     reserved: Option<Reserved>,
     issued: u64,
@@ -546,7 +551,8 @@ impl Sessions {
 
     /// The session of the document that was just accepted replaces the old one,
     /// which is dropped here and takes its private files with it.
-    pub(crate) fn adopt(&mut self, session: DocumentSession) {
+    pub(crate) fn adopt(&mut self, opened: impl Into<OpenTab>) {
+        let OpenTab { session, owner } = opened.into();
         self.reserved = None;
         // Whatever was in flight belonged to the document being replaced: its
         // answer must not be applied to this one (a Save's checkpoint above all).
@@ -559,6 +565,7 @@ impl Sessions {
             }
         }
         self.reap();
+        self.owner = owner;
         self.session = Some(session);
         self.register();
         self.after_save = None;
@@ -568,11 +575,41 @@ impl Sessions {
 
     // --- Apply -----------------------------------------------------------
 
-    /// Starts the edit. `spawn` is handed the ticket and the generation to label its
-    /// answer with.
+    pub(crate) fn apply(
+        &mut self,
+        expected: ferritecad_document::DocumentVersion,
+        changes: Vec<ferritecad_document::EditChange>,
+        deliver: impl FnOnce(Address, Result<ProducedStep>) + Send + 'static,
+    ) -> Option<Address> {
+        let port = self.owner.as_ref()?.port.clone();
+        self.start_apply(|ticket, address, token| {
+            port.edit(
+                address,
+                ticket,
+                expected,
+                changes,
+                token.clone(),
+                move |result| {
+                    deliver(address, result);
+                },
+            );
+            None
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_apply(
         &mut self,
         spawn: impl FnOnce(StepTicket, Address, &CancelToken) -> JoinHandle<()>,
+    ) -> Option<Address> {
+        self.start_apply(|ticket, address, cancel| Some(spawn(ticket, address, cancel)))
+    }
+
+    /// Starts the edit. `spawn` is handed the ticket and the generation to label its
+    /// answer with.
+    fn start_apply(
+        &mut self,
+        spawn: impl FnOnce(StepTicket, Address, &CancelToken) -> Option<JoinHandle<()>>,
     ) -> Option<Address> {
         if self.busy() {
             return None;
@@ -587,7 +624,7 @@ impl Sessions {
             generation,
             kind: Kind::Apply,
             cancel,
-            worker: Some(worker),
+            worker,
             staged: None,
             kept: None,
             ready_scene: None,
@@ -614,6 +651,7 @@ impl Sessions {
     /// The shared end of an edit or checkpoint worker's answer, once it is known
     /// to belong to the operation in flight.
     fn finish_step(&mut self, result: Result<ProducedStep>) -> Edited {
+        let address = self.address(self.operation.as_ref().expect("in flight").generation);
         let operation = self.operation.as_mut().expect("the answer's operation");
         if let Some(worker) = operation.worker.take() {
             let _ = worker.join();
@@ -623,11 +661,13 @@ impl Sessions {
         let mut step = match result {
             Ok(step) if !cancelled => step,
             Ok(_) => {
+                self.resolve(address, false);
                 self.operation = None;
                 self.status = "Cancelled; nothing was changed.".to_owned();
                 return Edited::Failed;
             }
             Err(error) => {
+                self.resolve(address, false);
                 self.operation = None;
                 self.status = if error.kind() == ErrorKind::Cancellation {
                     "Cancelled; nothing was changed.".to_owned()
@@ -650,6 +690,7 @@ impl Sessions {
         };
         let session = self.session.as_ref().expect("an operation has a session");
         if !session.changes_model(&step) {
+            self.resolve(address, false);
             self.operation = None;
             self.status = "No change: the model is already like that.".to_owned();
             return Edited::NoChange;
@@ -660,27 +701,38 @@ impl Sessions {
         Edited::Show(path)
     }
 
-    /// Delivers an Apply picture directly; history navigation still starts a scene worker.
-    pub(crate) fn stage_picture(
+    pub(crate) fn draw_staged(
         &mut self,
         address: Address,
-        path: PathBuf,
         deliver: impl FnOnce(Result<LoadedScene>) + Send + 'static,
-        spawn_scene: impl FnOnce(
-            PathBuf,
-            CancelToken,
-            Box<dyn FnOnce(Result<LoadedScene>) + Send>,
-        ) -> JoinHandle<()>,
     ) {
-        let Some(cancel) = self.scene_token(address) else {
+        if self.addressed(address).is_none() {
             return;
-        };
-        if let Some(scene) = self.operation.as_mut().and_then(|op| op.ready_scene.take()) {
-            deliver(Ok(scene));
-        } else {
-            let worker = spawn_scene(path, cancel, Box::new(deliver));
-            self.attach_scene(address, worker);
         }
+        let op = self.operation.as_mut().expect("addressed operation");
+        if let Some(scene) = op.ready_scene.take() {
+            return deliver(Ok(scene));
+        }
+        let target = match op.staged.as_ref() {
+            Some(Staged::Move(request)) => owner::Target::History(request.clone()),
+            Some(Staged::Step(step)) => owner::Target::Restore(step.lease()),
+            None => return,
+        };
+        if let Some(owner) = &self.owner {
+            owner.port.draw(address, target, op.cancel.clone(), deliver);
+        } else {
+            deliver(Err(CadError::input("the tab has no document evaluator")));
+        }
+    }
+
+    fn resolve(&self, address: Address, accept: bool) {
+        if let Some(owner) = &self.owner {
+            owner.port.finish(address, accept);
+        }
+    }
+
+    pub(crate) fn switch_picture(&self) -> Option<(owner::Port, Arc<ferritecad_jobs::Snapshot>)> {
+        Some((self.owner.as_ref()?.port.clone(), self.export_source()?))
     }
 
     pub(crate) fn remember_staged_rebuild(
@@ -894,6 +946,12 @@ impl Sessions {
         if let Some(op) = &self.operation {
             op.cancel.check()?;
         }
+        let address = self.address(
+            self.operation
+                .as_ref()
+                .ok_or_else(|| CadError::input("no change is waiting to be shown"))?
+                .generation,
+        );
         let session = self
             .session
             .as_mut()
@@ -909,6 +967,7 @@ impl Sessions {
             },
             Staged::Move(request) => session.commit_move(request)?,
         }
+        self.resolve(address, true);
         self.record();
         Ok(())
     }
@@ -924,6 +983,7 @@ impl Sessions {
         if let Some(worker) = operation.worker {
             let _ = worker.join();
         }
+        self.resolve(address, false);
         self.status = match (&shown, operation.kind) {
             (Ok(()), Kind::Apply) => "Applied. Undo is available; Save writes the file.".to_owned(),
             (Ok(()), Kind::Checkpoint(CheckpointKind::Create)) => {
@@ -1075,6 +1135,7 @@ impl Sessions {
             };
             recorder.finish(ending);
         }
+        self.owner = None;
         self.session = None;
         self.register();
     }
@@ -1114,34 +1175,9 @@ fn spawn<T: Send + 'static>(
     })
 }
 
-/// Apply one expression transaction on the worker that owns the kernel session.
-pub(crate) fn spawn_apply(
-    expected: ferritecad_document::DocumentVersion,
-    ticket: StepTicket,
-    changes: Vec<ferritecad_document::EditChange>,
-    cancel: CancelToken,
-    deliver: impl FnOnce(Result<ProducedStep>) + Send + 'static,
-) -> JoinHandle<()> {
-    spawn(
-        move || {
-            let context = OperationContext::default().with_cancel(cancel);
-            let mut kernel = ferritecad_occt::OcctKernel::new()?;
-            ticket.edit(
-                changes,
-                expected,
-                &mut kernel,
-                |kernel, source| kernel.import_step(source),
-                &context,
-            )
-        },
-        deliver,
-        || Err(CadError::kernel("the edit worker stopped unexpectedly")),
-    )
-}
-
 /// §30N: a checkpoint change on a worker of its own. No kernel: the library
 /// copies and checks files; a restored model is drawn afterwards by
-/// [`spawn_scene`] like any Apply's.
+/// the tab's live evaluator.
 pub(crate) fn spawn_checkpoint(
     ticket: StepTicket,
     action: CheckpointAction,
@@ -1197,7 +1233,8 @@ pub(crate) fn spawn_kept_facts(
 }
 
 /// The picture of one private version, read cold exactly as Open reads a file.
-pub(crate) fn spawn_scene(
+#[cfg(test)]
+pub(crate) fn cold_scene(
     path: PathBuf,
     cancel: CancelToken,
     deliver: impl FnOnce(Result<LoadedScene>) + Send + 'static,
@@ -1237,7 +1274,7 @@ pub(crate) fn spawn_save(
 }
 
 /// A slot a worker fills with the session it opened, and the event reads out.
-pub(crate) type Opened = Arc<Mutex<Option<DocumentSession>>>;
+pub(crate) type Opened = Arc<Mutex<Option<OpenTab>>>;
 
 /// What a creation does on its worker (§30L): the new document is made in a
 /// candidate session's own private directory by the shared creation route, and
@@ -1248,22 +1285,24 @@ pub(crate) fn create_for_view(
     root: &Path,
     content: ferritecad_jobs::NewDocument,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
-    let session = DocumentSession::create_document_in(
-        root,
-        ferritecad_jobs::HistoryLimits::default(),
-        content,
-        ferritecad_occt::OcctKernel::new,
-        context,
-    )?;
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
-        context,
-    )?;
-    Ok((scene, session))
+) -> Result<(LoadedScene, OpenTab)> {
+    let root = root.to_owned();
+    owner::start(context, move |context| {
+        let mut kernel = ferritecad_occt::OcctKernel::new()?;
+        let session = DocumentSession::create_in(&root, Default::default(), |path| {
+            ferritecad_jobs::create_document_in_kernel(
+                ferritecad_jobs::CreateDocumentRequest::new(
+                    path,
+                    content,
+                    "choose a different name",
+                ),
+                &mut kernel,
+                context,
+            )
+            .map(|_| ())
+        })?;
+        Ok((session, kernel))
+    })
 }
 
 /// What a Recover does on its worker (§30M): the record is claimed and checked,
@@ -1275,7 +1314,7 @@ pub(crate) fn recover_for_view(
     store: &ferritecad_jobs::RecoveryStore,
     record: ferritecad_jobs::RecordId,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
+) -> Result<(LoadedScene, OpenTab)> {
     // Waits, off the event loop, only for a reader of the record, and stops when the
     // window cancels (§30S).
     let claim = store
@@ -1283,14 +1322,9 @@ pub(crate) fn recover_for_view(
         .map_err(CadError::from)?;
     let session =
         DocumentSession::recover_in(root, ferritecad_jobs::HistoryLimits::default(), claim)?;
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
-        context,
-    )?;
-    Ok((scene, session))
+    owner::start(context, move |_| {
+        Ok((session, ferritecad_occt::OcctKernel::new()?))
+    })
 }
 
 /// What an Open does on its worker: the file is read once, into a new session's
@@ -1302,19 +1336,29 @@ pub(crate) fn open_for_view(
     root: &Path,
     path: &Path,
     context: &OperationContext,
-) -> Result<(LoadedScene, DocumentSession)> {
-    let session = DocumentSession::open_in(root, path, ferritecad_jobs::HistoryLimits::default())?;
-    // The kernel is made and dropped inside the worker: an Open CASCADE session
-    // belongs to the thread that opened it.
-    let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let scene = session.current().load_scene(
-        &mut kernel,
-        // How this kernel re-reads a STEP file the document stores.
-        |kernel, source| kernel.import_step(source),
-        &TessellationParams::default(),
+) -> Result<(LoadedScene, OpenTab)> {
+    open_for_view_with(
+        root,
+        path,
         context,
-    )?;
-    Ok((scene, session))
+        ferritecad_occt::OcctKernel::new,
+        ferritecad_occt::OcctKernel::import_step,
+    )
+}
+
+fn open_for_view_with<K, R>(
+    root: &Path,
+    path: &Path,
+    context: &OperationContext,
+    factory: impl FnOnce() -> Result<K> + Send + 'static,
+    read_step: R,
+) -> Result<(LoadedScene, OpenTab)>
+where
+    K: ferritecad_kernel::GeometryKernel + 'static,
+    R: FnMut(&mut K, &[u8]) -> Result<ferritecad_exchange::Import> + Send + 'static,
+{
+    let session = DocumentSession::open_in(root, path, ferritecad_jobs::HistoryLimits::default())?;
+    owner::start_with(context, move |_| Ok((session, factory()?)), read_step)
 }
 
 #[cfg(test)]
@@ -1333,7 +1377,9 @@ mod tests {
     mod datum_planes;
     mod fillet;
     mod keep_solids;
+    mod live_view;
     mod new_document;
+    mod owner_panic;
     mod parameters;
     mod recovery;
     mod tabs;
@@ -1398,34 +1444,22 @@ mod tests {
     /// reused `edit with extrude_distance` operation; geometry is measured by the native tests).
     fn apply(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
+        let expected = sessions.export_source().expect("open").version();
         let generation = sessions
-            .begin_apply(|ticket, _, _| {
-                std::thread::spawn(move || {
-                    let result = {
-                        let ticket = ticket;
-                        let expected = ticket.source().version();
-                        ticket.edit(
-                            vec![
-                                ferritecad_document::EditChange::constant(
-                                    feature,
-                                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                    millimetres,
-                                )
-                                .expect("test value"),
-                            ],
-                            expected,
-                            &mut MockKernel::new(),
-                            |_, _| {
-                                Err(ferritecad_types::CadError::unsupported(
-                                    "no STEP imports in this model",
-                                ))
-                            },
-                            &OperationContext::default(),
-                        )
-                    };
+            .apply(
+                expected,
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        millimetres,
+                    )
+                    .expect("test value"),
+                ],
+                move |_, result| {
                     tx.send(result).expect("deliver");
-                })
-            })
+                },
+            )
             .expect("started");
         let result = rx.recv().expect("answer");
         (generation, sessions.finish_apply(generation, result))
@@ -1436,18 +1470,13 @@ mod tests {
         let fixture = fixture();
         let mut sessions = open(&fixture);
         let (address, edited) = apply(&mut sessions, fixture.feature, 15.0);
-        let Edited::Show(path) = edited else {
+        let Edited::Show(_) = edited else {
             panic!("Apply must stage a picture")
         };
         let (tx, rx) = mpsc::channel();
-        sessions.stage_picture(
-            address,
-            path,
-            move |scene| {
-                tx.send(scene).expect("deliver");
-            },
-            |_, _, _| panic!("Apply must not spawn a scene worker"),
-        );
+        sessions.draw_staged(address, move |scene| {
+            tx.send(scene).expect("deliver");
+        });
         let scene = rx.recv().expect("picture").expect("prepared picture");
         assert!(!scene.catalogue.is_empty());
         assert!(scene.rebuild_facts.is_some());
@@ -1558,39 +1587,23 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let feature = f.feature;
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                let cancel = cancel.clone();
-                std::thread::spawn(move || {
-                    // The user cancels; the worker finishes anyway (it was past
-                    // its last checkpoint).
-                    cancel.cancel();
-                    tx.send({
-                        let ticket = ticket;
-                        let expected = ticket.source().version();
-                        ticket.edit(
-                            vec![
-                                ferritecad_document::EditChange::constant(
-                                    feature,
-                                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                                    26.0,
-                                )
-                                .expect("test value"),
-                            ],
-                            expected,
-                            &mut MockKernel::new(),
-                            |_, _| {
-                                Err(ferritecad_types::CadError::unsupported(
-                                    "no STEP imports in this model",
-                                ))
-                            },
-                            &OperationContext::default(),
-                        )
-                    })
-                    .expect("deliver");
-                })
-            })
+            .apply(
+                sessions.export_source().expect("open").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        26.0,
+                    )
+                    .expect("test value"),
+                ],
+                move |_, reply| {
+                    tx.send(reply).expect("deliver");
+                },
+            )
             .expect("started");
         let result = rx.recv().expect("answer");
+        assert!(sessions.cancel());
         assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
         assert!(!sessions.dirty() && !sessions.busy());
         assert_eq!(sessions.status, "Cancelled; nothing was changed.");
@@ -2191,25 +2204,14 @@ mod tests {
     ) -> (Address, Edited) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, _| {
-                std::thread::spawn(move || {
-                    tx.send(ticket.edit(
-                        request.changes,
-                        request.expected,
-                        &mut MockKernel::new(),
-                        |_, _| {
-                            Err(ferritecad_types::CadError::unsupported(
-                                "no STEP imports in this model",
-                            ))
-                        },
-                        &OperationContext::default(),
-                    ))
-                    .expect("deliver");
-                })
+            .apply(request.expected, request.changes, move |_, result| {
+                tx.send(result).expect("deliver");
             })
             .expect("started");
-        let result = rx.recv().expect("answer");
-        (generation, sessions.finish_apply(generation, result))
+        (
+            generation,
+            sessions.finish_apply(generation, rx.recv().expect("answer")),
+        )
     }
 
     fn accept_vertices(sessions: &mut Sessions, request: ferritecad_jobs::EditRequest) {
@@ -2452,36 +2454,29 @@ mod tests {
     fn apply_native(sessions: &mut Sessions, feature: ObjectId, millimetres: f64) -> LoadedScene {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(
-                    ticket.source().version(),
-                    ticket,
-                    vec![
-                        ferritecad_document::EditChange::constant(
-                            feature,
-                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                            millimetres,
-                        )
-                        .expect("height"),
-                    ],
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
-            })
+            .apply(
+                sessions.export_source().expect("open").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        millimetres,
+                    )
+                    .expect("height"),
+                ],
+                move |_, value| {
+                    tx.send(value).expect("deliver");
+                },
+            )
             .expect("started");
         let result = rx
             .recv_timeout(std::time::Duration::from_secs(120))
             .expect("edit");
-        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+        let Edited::Show(_) = sessions.finish_apply(generation, result) else {
             panic!("the edit was not shown: {}", sessions.status);
         };
         let (tx, rx) = mpsc::channel();
-        sessions.stage_picture(
-            generation,
-            path,
-            move |scene| tx.send(scene).expect("deliver"),
-            |_, _, _| panic!("Apply must not spawn a scene worker"),
-        );
+        sessions.draw_staged(generation, move |scene| tx.send(scene).expect("deliver"));
         let scene = rx
             .recv_timeout(std::time::Duration::from_secs(120))
             .expect("scene")
@@ -2533,12 +2528,64 @@ mod tests {
         )
         .object;
         let private = tempfile::tempdir().expect("private");
+        let session = DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+            .expect("private session");
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&reads);
+        let (initial, opened) = owner::start_with(
+            &OperationContext::default(),
+            move |_| Ok((session, ferritecad_occt::OcctKernel::new()?)),
+            move |kernel, bytes| {
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                kernel.import_step(bytes)
+            },
+        )
+        .expect("mixed tab opens");
+        let version = opened.current().version();
         let mut sessions = Sessions::default();
-        sessions.adopt(
-            crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
-                .expect("session"),
-        );
-        let scene = apply_native(&mut sessions, feature, 12.0);
+        sessions.adopt(opened);
+        let (send, receive) = mpsc::channel();
+        let address = sessions
+            .apply(
+                version,
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        12.,
+                    )
+                    .expect("height"),
+                ],
+                move |_, step| send.send(step).expect("answer"),
+            )
+            .expect("start");
+        assert!(matches!(
+            sessions.finish_apply(address, receive.recv().expect("reply")),
+            Edited::Show(_)
+        ));
+        let (send, receive) = mpsc::channel();
+        sessions.draw_staged(address, move |scene| send.send(scene).expect("picture"));
+        let scene = receive.recv().expect("reply").expect("mixed picture");
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let current = sessions.staged_path(address).expect("version");
+        let cold = ferritecad_scene::snapshot_of(
+            &current,
+            &mut kernel,
+            |k, b| k.import_step(b),
+            &Default::default(),
+            &OperationContext::default(),
+        )
+        .expect("cold picture");
+        assert_eq!(scene, cold);
+        let import = initial
+            .catalogue
+            .iter()
+            .position(|entry| entry.source_file.is_some())
+            .expect("imported definition");
+        assert!(initial.mesh_keys[import].is_some());
+        assert_eq!(initial.mesh_keys[import], scene.mesh_keys[import]);
+        sessions.commit_staged().expect("commit");
+        assert!(sessions.finish_scene(address, Ok(())));
         assert!(
             scene
                 .catalogue
@@ -2551,11 +2598,9 @@ mod tests {
     }
 
     fn move_native(sessions: &mut Sessions, undo: bool) {
-        let (generation, path) = sessions.begin_move(undo).expect("a step");
+        let (generation, _) = sessions.begin_move(undo).expect("a step");
         let (tx, rx) = mpsc::channel();
-        let token = sessions.scene_token(generation).expect("token");
-        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
-        assert!(sessions.attach_scene(generation, worker));
+        sessions.draw_staged(generation, move |scene| tx.send(scene).expect("deliver"));
         rx.recv_timeout(std::time::Duration::from_secs(120))
             .expect("scene")
             .expect("the picture");
@@ -2735,26 +2780,22 @@ mod tests {
     fn apply_sketch_native(sessions: &mut Sessions, request: ferritecad_jobs::EditRequest) {
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(
-                    request.expected,
-                    ticket,
-                    request.changes.clone(),
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
-            })
+            .apply(
+                request.expected,
+                request.changes.clone(),
+                move |_, value| {
+                    tx.send(value).expect("deliver");
+                },
+            )
             .expect("started");
         let result = rx
             .recv_timeout(std::time::Duration::from_secs(120))
             .expect("edit");
-        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+        let Edited::Show(_) = sessions.finish_apply(generation, result) else {
             panic!("the edit was not shown: {}", sessions.status);
         };
         let (tx, rx) = mpsc::channel();
-        let token = sessions.scene_token(generation).expect("token");
-        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
-        assert!(sessions.attach_scene(generation, worker));
+        sessions.draw_staged(generation, move |scene| tx.send(scene).expect("deliver"));
         rx.recv_timeout(std::time::Duration::from_secs(120))
             .expect("scene")
             .expect("the picture of the new version");
@@ -3067,14 +3108,8 @@ mod tests {
         let files = private_files(&sessions);
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(
-                    forged.expected,
-                    ticket,
-                    forged.changes.clone(),
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
+            .apply(forged.expected, forged.changes.clone(), move |_, value| {
+                tx.send(value).expect("deliver");
             })
             .expect("started");
         let result = rx
@@ -3252,22 +3287,18 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let (changes, expected) = (request.changes.clone(), request.expected);
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(expected, ticket, changes, cancel.clone(), move |result| {
-                    tx.send(result).expect("deliver")
-                })
+            .apply(expected, changes, move |_, value| {
+                tx.send(value).expect("deliver");
             })
             .expect("started");
         let result = rx
             .recv_timeout(std::time::Duration::from_secs(120))
             .expect("edit");
-        let Edited::Show(path) = sessions.finish_apply(generation, result) else {
+        let Edited::Show(_) = sessions.finish_apply(generation, result) else {
             panic!("the edit was not shown: {}", sessions.status);
         };
         let (tx, rx) = mpsc::channel();
-        let token = sessions.scene_token(generation).expect("token");
-        let worker = spawn_scene(path, token, move |scene| tx.send(scene).expect("deliver"));
-        assert!(sessions.attach_scene(generation, worker));
+        sessions.draw_staged(generation, move |scene| tx.send(scene).expect("deliver"));
         rx.recv_timeout(std::time::Duration::from_secs(120))
             .expect("scene")
             .expect("the picture of the new version");
@@ -3287,10 +3318,8 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let (changes, expected) = (request.changes.clone(), request.expected);
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(expected, ticket, changes, cancel.clone(), move |result| {
-                    tx.send(result).expect("deliver")
-                })
+            .apply(expected, changes, move |_, value| {
+                tx.send(value).expect("deliver");
             })
             .expect("started");
         let result = rx
@@ -4378,49 +4407,42 @@ mod tests {
         drop(root);
     }
 
-    /// A build with no Open CASCADE cannot apply anything, and says so without
-    /// leaving the document dirty, a file behind or a half-staged step.
+    /// A rejected candidate keeps the accepted file, history and live shapes.
     #[test]
-    fn without_a_kernel_an_apply_is_refused_and_the_document_stays_clean() {
-        if ferritecad_occt::is_available() {
-            return;
-        }
+    fn a_refused_apply_leaves_the_document_clean() {
         let (root, path, source) = crate::fillets::tests::plate();
         let mut sessions = Sessions::default();
         let private = tempfile::tempdir().expect("private");
-        sessions.adopt(
-            crate::sessions::test_open::open_in(private.path(), &path, HistoryLimits::default())
-                .expect("a document opens into a session without a kernel"),
-        );
+        let session = DocumentSession::open_in(private.path(), &path, HistoryLimits::default())
+            .expect("private session");
+        let (_, opened, _) = test_open::observed(session).expect("opened mock tab");
+        sessions.adopt(opened);
         let before = private_files(&sessions);
         let feature = ferritecad_fixtures::expression_slot(
             &source,
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
+        let shapes = test_open::fail_next(&sessions, "extrude_count");
         let (tx, rx) = mpsc::channel();
         let generation = sessions
-            .begin_apply(|ticket, _, cancel| {
-                spawn_apply(
-                    ticket.source().version(),
-                    ticket,
-                    vec![
-                        ferritecad_document::EditChange::constant(
-                            feature,
-                            ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                            30.0,
-                        )
-                        .expect("height"),
-                    ],
-                    cancel.clone(),
-                    move |result| tx.send(result).expect("deliver"),
-                )
-            })
+            .apply(
+                sessions.export_source().expect("open tab").version(),
+                vec![
+                    ferritecad_document::EditChange::constant(
+                        feature,
+                        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                        30.0,
+                    )
+                    .expect("height"),
+                ],
+                move |_, result| tx.send(result).expect("deliver"),
+            )
             .expect("started");
         let result = rx.recv().expect("answer");
         assert_eq!(
             result.as_ref().expect_err("no kernel").kind(),
-            ErrorKind::Unsupported
+            ErrorKind::Kernel
         );
         assert_eq!(sessions.finish_apply(generation, result), Edited::Failed);
         assert!(!sessions.dirty() && !sessions.busy() && !sessions.can_undo());
@@ -4429,6 +4451,21 @@ mod tests {
         assert_eq!(std::fs::read_dir(root.path()).expect("dir").count(), 1);
         // Save has nothing to write and Save As still works on the accepted model.
         assert!(!sessions.can_save() && sessions.can_save_as());
+        let current = sessions.export_source().expect("open");
+        let retry = ferritecad_jobs::EditRequest {
+            source: current.path().to_owned(),
+            expected: current.version(),
+            changes: vec![
+                ferritecad_document::EditChange::constant(
+                    feature,
+                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
+                    30.,
+                )
+                .expect("height"),
+            ],
+            destination: PathBuf::new(),
+        };
+        test_open::retry(&mut sessions, &retry, "extrude_count", 1, shapes);
     }
 
     /// Missing solver support refuses the initial picture, before an Apply can

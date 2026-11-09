@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "../../../ferritecad-jobs/tests/support/live_step.rs"]
+mod live_step;
 use super::*;
 use ferritecad_kernel::{OperationContext, TessellationParams};
 
@@ -39,16 +41,15 @@ fn publish_with_history(source: &Path, output: &Path, changes: &[EditChange]) {
             &OperationContext::default(),
         )
         .expect("baseline");
-    let step = session
-        .begin_step()
-        .edit(
-            changes.to_vec(),
-            session.current().version(),
-            &mut k,
-            |_, _| unreachable!("no imports"),
-            &OperationContext::default(),
-        )
-        .expect("step");
+    let step = live_step::prepare(
+        session.begin_step(),
+        changes.to_vec(),
+        session.current().version(),
+        &mut k,
+        |_, _| unreachable!("no imports"),
+        &OperationContext::default(),
+    )
+    .expect("step");
     session.commit_step(step).expect("commit");
     assert_eq!(session.current().model(), model);
     session

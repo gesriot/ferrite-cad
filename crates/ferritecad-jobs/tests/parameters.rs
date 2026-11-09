@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::{
     CacheStore, DatumPlane, Document, EditChange as Edit, EndCondition, Expression,
     ExpressionSlot as Slot, FeatureAddition, ObjectPayload, RevolveAxis, RevolveExtent,
@@ -66,7 +68,8 @@ fn each_parameter_edit_undoes_and_redoes_as_one_snapshot() -> Result<()> {
         ],
     ] {
         let before = session.current().version();
-        let step = session.begin_step().edit(
+        let step = live_step::prepare(
+            session.begin_step(),
             changes,
             before,
             &mut kernel,

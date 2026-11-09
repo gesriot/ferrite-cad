@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::*;
 use ferritecad_fixtures::feature_changes::{body, circular_tool, plate_edge};
 use ferritecad_jobs::{EditRequest, edit_copy};
@@ -483,16 +485,15 @@ fn additions_to_the_second_body_survive_session_undo_redo_and_save() {
                 &OperationContext::default(),
             )
             .expect("shown baseline");
-        let step = session
-            .begin_step()
-            .edit(
-                changes,
-                expected,
-                &mut k,
-                |_, _| unreachable!("no imports"),
-                &OperationContext::default(),
-            )
-            .expect("step");
+        let step = live_step::prepare(
+            session.begin_step(),
+            changes,
+            expected,
+            &mut k,
+            |_, _| unreachable!("no imports"),
+            &OperationContext::default(),
+        )
+        .expect("step");
         session.commit_step(step).expect("commit");
         let names = verify(session.current().path());
         assert_eq!(
@@ -522,19 +523,18 @@ fn additions_to_the_second_body_survive_session_undo_redo_and_save() {
             let edges = (0..4)
                 .map(|corner| plate_edge(&current, second, corner).expect("fixture edge"))
                 .collect();
-            let step = session
-                .begin_step()
-                .edit(
-                    vec![EditChange::SetEdges {
-                        object: body.tip_feature.expect("tip"),
-                        edges,
-                    }],
-                    session.current().version(),
-                    &mut k,
-                    |_, _| unreachable!("no imports"),
-                    &OperationContext::default(),
-                )
-                .expect("replace the edge set");
+            let step = live_step::prepare(
+                session.begin_step(),
+                vec![EditChange::SetEdges {
+                    object: body.tip_feature.expect("tip"),
+                    edges,
+                }],
+                session.current().version(),
+                &mut k,
+                |_, _| unreachable!("no imports"),
+                &OperationContext::default(),
+            )
+            .expect("replace the edge set");
             session.commit_step(step).expect("commit set");
             let all = verify(session.current().path());
             assert_ne!(all, names, "four edges change geometry and names");
@@ -645,16 +645,15 @@ fn session_regions_restore_names_and_geometry_with_undo_redo() {
             .expect("initial picture");
         for changes in [f.changes.clone(), f.resize_and_move(), f.switch()] {
             let before = verify(session.current().path());
-            let step = session
-                .begin_step()
-                .edit(
-                    changes,
-                    session.current().version(),
-                    &mut k,
-                    |_, _| unreachable!("no imports"),
-                    &OperationContext::default(),
-                )
-                .expect("edit");
+            let step = live_step::prepare(
+                session.begin_step(),
+                changes,
+                session.current().version(),
+                &mut k,
+                |_, _| unreachable!("no imports"),
+                &OperationContext::default(),
+            )
+            .expect("edit");
             session.commit_step(step).expect("commit");
             let after = verify(session.current().path());
             let volume = region_edits::volume(session.current().path(), f.feature);
@@ -686,28 +685,26 @@ fn session_regions_restore_names_and_geometry_with_undo_redo() {
             },
         });
         changes.extend(f.dependency.clone());
-        let step = session
-            .begin_step()
-            .edit(
-                changes,
-                session.current().version(),
-                &mut k,
-                |_, _| unreachable!("no imports"),
-                &OperationContext::default(),
-            )
-            .expect("dependent");
+        let step = live_step::prepare(
+            session.begin_step(),
+            changes,
+            session.current().version(),
+            &mut k,
+            |_, _| unreachable!("no imports"),
+            &OperationContext::default(),
+        )
+        .expect("dependent");
         session.commit_step(step).expect("commit");
         let before = session.current().version();
-        let error = session
-            .begin_step()
-            .edit(
-                f.switch(),
-                before,
-                &mut k,
-                |_, _| unreachable!("no imports"),
-                &OperationContext::default(),
-            )
-            .expect_err("dependent must fail");
+        let error = live_step::prepare(
+            session.begin_step(),
+            f.switch(),
+            before,
+            &mut k,
+            |_, _| unreachable!("no imports"),
+            &OperationContext::default(),
+        )
+        .expect_err("dependent must fail");
         assert!(
             error.to_string().contains(&f.dependent.to_string()),
             "{error}"

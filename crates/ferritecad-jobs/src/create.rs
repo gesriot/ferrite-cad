@@ -287,6 +287,24 @@ pub fn create_document_with_kernel<K: GeometryKernel>(
     factory: impl FnOnce() -> Result<K>,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
+    create_with_profile_check(request, context, |doc| {
+        check_profile(doc, &mut factory()?, context)
+    })
+}
+
+pub fn create_document_in_kernel(
+    request: CreateDocumentRequest<'_>,
+    kernel: &mut impl GeometryKernel,
+    context: &OperationContext,
+) -> Result<CreatedDocument> {
+    create_with_profile_check(request, context, |doc| check_profile(doc, kernel, context))
+}
+
+fn create_with_profile_check(
+    request: CreateDocumentRequest<'_>,
+    context: &OperationContext,
+    check: impl FnOnce(&Document) -> Result<ferritecad_eval::RebuildReport>,
+) -> Result<CreatedDocument> {
     if let NewDocument::SamplePlate(size) = &request.content
         && (size.width == 0.0 || size.depth == 0.0)
     {
@@ -301,8 +319,7 @@ pub fn create_document_with_kernel<K: GeometryKernel>(
             return Ok(());
         }
         context.check_cancelled()?;
-        let mut kernel = factory()?;
-        rebuild = Some(check_profile(document, &mut kernel, context)?);
+        rebuild = Some(check(document)?);
         Ok(())
     })?;
     created.rebuild = rebuild;

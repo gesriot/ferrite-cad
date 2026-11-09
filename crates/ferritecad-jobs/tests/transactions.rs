@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic)]
+#[path = "support/live_step.rs"]
+mod live_step;
 use ferritecad_document::{Document, EditChange, ExpressionSlot};
 use ferritecad_jobs::{EditRequest, edit_copy};
 use ferritecad_kernel::OperationContext;
@@ -85,16 +87,15 @@ fn a_dimension_and_its_fillet_can_be_repaired_together() {
             &context,
         )
         .expect("baseline");
-    let mut step = session
-        .begin_step()
-        .edit(
-            request.changes,
-            session.current().version(),
-            &mut kernel,
-            |k, b| k.import_step(b),
-            &context,
-        )
-        .expect("session transaction");
+    let mut step = live_step::prepare(
+        session.begin_step(),
+        request.changes,
+        session.current().version(),
+        &mut kernel,
+        |k, b| k.import_step(b),
+        &context,
+    )
+    .expect("session transaction");
     assert!(step.take_scene().is_some());
     session.commit_step(step).expect("commit");
     let document = Document::open_read_only(session.current().path()).expect("accepted version");

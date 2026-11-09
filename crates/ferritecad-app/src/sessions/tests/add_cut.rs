@@ -18,10 +18,8 @@ pub(super) type Id = [u8; 16];
 fn start(s: &mut Sessions, r: &EditRequest) -> (Address, mpsc::Receiver<Result<ProducedStep>>) {
     let (tx, rx) = mpsc::channel();
     let g = s
-        .begin_apply(|t, _, c| {
-            spawn_apply(r.expected, t, r.changes.clone(), c.clone(), move |v| {
-                tx.send(v).expect("deliver")
-            })
+        .apply(r.expected, r.changes.clone(), move |_, v| {
+            tx.send(v).expect("deliver");
         })
         .expect("start");
     (g, rx)
@@ -34,11 +32,11 @@ fn add(s: &mut Sessions, r: &EditRequest) -> Edited {
         rx.recv_timeout(std::time::Duration::from_secs(120))
             .expect("edit"),
     );
-    if let Edited::Show(path) = &edited {
+    if let Edited::Show(_) = &edited {
         let (tx, rx) = mpsc::channel();
-        let c = s.scene_token(g).expect("token");
-        let worker = spawn_scene(path.clone(), c, move |v| tx.send(v).expect("scene"));
-        assert!(s.attach_scene(g, worker));
+        s.draw_staged(g, move |v| {
+            tx.send(v).expect("scene");
+        });
         rx.recv_timeout(std::time::Duration::from_secs(120))
             .expect("scene")
             .expect("prepared scene");
@@ -1110,27 +1108,26 @@ fn native_constrained_base_accepts_add_after_an_unsaved_constraint_apply() {
 }
 
 #[test]
-fn stub_add_cut_refuses_without_publication() {
-    if ferritecad_occt::is_available() {
-        return;
-    }
+fn a_refused_add_cut_leaves_no_publication() {
     let (_root, source, reading) = fixture(3);
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
-    s.adopt(crate::sessions::test_open::open(&source).expect("session"));
+    s.adopt(test_open::topology(&source, &std::env::temp_dir()).expect("session"));
     let (_form, r) = typed_add(
         &source,
         &reading,
         &s,
         ("19.25", "30.5", "2.125", Some("4.875")),
     );
+    let shapes = test_open::fail_next(&s, "extrude_count");
     let (g, rx) = start(&mut s, &r);
     let error = rx.recv().expect("answer").expect_err("refusal");
-    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
     assert_eq!(s.finish_apply(g, Err(error)), Edited::Failed);
     assert!(!s.dirty() && !s.can_undo() && !s.can_redo());
     assert_eq!(private_files(&s).len(), 1);
-    assert_eq!(std::fs::read(source).expect("source"), bytes);
+    assert_eq!(std::fs::read(&source).expect("source"), bytes);
+    test_open::retry(&mut s, &r, "extrude_count", 1, shapes);
 }
 
 #[test]

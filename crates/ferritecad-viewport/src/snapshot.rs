@@ -87,6 +87,7 @@ impl PickId {
 /// for the kernel to produce and the wrong shape to draw from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedMesh {
+    pick_bases: [u32; 3],
     vertices: Vec<f32>,
     indices: Vec<u32>,
     /// Which face each vertex belongs to, as an identity of this snapshot.
@@ -181,6 +182,11 @@ struct PackedCorners {
 }
 
 impl PackedMesh {
+    /// Offsets of the mesh's local face, edge and corner numbers in this picture.
+    pub fn pick_bases(&self) -> [u32; 3] {
+        self.pick_bases
+    }
+
     /// Interleaved position and normal, [`VERTEX_FLOATS`] floats per vertex.
     pub fn vertices(&self) -> &[f32] {
         &self.vertices
@@ -1166,13 +1172,7 @@ impl RenderSnapshot {
         if ordinal >= mesh.face_count() {
             return None;
         }
-        // Faces are numbered in packing order, so a definition's own run
-        // begins after every face packed before it.
-        let before: usize = self.meshes[..definition]
-            .iter()
-            .map(PackedMesh::face_count)
-            .sum();
-        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        let raw = mesh.pick_bases[0] + u32::try_from(ordinal).ok()? + 1;
         Some(FacePickId {
             raw,
             snapshot: self.identity,
@@ -1229,13 +1229,7 @@ impl RenderSnapshot {
         if ordinal >= mesh.edge_count()? {
             return None;
         }
-        // Edges are numbered in packing order, so a definition's own run
-        // begins after every edge packed before it.
-        let before: usize = self.meshes[..definition]
-            .iter()
-            .map(|mesh| mesh.edge_count().unwrap_or(0))
-            .sum();
-        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        let raw = mesh.pick_bases[1] + u32::try_from(ordinal).ok()? + 1;
         Some(EdgePickId {
             raw,
             snapshot: self.identity,
@@ -1269,13 +1263,7 @@ impl RenderSnapshot {
         if ordinal >= mesh.corner_count()? {
             return None;
         }
-        // Corners are numbered in packing order, so a definition's own run
-        // begins after every corner packed before it.
-        let before: usize = self.meshes[..definition]
-            .iter()
-            .map(|mesh| mesh.corner_count().unwrap_or(0))
-            .sum();
-        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        let raw = mesh.pick_bases[2] + u32::try_from(ordinal).ok()? + 1;
         Some(VertexPickId {
             raw,
             snapshot: self.identity,
@@ -1653,6 +1641,7 @@ impl SnapshotBuilder {
 
         // Ordinals are per snapshot, so the same face of one definition is one
         // identity however many times the definition is placed.
+        let pick_bases = [self.next_face, self.next_edge, self.next_corner];
         self.face_owner
             .resize(next_face as usize, self.meshes.len());
         self.next_face = next_face;
@@ -1668,6 +1657,7 @@ impl SnapshotBuilder {
         self.next_corner = next_corner;
 
         self.meshes.push(PackedMesh {
+            pick_bases,
             vertices,
             indices: mesh.indices.clone(),
             face_of_vertex,

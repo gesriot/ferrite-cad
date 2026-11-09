@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
+ferritecad-exchange.workspace = true
 ferritecad-fixtures.workspace = true
 ferritecad-jobs.workspace = true
 ferritecad-kernel.workspace = true

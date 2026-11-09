@@ -723,6 +723,7 @@ dependencies = [
  "ciborium",
  "ferritecad-document",
  "ferritecad-eval",
+ "ferritecad-exchange",
  "ferritecad-fixtures",
  "ferritecad-jobs",
  "ferritecad-kernel",
