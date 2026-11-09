@@ -204,4 +204,5 @@ Suppression applies only to history features. It passes through the predecessor'
 names without invoking the kernel; suppressing the first feature yields an empty result.
 Use `suppressed: false` to restore the operation. Dependent references still resolve exactly
 or refuse. Reports list `suppressed` separately from failed/skipped objects, and the model tree
-displays that status. Window commands for these operations are separate work.
+displays that status. JSON omits the `suppressed` list when no object has that status.
+Window commands for these operations are separate work.

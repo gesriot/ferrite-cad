@@ -42,6 +42,7 @@ pub struct DegradedBody {
 /// Portable rebuild facts, without session-owned handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct RebuildReport {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suppressed: Vec<ObjectId>,
     pub failed: Vec<FailedFeature>,
     pub skipped: Vec<SkippedFeature>,

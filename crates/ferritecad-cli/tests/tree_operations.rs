@@ -855,7 +855,30 @@ fn native_suppression_ignores_failed_profile_but_requires_a_built_predecessor() 
     ferritecad_fixtures::write_plate(&source)?;
     let mut doc = Document::open(&source)?;
     let body = ferritecad_fixtures::feature_changes::body(&doc)?;
-    let (base, _, _) = ferritecad_fixtures::feature_changes::base_profile(&doc, body)?;
+    let (base, profile, _) = ferritecad_fixtures::feature_changes::base_profile(&doc, body)?;
+    // Another suppressed result must not hide this feature's skipped status.
+    let independent = ObjectId::new();
+    doc.write_changes(&[
+        EditChange::AddBody {
+            object: ObjectId::new(),
+            name: Some("Independent".into()),
+            feature_object: independent,
+            feature_name: Some("Suppressed root".into()),
+            feature: FeatureAddition::Extrude {
+                profile,
+                regions: vec![],
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(1.)?,
+                },
+                reversed: false,
+                operation: ferritecad_document::SolidOperation::NewBody,
+            },
+        },
+        EditChange::SetSuppressed {
+            object: independent,
+            suppressed: true,
+        },
+    ])?;
     let plane = ObjectId::new();
     let mut tool = ferritecad_fixtures::feature_changes::circular_tool(
         &doc,
@@ -906,6 +929,12 @@ fn native_suppression_ignores_failed_profile_but_requires_a_built_predecessor() 
         )?;
         assert_eq!(result["ok"], true, "{result}");
         let report = &result["result"]["rebuild"];
+        assert!(
+            report["suppressed"]
+                .as_array()
+                .expect("independent suppressed result")
+                .contains(&serde_json::json!(independent))
+        );
         assert_eq!(
             report["suppressed"]
                 .as_array()
