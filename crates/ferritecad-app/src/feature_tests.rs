@@ -27,7 +27,28 @@ impl RequestFacts for EditRequest {
                     feature,
                     ..
                 } => Some((*object, *body, feature)),
-                _ => None,
+                EditChange::AddParameter { .. }
+                | EditChange::SetParameter { .. }
+                | EditChange::RenameParameter { .. }
+                | EditChange::RemoveObject { .. }
+                | EditChange::SetSuppressed { .. }
+                | EditChange::SetExpressionText { .. }
+                | EditChange::SetKeepSelection { .. }
+                | EditChange::AddDatumPlane { .. }
+                | EditChange::SetDatumFace { .. }
+                | EditChange::AddBody { .. }
+                | EditChange::SetRegions { .. }
+                | EditChange::SetOperation { .. }
+                | EditChange::SetReversed { .. }
+                | EditChange::SetRevolveAxis { .. }
+                | EditChange::SetRevolveExtent { .. }
+                | EditChange::AddSketch { .. }
+                | EditChange::SetEdges { .. }
+                | EditChange::SetEndCondition { .. }
+                | EditChange::SetExpression { .. }
+                | EditChange::SetCurveGeometry { .. }
+                | EditChange::AddConstraint { .. }
+                | EditChange::RemoveConstraint { .. } => None,
             })
             .expect("feature addition")
     }
@@ -56,7 +77,27 @@ impl RequestFacts for EditRequest {
             .find_map(|c| match c {
                 EditChange::SetCurveGeometry { geometry, .. } => Some(geometry),
                 EditChange::AddSketch { sketch, .. } => Some(&sketch.curves[0].geometry),
-                _ => None,
+                EditChange::AddParameter { .. }
+                | EditChange::SetParameter { .. }
+                | EditChange::RenameParameter { .. }
+                | EditChange::RemoveObject { .. }
+                | EditChange::SetSuppressed { .. }
+                | EditChange::SetExpressionText { .. }
+                | EditChange::SetKeepSelection { .. }
+                | EditChange::AddDatumPlane { .. }
+                | EditChange::SetDatumFace { .. }
+                | EditChange::AddBody { .. }
+                | EditChange::SetRegions { .. }
+                | EditChange::SetOperation { .. }
+                | EditChange::SetReversed { .. }
+                | EditChange::SetRevolveAxis { .. }
+                | EditChange::SetRevolveExtent { .. }
+                | EditChange::AddFeature { .. }
+                | EditChange::SetEdges { .. }
+                | EditChange::SetEndCondition { .. }
+                | EditChange::SetExpression { .. }
+                | EditChange::AddConstraint { .. }
+                | EditChange::RemoveConstraint { .. } => None,
             })
             .expect("circle geometry");
         let SketchGeometry::Circle { center, radius } = geometry else {
@@ -76,7 +117,28 @@ impl RequestFacts for EditRequest {
                         },
                     ..
                 } => Some(end_condition),
-                _ => None,
+                EditChange::AddFeature { .. }
+                | EditChange::AddParameter { .. }
+                | EditChange::SetParameter { .. }
+                | EditChange::RenameParameter { .. }
+                | EditChange::RemoveObject { .. }
+                | EditChange::SetSuppressed { .. }
+                | EditChange::SetExpressionText { .. }
+                | EditChange::SetKeepSelection { .. }
+                | EditChange::AddDatumPlane { .. }
+                | EditChange::SetDatumFace { .. }
+                | EditChange::AddBody { .. }
+                | EditChange::SetRegions { .. }
+                | EditChange::SetOperation { .. }
+                | EditChange::SetReversed { .. }
+                | EditChange::SetRevolveAxis { .. }
+                | EditChange::SetRevolveExtent { .. }
+                | EditChange::AddSketch { .. }
+                | EditChange::SetEdges { .. }
+                | EditChange::SetExpression { .. }
+                | EditChange::SetCurveGeometry { .. }
+                | EditChange::AddConstraint { .. }
+                | EditChange::RemoveConstraint { .. } => None,
             })
             .expect("Cut end");
         CircularCut {
@@ -97,7 +159,27 @@ impl RequestFacts for EditRequest {
             .find_map(|c| match c {
                 EditChange::SetEndCondition { object, .. }
                 | EditChange::AddFeature { object, .. } => Some(*object),
-                _ => None,
+                EditChange::AddParameter { .. }
+                | EditChange::SetParameter { .. }
+                | EditChange::RenameParameter { .. }
+                | EditChange::RemoveObject { .. }
+                | EditChange::SetSuppressed { .. }
+                | EditChange::SetExpressionText { .. }
+                | EditChange::SetKeepSelection { .. }
+                | EditChange::AddDatumPlane { .. }
+                | EditChange::SetDatumFace { .. }
+                | EditChange::AddBody { .. }
+                | EditChange::SetRegions { .. }
+                | EditChange::SetOperation { .. }
+                | EditChange::SetReversed { .. }
+                | EditChange::SetRevolveAxis { .. }
+                | EditChange::SetRevolveExtent { .. }
+                | EditChange::AddSketch { .. }
+                | EditChange::SetEdges { .. }
+                | EditChange::SetExpression { .. }
+                | EditChange::SetCurveGeometry { .. }
+                | EditChange::AddConstraint { .. }
+                | EditChange::RemoveConstraint { .. } => None,
             })
             .expect("Cut id")
     }
@@ -107,7 +189,27 @@ impl RequestFacts for EditRequest {
             .find_map(|c| match c {
                 EditChange::SetCurveGeometry { curve, .. } => Some(*curve),
                 EditChange::AddSketch { sketch, .. } => Some(sketch.curves[0].id),
-                _ => None,
+                EditChange::AddParameter { .. }
+                | EditChange::SetParameter { .. }
+                | EditChange::RenameParameter { .. }
+                | EditChange::RemoveObject { .. }
+                | EditChange::SetSuppressed { .. }
+                | EditChange::SetExpressionText { .. }
+                | EditChange::SetKeepSelection { .. }
+                | EditChange::AddDatumPlane { .. }
+                | EditChange::SetDatumFace { .. }
+                | EditChange::AddBody { .. }
+                | EditChange::SetRegions { .. }
+                | EditChange::SetOperation { .. }
+                | EditChange::SetReversed { .. }
+                | EditChange::SetRevolveAxis { .. }
+                | EditChange::SetRevolveExtent { .. }
+                | EditChange::AddFeature { .. }
+                | EditChange::SetEdges { .. }
+                | EditChange::SetEndCondition { .. }
+                | EditChange::SetExpression { .. }
+                | EditChange::AddConstraint { .. }
+                | EditChange::RemoveConstraint { .. } => None,
             })
             .expect("curve id")
     }

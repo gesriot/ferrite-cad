@@ -116,9 +116,10 @@ impl RebuildResult {
         self.statuses.get(&id)
     }
     pub fn all_built(&self) -> bool {
-        self.statuses
-            .values()
-            .all(|s| matches!(s, RebuildStatus::Built))
+        self.statuses.values().all(|s| match s {
+            RebuildStatus::Built | RebuildStatus::Suppressed => true,
+            RebuildStatus::Failed { .. } | RebuildStatus::Skipped { .. } => false,
+        })
     }
     pub fn report(&self) -> RebuildReport {
         let mut report = RebuildReport {
@@ -136,7 +137,8 @@ impl RebuildResult {
                     id: *id,
                     cause: *cause,
                 }),
-                _ => {}
+                Some(RebuildStatus::Suppressed) => report.suppressed.push(*id),
+                Some(RebuildStatus::Built) | None => {}
             }
         }
         report
@@ -160,8 +162,10 @@ impl RebuildResult {
         let errors = std::mem::take(&mut self.statuses)
             .into_iter()
             .filter_map(|(id, status)| match status {
-                RebuildStatus::Failed { error } if !baseline.contains(&id) => Some((id, error)),
-                _ => None,
+                RebuildStatus::Failed { error } => (!baseline.contains(&id)).then_some((id, error)),
+                RebuildStatus::Built
+                | RebuildStatus::Suppressed
+                | RebuildStatus::Skipped { .. } => None,
             })
             .collect();
         self.release_all(kernel);
@@ -373,7 +377,8 @@ fn run<K: GeometryKernel + ?Sized>(
             ObjectPayload::KeepSolids(_) => None,
             _ => None,
         };
-        if let Some((sketch_id, selected)) = selection
+        if !object.suppressed
+            && let Some((sketch_id, selected)) = selection
             && let Some(ObjectPayload::Sketch(sketch)) = objects.get(&sketch_id).map(|o| &o.payload)
             && let Some(curve) = selected.iter().find(|id| {
                 !sketch
@@ -395,7 +400,11 @@ fn run<K: GeometryKernel + ?Sized>(
         let cause = graph
             .dependencies()
             .iter()
-            .filter(|d| d.dependent == *id)
+            .filter(|d| {
+                d.dependent == *id
+                    && (!object.suppressed
+                        || d.role == ferritecad_document::DependencyRole::Predecessor)
+            })
             .find_map(|d| {
                 state
                     .status(d.dependency)
@@ -416,8 +425,10 @@ fn run<K: GeometryKernel + ?Sized>(
                 let mut current = body.tip_feature;
                 let mut fallback = None;
                 while let Some(feature) = current {
-                    if matches!(state.status(feature), Some(RebuildStatus::Built))
-                        && state.shape(feature).is_some()
+                    if matches!(
+                        state.status(feature),
+                        Some(RebuildStatus::Built | RebuildStatus::Suppressed)
+                    ) && state.shape(feature).is_some()
                     {
                         fallback = Some(feature);
                         break;
@@ -439,7 +450,30 @@ fn run<K: GeometryKernel + ?Sized>(
         }
         let owned_before = state.owned.len();
         let outcome = (|| -> Result<()> {
+            if object.suppressed {
+                let mut h = ferritecad_types::CanonicalHasher::new("eval.suppressed");
+                source.identity(kernel).feed(&mut h);
+                h.bytes(&id.to_bytes())
+                    .bool(true)
+                    .hash(&object.evaluated_payload_hash()?);
+                if let Some(previous) = object.payload.previous_feature() {
+                    h.hash(&state.keys[&previous]);
+                    if let Some(shape) = state.shape(previous) {
+                        state.topology.inherit_result(*id, previous)?;
+                        state.shapes.insert(*id, shape);
+                    }
+                }
+                state.keys.insert(*id, h.finish());
+                return Ok(());
+            }
             parameters.verify(*id, &object.payload)?;
+            if let Some(previous) = object.payload.previous_feature()
+                && state.shape(previous).is_none()
+            {
+                return Err(CadError::input(format!(
+                    "feature {id} consumes {previous}, which has no solid result"
+                )));
+            }
             if let Source::Live(accepted, identity) = &source
                 && matches!(
                     object.payload,
@@ -716,6 +750,11 @@ fn run<K: GeometryKernel + ?Sized>(
                     // A body in this slice is a name for its tip feature's result.
                     // It creates nothing, so it owns nothing to release.
                     if let Some(tip) = body.tip_feature {
+                        if matches!(state.status(tip), Some(RebuildStatus::Suppressed))
+                            && state.shape(tip).is_none()
+                        {
+                            return Ok(());
+                        }
                         let shape = state.shapes.get(&tip).copied().ok_or_else(|| {
                             CadError::input(format!(
                                 "body {id} names tip feature {tip}, which produced no shape"
@@ -834,7 +873,14 @@ fn run<K: GeometryKernel + ?Sized>(
                         }
                     }
                 }
-                state.statuses.insert(*id, RebuildStatus::Built);
+                state.statuses.insert(
+                    *id,
+                    if object.suppressed {
+                        RebuildStatus::Suppressed
+                    } else {
+                        RebuildStatus::Built
+                    },
+                );
             }
             Err(error) if error.kind() == ferritecad_types::ErrorKind::Cancellation => {
                 return Err(error);

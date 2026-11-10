@@ -68,6 +68,7 @@ pub struct ObjectRecord {
     pub ordinal: i64,
     pub name: Option<String>,
     pub payload: ObjectPayload,
+    pub suppressed: bool,
     pub payload_hash: ContentHash,
     pub(crate) storage_bytes: Vec<u8>,
 }
@@ -89,7 +90,9 @@ impl ObjectRecord {
         }
         let mut payload = self.payload.clone();
         crate::expression_edit::expressions(&mut payload, |_, expr| expr.source.clear());
-        Ok(ContentHash::of_bytes(&payload.encode()?))
+        Ok(ContentHash::of_bytes(
+            &payload.encode_suppressed(self.suppressed)?,
+        ))
     }
 
     pub(crate) fn storage_bytes(&self) -> &[u8] {
@@ -1116,8 +1119,14 @@ pub struct DocumentWriter<'a> {
 
 impl DocumentWriter<'_> {
     /// An edit changes the payload, not ownership or claims on attached source bytes.
-    pub(crate) fn update_payload(&mut self, id: ObjectId, payload: &ObjectPayload) -> Result<()> {
-        let bytes = payload.to_storage_bytes()?;
+    pub(crate) fn update_payload(
+        &mut self,
+        id: ObjectId,
+        payload: &ObjectPayload,
+        suppressed: bool,
+    ) -> Result<()> {
+        payload.validate()?;
+        let bytes = payload.encode_suppressed(suppressed)?;
         let hash = ContentHash::of_bytes(&bytes);
         let changed = self
             .tx
@@ -1148,14 +1157,25 @@ impl DocumentWriter<'_> {
         name: Option<&str>,
         payload: &ObjectPayload,
     ) -> Result<ContentHash> {
-        if let ObjectPayload::ImportedStep(_) = payload {
+        self.put_object_state(id, parent, ordinal, name, (payload, false))
+    }
+
+    pub(crate) fn put_object_state(
+        &mut self,
+        id: ObjectId,
+        parent: Option<ObjectId>,
+        ordinal: i64,
+        name: Option<&str>,
+        state: (&ObjectPayload, bool),
+    ) -> Result<ContentHash> {
+        if let ObjectPayload::ImportedStep(_) = state.0 {
             return Err(CadError::unsupported(
                 "an imported STEP object owns source bytes as well as a payload; write it with \
                  put_imported_step so the object and its claim on those bytes are recorded \
                  together",
             ));
         }
-        let hash = self.write_object(id, parent, ordinal, name, payload)?;
+        let hash = self.write_object(id, parent, ordinal, name, state)?;
 
         self.tx
             .execute(
@@ -1172,9 +1192,11 @@ impl DocumentWriter<'_> {
         parent: Option<ObjectId>,
         ordinal: i64,
         name: Option<&str>,
-        payload: &ObjectPayload,
+        state: (&ObjectPayload, bool),
     ) -> Result<ContentHash> {
-        let bytes = payload.to_storage_bytes()?;
+        let (payload, suppressed) = state;
+        payload.validate()?;
+        let bytes = payload.encode_suppressed(suppressed)?;
         let hash = ContentHash::of_bytes(&bytes);
 
         self.tx
@@ -1290,7 +1312,7 @@ impl DocumentWriter<'_> {
         read_imported_source(self.tx, imported)?;
 
         let payload = ObjectPayload::ImportedStep(imported.clone());
-        let hash = self.write_object(id, parent, ordinal, name, &payload)?;
+        let hash = self.write_object(id, parent, ordinal, name, (&payload, false))?;
 
         // Rewriting an object may point it at different bytes; the claim it
         // used to make must go with the reading it used to hold.
@@ -1455,8 +1477,18 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
     let payload_hash: Vec<u8> = row.get(6)?;
     Ok((|| {
         let id = ObjectId::from_slice(&id)?;
-        let payload = ObjectPayload::read_record(&storage_bytes).map_err(|e| {
+        let envelope = crate::Envelope::from_bytes(&storage_bytes).map_err(|e| {
             CadError::input_because(format!("reading object {id} of type {stored_kind}"), e)
+        })?;
+        let payload = ObjectPayload::read_envelope(&envelope).map_err(|e| {
+            let kind = match crate::ObjectKind::parse(&stored_kind) {
+                Some(kind) => kind.label(),
+                None => &stored_kind,
+            };
+            CadError::input_because(
+                format!("reading {kind} object {id} of type {stored_kind}"),
+                e,
+            )
         })?;
         if payload.type_name() != stored_kind {
             return Err(CadError::input(format!(
@@ -1476,6 +1508,7 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
             ordinal,
             name,
             payload,
+            suppressed: envelope.suppressed.unwrap_or(false),
             payload_hash,
             storage_bytes,
         })

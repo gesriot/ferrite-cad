@@ -1194,7 +1194,9 @@ fn local_error(
         .into_values()
         .find_map(|s| match s {
             ferritecad_eval::RebuildStatus::Failed { error } => Some(error),
-            _ => None,
+            ferritecad_eval::RebuildStatus::Built
+            | ferritecad_eval::RebuildStatus::Suppressed
+            | ferritecad_eval::RebuildStatus::Skipped { .. } => None,
         })
         .expect("the sketch failed locally")
 }

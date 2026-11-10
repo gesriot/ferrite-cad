@@ -84,8 +84,12 @@ pub(super) enum Change {
         object: ObjectId,
         name: String,
     },
-    RemoveParameter {
+    RemoveObject {
         object: ObjectId,
+    },
+    SetSuppressed {
+        object: ObjectId,
+        suppressed: bool,
     },
     SetExpression {
         object: ObjectId,
@@ -228,7 +232,10 @@ impl Change {
                 EditChange::SetParameter { object, expression }
             }
             Self::RenameParameter { object, name } => EditChange::RenameParameter { object, name },
-            Self::RemoveParameter { object } => EditChange::RemoveParameter { object },
+            Self::RemoveObject { object } => EditChange::RemoveObject { object },
+            Self::SetSuppressed { object, suppressed } => {
+                EditChange::SetSuppressed { object, suppressed }
+            }
             Self::SetExpression {
                 object,
                 slot,

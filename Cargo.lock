@@ -742,6 +742,7 @@ name = "ferritecad-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "ferritecad-bench",
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-exchange",

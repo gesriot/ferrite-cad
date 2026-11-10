@@ -14,6 +14,19 @@ source definition keys and durable placement identities. An unknown type or an
 unreadable payload fails the entire opening operation with the object id and type;
 opening a damaged document does not modify it.
 
+The common envelope has an optional boolean `suppressed`. Absence means false; writers emit
+`suppressed: true` for a suppressed history feature and omit it otherwise. The existing payload
+hash covers the complete envelope including this flag. A present flag on any non-feature kind
+is an `input` error during opening, even when false. Null is not a boolean. No separate flag is
+stored in Extrude, Revolve, Fillet, Chamfer or KeepSolids payloads.
+
+Removing history entries rewrites retained `previous` fields, `predecessor` rows and Body tips
+in the same transaction. A Body with no remaining features stores `tip_feature: None`; it is
+empty. A fully suppressed history is also empty when evaluated, while keeping its stored tip.
+Removing an import deletes its source claim, and bytes with no remaining claims are reclaimed
+in that transaction. No surviving dependency or presentation child is deleted implicitly.
+See [Tree operations](decisions/0011-tree-operations.md).
+
 A `.fcad-cache` sidecar is tagged `FCAC`. It uses WAL and normal durability, and
 binds derived blobs to a document id, kernel build and input key. Unreadable or
 mismatched caches are discarded and recreated. A cached entry whose bytes no

@@ -21,7 +21,28 @@ pub fn added_constraints(changes: &[crate::EditChange]) -> Vec<&crate::SketchCon
         .iter()
         .filter_map(|c| match c {
             crate::EditChange::AddConstraint { constraint, .. } => Some(constraint),
-            _ => None,
+            crate::EditChange::AddParameter { .. }
+            | crate::EditChange::SetParameter { .. }
+            | crate::EditChange::RenameParameter { .. }
+            | crate::EditChange::RemoveObject { .. }
+            | crate::EditChange::SetSuppressed { .. }
+            | crate::EditChange::SetExpressionText { .. }
+            | crate::EditChange::SetKeepSelection { .. }
+            | crate::EditChange::AddDatumPlane { .. }
+            | crate::EditChange::SetDatumFace { .. }
+            | crate::EditChange::AddBody { .. }
+            | crate::EditChange::SetRegions { .. }
+            | crate::EditChange::SetOperation { .. }
+            | crate::EditChange::SetReversed { .. }
+            | crate::EditChange::SetRevolveAxis { .. }
+            | crate::EditChange::SetRevolveExtent { .. }
+            | crate::EditChange::AddSketch { .. }
+            | crate::EditChange::AddFeature { .. }
+            | crate::EditChange::SetEdges { .. }
+            | crate::EditChange::SetEndCondition { .. }
+            | crate::EditChange::SetExpression { .. }
+            | crate::EditChange::SetCurveGeometry { .. }
+            | crate::EditChange::RemoveConstraint { .. } => None,
         })
         .collect()
 }

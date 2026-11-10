@@ -85,6 +85,7 @@ pub struct ModelNaming {
     outer_curves: BTreeMap<ObjectId, BTreeSet<StableEntityId>>,
     pub(crate) previous: BTreeMap<ObjectId, ObjectId>,
     pub features: BTreeMap<ObjectId, FeatureNaming>,
+    inherited: BTreeSet<ObjectId>,
 }
 
 impl ModelNaming {
@@ -315,6 +316,23 @@ impl ModelNaming {
     pub fn feature(&self, id: ObjectId) -> Option<&FeatureNaming> {
         self.features.get(&id)
     }
+
+    /// Pass through a predecessor's complete bindings without minting or owning its nodes.
+    pub fn inherit_result(&mut self, owner: ObjectId, previous: ObjectId) -> Result<()> {
+        let mut named = self
+            .feature(previous)
+            .ok_or_else(|| CadError::topology(format!("feature {previous} has no named result")))?
+            .clone();
+        named.derivations.clear();
+        self.insert_feature(owner, named)?;
+        self.inherited.insert(owner);
+        Ok(())
+    }
+
+    /// An alias must not add another selectable occurrence of the same shape's names.
+    pub fn is_inherited_result(&self, feature: ObjectId) -> bool {
+        self.inherited.contains(&feature)
+    }
     pub fn producers(&self) -> impl ExactSizeIterator<Item = ObjectId> + '_ {
         self.features.keys().copied()
     }
@@ -322,6 +340,7 @@ impl ModelNaming {
         self.features.is_empty()
     }
     pub fn remove_feature(&mut self, id: ObjectId) {
+        self.inherited.remove(&id);
         if let Some(feature) = self.features.remove(&id) {
             for digest in feature.derivations.keys() {
                 self.derivations.remove(digest);

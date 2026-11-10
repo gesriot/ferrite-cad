@@ -915,6 +915,79 @@ fn removing_an_imported_object_leaves_no_bytes_nothing_can_reach() {
 }
 
 #[test]
+fn common_removal_reclaims_only_the_last_import_claim_and_flags_refuse_opening()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for flag in [false, true] {
+        let (dir, path) = workspace();
+        let mut document = Document::create(&path)?;
+        let (first, _) = store(&mut document, &imported(SessionId::new(), Vec::new()))?;
+        let (second, _) = store(&mut document, &imported(SessionId::new(), Vec::new()))?;
+        let error = document
+            .write_changes(&[ferritecad_document::EditChange::SetSuppressed {
+                object: first,
+                suppressed: flag,
+            }])
+            .expect_err("imports cannot be suppressed");
+        assert_eq!(error.kind(), ErrorKind::Input);
+        assert!(error.to_string().contains("imported STEP"), "{error}");
+        document
+            .write_changes(&[ferritecad_document::EditChange::RemoveObject { object: first }])?;
+        assert_eq!(
+            document
+                .step_import(second)?
+                .expect("remaining import")
+                .source,
+            SOURCE
+        );
+        document.close()?;
+        let damaged = dir.path().join("damaged.fcad");
+        std::fs::copy(&path, &damaged)?;
+        with_sql(
+            &damaged,
+            |sql| -> std::result::Result<(), Box<dyn std::error::Error>> {
+                let raw: Vec<u8> = sql.query_row(
+                    "SELECT payload FROM objects WHERE id=?1",
+                    [second.to_bytes().as_slice()],
+                    |row| row.get(0),
+                )?;
+                let mut envelope = ferritecad_document::Envelope::from_bytes(&raw)?;
+                envelope.suppressed = Some(flag);
+                let bytes = envelope.to_bytes()?;
+                let hash = ContentHash::of_bytes(&bytes);
+                sql.execute(
+                    "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                    rusqlite::params![
+                        bytes,
+                        hash.as_bytes().as_slice(),
+                        second.to_bytes().as_slice()
+                    ],
+                )?;
+                Ok(())
+            },
+        )?;
+        let before = std::fs::read(&damaged)?;
+        let error = Document::open_read_only(&damaged).expect_err("flag on imported STEP");
+        assert_eq!(error.kind(), ErrorKind::Input);
+        assert!(error.to_string().contains("imported STEP"), "{error}");
+        assert_eq!(std::fs::read(&damaged)?, before);
+        let mut document = Document::open(&path)?;
+        document
+            .write_changes(&[ferritecad_document::EditChange::RemoveObject { object: second }])?;
+        document.close()?;
+        let counts: (i64, i64) = with_sql(&path, |sql| {
+            sql.query_row(
+                "SELECT (SELECT count(*) FROM imported_sources),
+                    (SELECT count(*) FROM imported_source_refs)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })?;
+        assert_eq!(counts, (0, 0));
+    }
+    Ok(())
+}
+
+#[test]
 fn bytes_nothing_claims_do_not_survive_the_edit_that_wrote_them() {
     let (_dir, path) = workspace();
     let mut document = Document::create(&path).expect("creates");

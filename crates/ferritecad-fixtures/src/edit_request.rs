@@ -15,8 +15,11 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::RenameParameter { object, name } => json!({
             "kind":"rename_parameter", "object":object, "name":name,
         }),
-        EditChange::RemoveParameter { object } => {
-            json!({"kind":"remove_parameter","object":object})
+        EditChange::SetSuppressed { object, suppressed } => {
+            json!({"kind":"set_suppressed","object":object,"suppressed":suppressed})
+        }
+        EditChange::RemoveObject { object } => {
+            json!({"kind":"remove_object","object":object})
         }
         EditChange::SetExpressionText { object, slot, source } => json!({
             "kind":"set_expression", "object":object, "slot":slot, "expression":source,

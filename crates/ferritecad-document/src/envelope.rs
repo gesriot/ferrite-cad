@@ -10,6 +10,12 @@ pub struct Envelope {
     pub type_name: String,
     #[serde(with = "serde_bytes")]
     pub payload: Vec<u8>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flag"
+    )]
+    pub suppressed: Option<bool>,
 }
 
 impl Envelope {
@@ -17,6 +23,7 @@ impl Envelope {
         Self {
             type_name: type_name.into(),
             payload,
+            suppressed: None,
         }
     }
 
@@ -41,6 +48,12 @@ impl Envelope {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         decode_exact(bytes, "object envelope")
     }
+}
+
+fn flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<bool>, D::Error> {
+    bool::deserialize(deserializer).map(Some)
 }
 
 fn decode_exact<T: DeserializeOwned>(bytes: &[u8], what: &str) -> Result<T> {

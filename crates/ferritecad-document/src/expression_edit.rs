@@ -75,8 +75,12 @@ pub enum EditChange {
         object: ObjectId,
         name: String,
     },
-    RemoveParameter {
+    RemoveObject {
         object: ObjectId,
+    },
+    SetSuppressed {
+        object: ObjectId,
+        suppressed: bool,
     },
     SetExpressionText {
         object: ObjectId,
@@ -248,8 +252,28 @@ impl EditChange {
     pub fn expression(&self) -> Option<&Expression> {
         match self {
             Self::SetExpression { expression, .. } => Some(expression),
-            Self::SetKeepSelection { .. } => None,
-            _ => None,
+            Self::AddParameter { .. }
+            | Self::SetParameter { .. }
+            | Self::RenameParameter { .. }
+            | Self::RemoveObject { .. }
+            | Self::SetSuppressed { .. }
+            | Self::SetExpressionText { .. }
+            | Self::SetKeepSelection { .. }
+            | Self::AddDatumPlane { .. }
+            | Self::SetDatumFace { .. }
+            | Self::AddBody { .. }
+            | Self::SetRegions { .. }
+            | Self::SetOperation { .. }
+            | Self::SetReversed { .. }
+            | Self::SetRevolveAxis { .. }
+            | Self::SetRevolveExtent { .. }
+            | Self::AddSketch { .. }
+            | Self::AddFeature { .. }
+            | Self::SetEdges { .. }
+            | Self::SetEndCondition { .. }
+            | Self::SetCurveGeometry { .. }
+            | Self::AddConstraint { .. }
+            | Self::RemoveConstraint { .. } => None,
         }
     }
     pub fn constant(object: ObjectId, slot: ExpressionSlot, value: f64) -> Result<Self> {
@@ -265,7 +289,8 @@ impl EditChange {
             Self::AddParameter { object, .. }
             | Self::SetParameter { object, .. }
             | Self::RenameParameter { object, .. }
-            | Self::RemoveParameter { object }
+            | Self::RemoveObject { object }
+            | Self::SetSuppressed { object, .. }
             | Self::SetExpressionText { object, .. }
             | Self::SetKeepSelection { object, .. }
             | Self::AddDatumPlane { object, .. }
@@ -382,7 +407,21 @@ impl EditChange {
                 r.extent = extent.clone();
                 return Ok(());
             }
-            _ => {}
+            Self::AddParameter { .. }
+            | Self::SetParameter { .. }
+            | Self::RenameParameter { .. }
+            | Self::RemoveObject { .. }
+            | Self::SetSuppressed { .. }
+            | Self::SetExpressionText { .. }
+            | Self::AddDatumPlane { .. }
+            | Self::AddBody { .. }
+            | Self::AddSketch { .. }
+            | Self::AddFeature { .. }
+            | Self::SetEndCondition { .. }
+            | Self::SetExpression { .. }
+            | Self::SetCurveGeometry { .. }
+            | Self::AddConstraint { .. }
+            | Self::RemoveConstraint { .. } => {}
         }
         let ObjectPayload::Sketch(sketch) = payload else {
             return Err(CadError::input(format!(
@@ -428,7 +467,8 @@ impl EditChange {
             Self::AddParameter { .. }
             | Self::SetParameter { .. }
             | Self::RenameParameter { .. }
-            | Self::RemoveParameter { .. }
+            | Self::RemoveObject { .. }
+            | Self::SetSuppressed { .. }
             | Self::AddDatumPlane { .. }
             | Self::AddBody { .. }
             | Self::AddSketch { .. }
@@ -635,7 +675,10 @@ impl Document {
                             .clone_from(expression);
                     }
                     EditChange::RenameParameter { name, .. } => candidate.rename(id, name)?,
-                    EditChange::RemoveParameter { .. } => candidate.remove(id)?,
+                    EditChange::RemoveObject { .. } => candidate.remove(id)?,
+                    EditChange::SetSuppressed { suppressed, .. } => {
+                        candidate.set_suppressed(id, *suppressed)?;
+                    }
                     EditChange::AddBody {
                         name,
                         feature_object,
@@ -669,15 +712,26 @@ impl Document {
                         let ObjectPayload::Body(body_payload) = &saved.payload else {
                             return Err(CadError::input(format!("object {body} is not a Body")));
                         };
-                        let previous = body_payload.tip_feature.ok_or_else(|| {
-                            CadError::input(format!("Body {body} has no current feature"))
-                        })?;
-                        candidate.add(id, name, feature.payload(Some(previous))?)?;
+                        let previous = body_payload.tip_feature;
+                        candidate.add(id, name, feature.payload(previous)?)?;
                         candidate.edit(*body)?.payload = ObjectPayload::Body(crate::Body {
                             tip_feature: Some(id),
                         });
                     }
-                    _ => {
+                    EditChange::SetExpressionText { .. }
+                    | EditChange::SetKeepSelection { .. }
+                    | EditChange::SetDatumFace { .. }
+                    | EditChange::SetRegions { .. }
+                    | EditChange::SetOperation { .. }
+                    | EditChange::SetReversed { .. }
+                    | EditChange::SetRevolveAxis { .. }
+                    | EditChange::SetRevolveExtent { .. }
+                    | EditChange::SetEdges { .. }
+                    | EditChange::SetEndCondition { .. }
+                    | EditChange::SetExpression { .. }
+                    | EditChange::SetCurveGeometry { .. }
+                    | EditChange::AddConstraint { .. }
+                    | EditChange::RemoveConstraint { .. } => {
                         let object = candidate.edit(id)?;
                         change
                             .apply(&mut object.payload)

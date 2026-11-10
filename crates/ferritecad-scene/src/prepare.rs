@@ -508,7 +508,12 @@ where
                 ObjectPayload::Body(body) => {
                     // A body with no tip feature is empty by definition rather
                     // than broken: nothing has been built into it yet.
-                    if body.tip_feature.is_none() {
+                    if body.tip_feature.is_none()
+                        || (matches!(
+                            built.status(object.id),
+                            Some(ferritecad_eval::RebuildStatus::Built)
+                        ) && built.shape(object.id).is_none())
+                    {
                         continue;
                     }
                     // Two bodies are two definitions however alike they look:

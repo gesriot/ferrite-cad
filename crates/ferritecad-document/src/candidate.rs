@@ -9,12 +9,15 @@ use crate::{
     Dependency, DependencyRole, Document, DocumentWriter, ObjectPayload, Parameter, ParameterValues,
 };
 
+mod tree;
+
 pub(crate) struct Row {
     id: ObjectId,
     parent: Option<ObjectId>,
     ordinal: i64,
     pub(crate) name: Option<String>,
     pub(crate) payload: ObjectPayload,
+    suppressed: bool,
     saved: Option<Vec<u8>>,
 }
 
@@ -43,6 +46,7 @@ impl Candidate {
                             ordinal: o.ordinal,
                             name: o.name,
                             payload: o.payload,
+                            suppressed: o.suppressed,
                             saved: Some(o.storage_bytes),
                         },
                     )
@@ -61,7 +65,9 @@ impl Candidate {
             .get_mut(&id)
             .ok_or_else(|| CadError::input(format!("unknown object {id}")))?;
         if let std::collections::btree_map::Entry::Vacant(entry) = self.old.entry(id) {
-            if obj.saved.as_deref() != Some(obj.payload.encode()?.as_slice()) {
+            if obj.saved.as_deref()
+                != Some(obj.payload.encode_suppressed(obj.suppressed)?.as_slice())
+            {
                 return Err(CadError::unsupported(format!(
                     "object {id}'s saved payload cannot be rewritten losslessly by this build"
                 )));
@@ -111,6 +117,7 @@ impl Candidate {
                 ordinal: self.ordinal,
                 name: name.clone(),
                 payload,
+                suppressed: false,
                 saved: None,
             },
         );
@@ -140,34 +147,6 @@ impl Candidate {
         if o.name.as_deref() == Some(&old) {
             o.name = Some(name.to_owned());
         }
-        Ok(())
-    }
-
-    pub(crate) fn remove(&mut self, id: ObjectId) -> Result<()> {
-        let p = self.parameter_mut(id)?;
-        let name = p.name.clone();
-        let users = self.users(&name)?;
-        if !users.is_empty() {
-            let labels: Vec<_> = users
-                .iter()
-                .map(|id| {
-                    let o = &self.objects[id];
-                    format!(
-                        "{} ({id})",
-                        o.name.as_deref().unwrap_or(o.payload.type_name())
-                    )
-                })
-                .collect();
-            return Err(CadError::input(format!(
-                "parameter '{name}' is referenced by {}",
-                labels.join(", ")
-            )));
-        }
-        self.objects.remove(&id);
-        if !self.added.remove(&id) {
-            self.removed.insert(id);
-        }
-        self.old.remove(&id);
         Ok(())
     }
 
@@ -280,6 +259,7 @@ impl Candidate {
         document: &Document,
         writer: &mut DocumentWriter<'_>,
     ) -> Result<()> {
+        self.finish_removals(document)?;
         let new_parameters = references(self.objects.iter().map(|(id, o)| (*id, &o.payload)))?;
         self.evaluate(&new_parameters)?;
         let mut old: BTreeSet<_> = document
@@ -301,9 +281,15 @@ impl Candidate {
             }
             old.extend(original);
             if self.added.contains(&o.id) || matches!(o.payload, ObjectPayload::Parameter(_)) {
-                writer.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload)?;
+                writer.put_object_state(
+                    o.id,
+                    o.parent,
+                    o.ordinal,
+                    o.name.as_deref(),
+                    (&o.payload, o.suppressed),
+                )?;
             } else {
-                writer.update_payload(o.id, &o.payload)?;
+                writer.update_payload(o.id, &o.payload, o.suppressed)?;
             }
         }
         for edge in old.difference(&new) {
@@ -311,6 +297,11 @@ impl Candidate {
         }
         for edge in new.difference(&old) {
             writer.add_dependency(*edge)?;
+        }
+        for edge in document.dependencies()? {
+            if self.removed.contains(&edge.dependent) {
+                writer.remove_dependency(edge)?;
+            }
         }
         for id in self.removed {
             writer.remove_object(id)?;

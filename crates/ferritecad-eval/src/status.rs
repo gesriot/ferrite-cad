@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug)]
 pub enum RebuildStatus {
     Built,
+    Suppressed,
     Failed { error: CadError },
     Skipped { cause: ObjectId },
 }
@@ -14,7 +15,7 @@ pub enum RebuildStatus {
 impl RebuildStatus {
     pub fn root_failure(&self, id: ObjectId) -> Option<ObjectId> {
         match self {
-            Self::Built => None,
+            Self::Built | Self::Suppressed => None,
             Self::Failed { .. } => Some(id),
             Self::Skipped { cause } => Some(*cause),
         }
@@ -41,6 +42,8 @@ pub struct DegradedBody {
 /// Portable rebuild facts, without session-owned handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct RebuildReport {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suppressed: Vec<ObjectId>,
     pub failed: Vec<FailedFeature>,
     pub skipped: Vec<SkippedFeature>,
     pub degraded_bodies: Vec<DegradedBody>,

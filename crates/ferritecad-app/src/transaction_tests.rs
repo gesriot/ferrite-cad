@@ -26,11 +26,49 @@ pub fn constraint_changes(
     .expect("constraint changes")
 }
 pub fn sketch(request: &EditRequest) -> ObjectId {
-    request.changes.iter().find_map(|change| match change {
-        EditChange::SetCurveGeometry {sketch,..} | EditChange::AddConstraint {sketch,..} | EditChange::RemoveConstraint {sketch,..} => Some(*sketch), _ => None,
-    }).unwrap_or_else(|| Document::open_read_only(&request.source).expect("document").objects().expect("objects").into_iter()
-        .find(|o| matches!(&o.payload, ObjectPayload::Sketch(s) if s.curves.iter().all(|c| matches!(c.geometry, SketchGeometry::Line{..})))).expect("line sketch").id)
+    request
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            EditChange::SetCurveGeometry { sketch, .. }
+            | EditChange::AddConstraint { sketch, .. }
+            | EditChange::RemoveConstraint { sketch, .. } => Some(*sketch),
+            EditChange::AddParameter { .. }
+            | EditChange::SetParameter { .. }
+            | EditChange::RenameParameter { .. }
+            | EditChange::RemoveObject { .. }
+            | EditChange::SetSuppressed { .. }
+            | EditChange::SetExpressionText { .. }
+            | EditChange::SetKeepSelection { .. }
+            | EditChange::AddDatumPlane { .. }
+            | EditChange::SetDatumFace { .. }
+            | EditChange::AddBody { .. }
+            | EditChange::SetRegions { .. }
+            | EditChange::SetOperation { .. }
+            | EditChange::SetReversed { .. }
+            | EditChange::SetRevolveAxis { .. }
+            | EditChange::SetRevolveExtent { .. }
+            | EditChange::AddSketch { .. }
+            | EditChange::AddFeature { .. }
+            | EditChange::SetEdges { .. }
+            | EditChange::SetEndCondition { .. }
+            | EditChange::SetExpression { .. } => None,
+        })
+        .unwrap_or_else(|| {
+            Document::open_read_only(&request.source)
+                .expect("document")
+                .objects()
+                .expect("objects")
+                .into_iter()
+                .find(|o| {
+                    matches!(&o.payload, ObjectPayload::Sketch(s)
+                if s.curves.iter().all(|c| matches!(c.geometry, SketchGeometry::Line { .. })))
+                })
+                .expect("line sketch")
+                .id
+        })
 }
+
 pub fn vertices(request: &EditRequest) -> Vec<SketchVertex> {
     let d = Document::open_read_only(&request.source).expect("fixture document");
     let ObjectPayload::Sketch(stored) = d
@@ -131,7 +169,27 @@ pub fn constraints(request: &EditRequest) -> SketchConstraintEdits {
                 };
                 result.add.push(added);
             }
-            _ => {}
+            EditChange::AddParameter { .. }
+            | EditChange::SetParameter { .. }
+            | EditChange::RenameParameter { .. }
+            | EditChange::RemoveObject { .. }
+            | EditChange::SetSuppressed { .. }
+            | EditChange::SetExpressionText { .. }
+            | EditChange::SetKeepSelection { .. }
+            | EditChange::AddDatumPlane { .. }
+            | EditChange::SetDatumFace { .. }
+            | EditChange::AddBody { .. }
+            | EditChange::SetRegions { .. }
+            | EditChange::SetOperation { .. }
+            | EditChange::SetReversed { .. }
+            | EditChange::SetRevolveAxis { .. }
+            | EditChange::SetRevolveExtent { .. }
+            | EditChange::AddSketch { .. }
+            | EditChange::AddFeature { .. }
+            | EditChange::SetEdges { .. }
+            | EditChange::SetEndCondition { .. }
+            | EditChange::SetExpression { .. }
+            | EditChange::SetCurveGeometry { .. } => {}
         }
     }
     result
@@ -219,7 +277,29 @@ pub fn vertices_in(request: &EditRequest, stored: &Sketch) -> Vec<SketchVertex> 
                         geometry,
                         ..
                     } if *id == curve.id => Some(geometry),
-                    _ => None,
+                    EditChange::AddParameter { .. }
+                    | EditChange::SetParameter { .. }
+                    | EditChange::RenameParameter { .. }
+                    | EditChange::RemoveObject { .. }
+                    | EditChange::SetSuppressed { .. }
+                    | EditChange::SetExpressionText { .. }
+                    | EditChange::SetKeepSelection { .. }
+                    | EditChange::AddDatumPlane { .. }
+                    | EditChange::SetDatumFace { .. }
+                    | EditChange::AddBody { .. }
+                    | EditChange::SetRegions { .. }
+                    | EditChange::SetOperation { .. }
+                    | EditChange::SetReversed { .. }
+                    | EditChange::SetRevolveAxis { .. }
+                    | EditChange::SetRevolveExtent { .. }
+                    | EditChange::AddSketch { .. }
+                    | EditChange::AddFeature { .. }
+                    | EditChange::SetEdges { .. }
+                    | EditChange::SetEndCondition { .. }
+                    | EditChange::SetExpression { .. }
+                    | EditChange::SetCurveGeometry { .. }
+                    | EditChange::AddConstraint { .. }
+                    | EditChange::RemoveConstraint { .. } => None,
                 })
                 .unwrap_or(&curve.geometry);
             let SketchGeometry::Line { start, .. } = geometry else {
@@ -268,7 +348,29 @@ fn circles(request: &EditRequest) -> Vec<CircleValues> {
                     EditChange::SetCurveGeometry {
                         curve, geometry, ..
                     } if *curve == c.id => Some(geometry),
-                    _ => None,
+                    EditChange::AddParameter { .. }
+                    | EditChange::SetParameter { .. }
+                    | EditChange::RenameParameter { .. }
+                    | EditChange::RemoveObject { .. }
+                    | EditChange::SetSuppressed { .. }
+                    | EditChange::SetExpressionText { .. }
+                    | EditChange::SetKeepSelection { .. }
+                    | EditChange::AddDatumPlane { .. }
+                    | EditChange::SetDatumFace { .. }
+                    | EditChange::AddBody { .. }
+                    | EditChange::SetRegions { .. }
+                    | EditChange::SetOperation { .. }
+                    | EditChange::SetReversed { .. }
+                    | EditChange::SetRevolveAxis { .. }
+                    | EditChange::SetRevolveExtent { .. }
+                    | EditChange::AddSketch { .. }
+                    | EditChange::AddFeature { .. }
+                    | EditChange::SetEdges { .. }
+                    | EditChange::SetEndCondition { .. }
+                    | EditChange::SetExpression { .. }
+                    | EditChange::SetCurveGeometry { .. }
+                    | EditChange::AddConstraint { .. }
+                    | EditChange::RemoveConstraint { .. } => None,
                 })
                 .unwrap_or(&c.geometry);
             let SketchGeometry::Circle { center, radius } = geometry else {

@@ -116,6 +116,7 @@ fn report(
 
         match built.status(*id) {
             Some(ferritecad_eval::RebuildStatus::Built) => line.push_str("Built; "),
+            Some(ferritecad_eval::RebuildStatus::Suppressed) => line.push_str("Suppressed; "),
             Some(ferritecad_eval::RebuildStatus::Failed { error }) => {
                 writeln!(out, "{line}Failed: {error}").expect("String write");
                 continue;

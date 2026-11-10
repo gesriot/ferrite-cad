@@ -15,7 +15,7 @@ pub struct EditArgs {
     /// Complete content_version from inspect --json.
     #[arg(long)]
     expect_version: ContentHash,
-    /// JSON object with request_version: 1 and an ordered changes array.
+    /// JSON object with request_version: 1 and changes, including remove_object/set_suppressed.
     #[arg(long)]
     request: PathBuf,
     /// New destination; existing files are refused.
@@ -93,6 +93,9 @@ pub fn run(args: EditArgs) -> Result<ExitCode> {
             edited.version.document_id,
             edited.version.content
         );
+        for id in &edited.rebuild.suppressed {
+            println!("{id}: suppressed");
+        }
         Ok(ExitCode::SUCCESS)
     }
 }

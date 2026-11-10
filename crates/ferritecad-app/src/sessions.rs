@@ -1383,6 +1383,7 @@ mod tests {
     mod parameters;
     mod recovery;
     mod tabs;
+    mod tree_operations;
     mod up_to_end;
     use ferritecad_document::Document;
     use ferritecad_jobs::{

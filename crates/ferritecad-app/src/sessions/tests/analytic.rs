@@ -1169,7 +1169,29 @@ fn requested_circles(
                         geometry: ferritecad_document::SketchGeometry::Circle { center, radius },
                         ..
                     } if *curve == id => Some(([center.x, center.y], *radius)),
-                    _ => None,
+                    ferritecad_document::EditChange::AddParameter { .. }
+                    | ferritecad_document::EditChange::SetParameter { .. }
+                    | ferritecad_document::EditChange::RenameParameter { .. }
+                    | ferritecad_document::EditChange::RemoveObject { .. }
+                    | ferritecad_document::EditChange::SetSuppressed { .. }
+                    | ferritecad_document::EditChange::SetExpressionText { .. }
+                    | ferritecad_document::EditChange::SetKeepSelection { .. }
+                    | ferritecad_document::EditChange::AddDatumPlane { .. }
+                    | ferritecad_document::EditChange::SetDatumFace { .. }
+                    | ferritecad_document::EditChange::AddBody { .. }
+                    | ferritecad_document::EditChange::SetRegions { .. }
+                    | ferritecad_document::EditChange::SetOperation { .. }
+                    | ferritecad_document::EditChange::SetReversed { .. }
+                    | ferritecad_document::EditChange::SetRevolveAxis { .. }
+                    | ferritecad_document::EditChange::SetRevolveExtent { .. }
+                    | ferritecad_document::EditChange::AddSketch { .. }
+                    | ferritecad_document::EditChange::AddFeature { .. }
+                    | ferritecad_document::EditChange::SetEdges { .. }
+                    | ferritecad_document::EditChange::SetEndCondition { .. }
+                    | ferritecad_document::EditChange::SetExpression { .. }
+                    | ferritecad_document::EditChange::SetCurveGeometry { .. }
+                    | ferritecad_document::EditChange::AddConstraint { .. }
+                    | ferritecad_document::EditChange::RemoveConstraint { .. } => None,
                 })
                 .unwrap_or((center, radius));
             (id, value.0, value.1)
