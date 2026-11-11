@@ -2841,6 +2841,9 @@ fn describe_constraint(rule: &SketchConstraintRule) -> String {
                     .map_or(f64::NAN, ferritecad_document::DirectedAngle::degrees)
             )
         }
+        SketchConstraintRule::Radius { curve, radius } => {
+            format!("Radius: curve {curve} has radius {} mm", mm(radius.value()))
+        }
         _ => "A kind of relationship this build has no words for".to_owned(),
     }
 }

@@ -3786,10 +3786,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------
-    // What the window says about an Open that failed
-    // -----------------------------------------------------------------
-
     #[test]
     fn new_controls_follow_creation_availability() {
         let context = egui::Context::default();

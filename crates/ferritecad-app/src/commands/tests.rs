@@ -122,6 +122,12 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
         Command::Delete.available(&source, missing, Ok(())),
         Err("This object is no longer in the displayed model.".into())
     );
+    source.refusal = Some("The document is unavailable.".into());
+    assert_eq!(
+        Command::Delete.available(&source, key, Ok(())),
+        Err("The document is unavailable.".into())
+    );
+    source.refusal = None;
     source.objects.retain(|o| o.id != feature);
     assert_eq!(
         Command::Delete.available(&source, key, Ok(())),

@@ -209,3 +209,70 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
         }
     }
 }
+
+#[test]
+fn delete_shortcut_respects_text_focus_and_a_disabled_model_panel() {
+    let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
+    let saved = crate::cuts::tests::session_apply::selected(&source, 0);
+    let row = (saved.feature, Some(saved.body), None);
+    for (enabled, focused) in [(false, false), (true, true), (true, false)] {
+        let ctx = egui::Context::default();
+        let mut navigation = ferritecad_ui::ModelNavigation {
+            selected: Some(row),
+            ..Default::default()
+        };
+        let mut text = String::from("Keep this text");
+        let mut answer = None;
+        for frame in 0..4 {
+            let events = if frame == 3 {
+                vec![egui::Event::Key {
+                    key: egui::Key::Delete,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }]
+            } else {
+                Vec::new()
+            };
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        answer = ferritecad_ui::model_panel(
+                            ui,
+                            7,
+                            &[ferritecad_ui::ModelRow {
+                                key: row,
+                                parent: None,
+                                depth: 0,
+                                name: "Selected Cut",
+                                kind: "Cut",
+                                note: "built",
+                                solid_count: Some(1),
+                            }],
+                            &mut navigation,
+                            |key| offers(&source, key, Ok(())),
+                        );
+                    });
+                    if focused {
+                        ui.text_edit_singleline(&mut text).request_focus();
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert_eq!(
+            answer,
+            (enabled && !focused).then_some(Action {
+                tab: 7,
+                epoch: 0,
+                row,
+                edit: Command::Delete,
+            })
+        );
+    }
+}

@@ -5,6 +5,71 @@ use ferritecad_document::{DocumentVersion, EditChange};
 use ferritecad_types::StableEntityId;
 
 #[test]
+fn a_tree_command_rejects_each_stale_address_before_submitting_an_edit() {
+    let (_root, path, source) = crate::cuts::tests::session_apply::fixture(1);
+    let feature = crate::cuts::tests::session_apply::selected(&source, 0).feature;
+    let mut w = Window::new(Drawn::Mock, None);
+    super::model_tree::open_facts(&mut w, &path);
+    let original = std::fs::read(&path).expect("source bytes");
+    let version = w.sessions.export_source().expect("accepted").version();
+    let source = w.scene.edit_source.as_ref().expect("facts").clone();
+    let row = source
+        .model_tree
+        .rows
+        .iter()
+        .find(|r| r.id.0 == feature)
+        .expect("feature row")
+        .id;
+    for stale in 0..5 {
+        let navigation = w.tabs.model_navigation(w.sessions.tab());
+        navigation.selected = Some(row);
+        let mut action = Action {
+            tab: w.sessions.tab().key(),
+            epoch: navigation.epoch,
+            row,
+            edit: Command::Delete,
+        };
+        let mut reading = source.clone();
+        match stale {
+            0 => {}
+            1 => action.tab += 1,
+            2 => action.epoch += 1,
+            3 => navigation.selected = None,
+            4 => reading.version.content = ferritecad_types::ContentHash::of_bytes(b"older model"),
+            _ => unreachable!("four stale address fields"),
+        }
+        let result = commands::launch(
+            action,
+            &reading,
+            &w.scene.sketches,
+            &mut w.creates,
+            &mut w.edits,
+            &w.sessions,
+            &w.tabs,
+            &Loads::default(),
+            &Exports::default(),
+            &w.input,
+            false,
+        );
+        if stale == 0 {
+            assert!(matches!(result, Ok(Launch::Apply(expected, _)) if expected == version));
+        } else {
+            let Err(reason) = result else {
+                panic!("stale address field {stale} accepted");
+            };
+            assert_eq!(reason, "The command belongs to an older document view.");
+        }
+        assert_eq!(
+            w.sessions.export_source().expect("accepted").version(),
+            version
+        );
+        assert_eq!(std::fs::read(&path).expect("source bytes"), original);
+        assert!(!w.sessions.dirty());
+        assert!(w.sessions.begin_move(true).is_none());
+    }
+}
+
+#[test]
 fn native_conflicting_sketch_opens_with_named_rules_and_an_unbuilt_dependent() {
     if !native()
         || !ferritecad_fixtures::native_dependencies(&[(
@@ -77,6 +142,7 @@ fn native_conflicting_sketch_opens_with_named_rules_and_an_unbuilt_dependent() {
             unreachable!();
         };
         let words = crate::ConstraintWords::of(constraint.id, &constraint.rule);
+        assert!(words.says.starts_with("Radius: curve "));
         for expected in [&words.says, &words.identifier] {
             assert!(row.note.contains(expected), "{} lacks {expected}", row.note);
             assert!(text.contains(expected), "{text} lacks {expected}");
@@ -84,6 +150,7 @@ fn native_conflicting_sketch_opens_with_named_rules_and_an_unbuilt_dependent() {
     }
     assert!(text.contains(&sketch.to_string()));
     assert!(text.contains(&curves[0].to_string()));
+    assert!(!text.contains("No solved constrained sketches"));
     assert_eq!(
         ferritecad_sketch_solver::native_solves(),
         solves,
@@ -440,9 +507,14 @@ fn native_tree_deletion_refusal_confirmation_and_single_undo_publish_atomically(
                 _ => None,
             })
             .collect();
-        for label in expected {
-            assert!(labels.contains(&label), "missing {label}");
+        for label in &expected {
+            assert!(labels.contains(label), "missing {label}");
         }
+        let listed: Vec<_> = labels
+            .iter()
+            .filter(|label| expected.contains(label))
+            .collect();
+        assert_eq!(listed, expected.iter().collect::<Vec<_>>());
         let result = confirmation
             .finish(
                 delete,
