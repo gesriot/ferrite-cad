@@ -555,11 +555,8 @@ impl Document {
                     .map_err(sql_error)?;
                 // The result columns by position, so the stamp is found by
                 // name whatever the rowid prefix does to the indices.
-                let statement_columns: Vec<String> = statement
-                    .column_names()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect();
+                let statement_columns: Vec<String> =
+                    statement.column_names().map(str::to_owned).collect();
                 let mut rows = statement.query([]).map_err(sql_error)?;
                 while let Some(row) = rows.next().map_err(sql_error)? {
                     hash.field("row");
