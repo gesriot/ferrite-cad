@@ -112,10 +112,6 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     out
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the existing window owners share one availability predicate"
-)]
 fn open_editor(
     asked: ModelAction,
     source: &ExtrudeEditSource,
@@ -181,7 +177,7 @@ impl Menu {
     ) -> (Option<Action>, bool) {
         let mut asked = None;
         let mut close = false;
-        egui::Area::new(egui::Id::new("model entity commands"))
+        let area = egui::Area::new(egui::Id::new("model entity commands"))
             .order(egui::Order::Foreground)
             .fixed_pos(self.position)
             .show(ctx, |ui| {
@@ -199,6 +195,9 @@ impl Menu {
                     close = ui.button("Close menu").clicked();
                 });
             });
+        // Dismissed as any menu is: by a click outside it or by Escape.
+        close |= area.response.clicked_elsewhere()
+            || ctx.input(|input| input.key_pressed(egui::Key::Escape));
         (asked, close)
     }
 }
@@ -546,8 +545,18 @@ pub(crate) fn launch(
 }
 
 impl crate::App {
+    /// Answers "what is under this point", chooses it and selects the Model row
+    /// of its producer, which is the row returned.
+    ///
+    /// One offscreen frame at the camera the window is already using, because
+    /// identities are not written on the path a window takes: paying for them
+    /// on every frame would be paying continuously for something wanted when
+    /// somebody clicks.
     pub(crate) fn choose_at(&mut self, x: f32, y: f32) -> Option<ModelKey> {
         let live = self.live.as_mut()?;
+        // Rounded rather than truncated, and refused outside the picture: a
+        // pointer position is a float in window coordinates and the frame is a
+        // grid of pixels.
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),
             u32::try_from(y.round() as i64),
@@ -556,6 +565,9 @@ impl crate::App {
         };
         let hit = match Self::hit_at(live, self.input.camera(), x as f32, y as f32) {
             Ok(hit) => hit,
+            // A failed pick chooses nothing and changes nothing. The model is
+            // still on screen and still correct; the click simply went
+            // unanswered.
             Err(error) => {
                 crate::journal::report(format_args!("ferritecad: {error}"));
                 return None;

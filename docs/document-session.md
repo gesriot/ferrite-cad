@@ -57,6 +57,7 @@ supported inputs and apply through the same session as before.
 | Unsuppress | A suppressed feature belonging to a Body history. |
 
 Delete also uses the Delete key when a text field does not own keyboard input.
+The menu of a picked 3D entity closes on a command, a click elsewhere or Escape.
 Confirming a dependent deletion sends one batch and creates one Undo step. Cancel
 sends nothing. Suppression uses the same transactional `SetSuppressed` operation as
 the CLI; it does not suppress dependents. A refusal preserves the accepted file,

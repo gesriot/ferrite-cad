@@ -211,6 +211,81 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
 }
 
 #[test]
+fn the_entity_menu_closes_on_its_button_a_click_elsewhere_and_escape_only() {
+    let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
+    let saved = crate::cuts::tests::session_apply::selected(&source, 0);
+    let menu = Menu {
+        tab: 7,
+        epoch: 0,
+        row: (saved.feature, Some(saved.body), None),
+        position: egui::pos2(20., 20.),
+    };
+    let ctx = egui::Context::default();
+    let draw = |events| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900., 900.),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut answer = (None, false);
+        let mut output = ctx.run_ui(input, |ui| answer = menu.draw(ui.ctx(), &source, Ok(())));
+        output.textures_delta.clear();
+        (output, answer)
+    };
+    let mut output = draw(vec![]).0;
+    for _ in 0..3 {
+        let (settled, answer) = draw(vec![]);
+        assert_eq!(answer, (None, false), "an untouched menu stays open");
+        output = settled;
+    }
+    let inside = rect(&output, "Unsuppress", false).center();
+    let outside = egui::pos2(800., 800.);
+    let escape = egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    for (events, closes, why) in [
+        (
+            clicks(inside, egui::PointerButton::Primary),
+            false,
+            "a click on an unavailable command",
+        ),
+        (
+            vec![egui::Event::PointerMoved(outside)],
+            false,
+            "the pointer leaving",
+        ),
+        (
+            clicks(outside, egui::PointerButton::Primary),
+            true,
+            "a click elsewhere",
+        ),
+        (
+            clicks(outside, egui::PointerButton::Secondary),
+            true,
+            "another context click",
+        ),
+        (vec![escape], true, "Escape"),
+        (
+            clicks(
+                rect(&output, "Close menu", false).center(),
+                egui::PointerButton::Primary,
+            ),
+            true,
+            "its own button",
+        ),
+    ] {
+        assert_eq!(draw(events).1, (None, closes), "{why}");
+    }
+}
+
+#[test]
 fn delete_shortcut_respects_text_focus_and_a_disabled_model_panel() {
     let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
     let saved = crate::cuts::tests::session_apply::selected(&source, 0);
