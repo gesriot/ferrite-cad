@@ -425,7 +425,7 @@ impl Confirmation {
         ui.heading("Delete with dependents");
         let count = self.objects.len();
         let noun = if count == 1 { "object" } else { "objects" };
-        ui.label(format!("Delete these {count} {noun}?"));
+        ui.label(format!("Delete {count} {noun}?"));
         for (_, name, kind) in &self.objects {
             ui.label(format!("{name} · {kind}"));
         }
