@@ -231,6 +231,9 @@ fn native_middle_and_tip_suppression_equal_removal() -> Result<()> {
 fn corpus_paths(root: &Path) -> Result<Vec<(String, std::path::PathBuf)>> {
     let mut paths: Vec<_> = corpus::generate(root, false)?
         .into_iter()
+        // Every case rebuilds its whole document. The fifty bodies repeat the ten of
+        // `10_bodies`, so they would add most of the run time and no new case.
+        .filter(|c| c.name != "50_bodies")
         .map(|c| (c.name, c.path))
         .collect();
     for name in ["chamfer", "open_slot", "overlapping_tools", "pocket"] {
@@ -272,7 +275,7 @@ fn corpus_paths(root: &Path) -> Result<Vec<(String, std::path::PathBuf)>> {
         doc.close()?;
         paths.push((name.into(), path));
     }
-    assert_eq!(paths.len(), 14);
+    assert_eq!(paths.len(), 13);
     let acceptance = root.join("live-acceptance.fcad");
     ferritecad_fixtures::live_model::write(&acceptance)?;
     paths.push(("live-acceptance".into(), acceptance));
