@@ -2405,11 +2405,7 @@ mod tests {
             let mut statement = db
                 .prepare(&format!("SELECT * FROM \"{table}\""))
                 .expect("select");
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+            let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
             let mut rows: Vec<String> = statement
                 .query_map([], |row| {
                     let mut line = String::new();
