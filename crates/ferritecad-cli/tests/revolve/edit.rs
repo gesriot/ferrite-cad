@@ -160,7 +160,7 @@ pub(super) fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<String>>> {
             .prepare(&format!("SELECT * FROM \"{table}\""))
             .expect("select");
         let n = s.column_count();
-        let names: Vec<String> = s.column_names().iter().map(|n| (*n).to_owned()).collect();
+        let names: Vec<String> = s.column_names().map(str::to_owned).collect();
         let mut rows: Vec<Vec<String>> = s
             .query_map([], |r| {
                 (0..n)

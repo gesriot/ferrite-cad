@@ -41,7 +41,7 @@ ferritecad-sketch-solver.workspace = true
 ferritecad-fixtures.workspace = true
 ferritecad-viewport.workspace = true
 ferritecad-viewport-gpu.workspace = true
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", default-features = false, features = ["cache", "bundled"] }
 tempfile = "3"
 
 # Forwarded through the evaluator, which is what puts a solver on this binary's

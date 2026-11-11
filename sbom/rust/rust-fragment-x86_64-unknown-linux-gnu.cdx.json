@@ -2207,39 +2207,6 @@
     },
     {
       "author": "Orson Peters <orsonpeters@gmail.com>",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.1.5",
-      "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.",
-      "externalReferences": [
-        {
-          "type": "vcs",
-          "url": "https://github.com/orlp/foldhash"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "Zlib"
-        }
-      ],
-      "name": "foldhash",
-      "properties": [
-        {
-          "name": "ferritecad:sbom:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/foldhash@0.1.5",
-      "scope": "required",
-      "type": "library",
-      "version": "0.1.5"
-    },
-    {
-      "author": "Orson Peters <orsonpeters@gmail.com>",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0",
       "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.",
       "externalReferences": [
@@ -2600,39 +2567,6 @@
     },
     {
       "author": "Amanieu d'Antras <amanieu@gmail.com>",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.15.5",
-      "description": "A Rust port of Google's SwissTable hash map",
-      "externalReferences": [
-        {
-          "type": "vcs",
-          "url": "https://github.com/rust-lang/hashbrown"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "name": "hashbrown",
-      "properties": [
-        {
-          "name": "ferritecad:sbom:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/hashbrown@0.15.5",
-      "scope": "required",
-      "type": "library",
-      "version": "0.15.5"
-    },
-    {
-      "author": "Amanieu d'Antras <amanieu@gmail.com>",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1",
       "description": "A Rust port of Google's SwissTable hash map",
       "externalReferences": [
@@ -2697,8 +2631,7 @@
       "version": "0.17.1"
     },
     {
-      "author": "kyren <kerriganw@gmail.com>",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.10.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.12.2",
       "description": "HashMap-like containers that hold their key-value pairs in a user controllable order",
       "externalReferences": [
         {
@@ -2707,13 +2640,13 @@
         },
         {
           "type": "vcs",
-          "url": "https://github.com/kyren/hashlink"
+          "url": "https://github.com/djc/hashlink"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
+          "content": "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
         }
       ],
       "licenses": [
@@ -2728,10 +2661,10 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/hashlink@0.10.0",
+      "purl": "pkg:cargo/hashlink@0.12.2",
       "scope": "required",
       "type": "library",
-      "version": "0.10.0"
+      "version": "0.12.2"
     },
     {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
@@ -3080,7 +3013,7 @@
     },
     {
       "author": "The rusqlite developers",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.35.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1",
       "description": "Native bindings to the libsqlite3 library",
       "externalReferences": [
         {
@@ -3095,7 +3028,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
+          "content": "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
         }
       ],
       "licenses": [
@@ -3110,10 +3043,10 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/libsqlite3-sys@0.35.0",
+      "purl": "pkg:cargo/libsqlite3-sys@0.39.1",
       "scope": "required",
       "type": "library",
-      "version": "0.35.0"
+      "version": "0.39.1"
     },
     {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#linebender_resource_handle@0.1.1",
@@ -4218,7 +4151,7 @@
     },
     {
       "author": "The rusqlite developers",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.37.0",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1",
       "description": "Ergonomic wrapper for SQLite",
       "externalReferences": [
         {
@@ -4233,7 +4166,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f"
+          "content": "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
         }
       ],
       "licenses": [
@@ -4248,10 +4181,10 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/rusqlite@0.37.0",
+      "purl": "pkg:cargo/rusqlite@0.41.1",
       "scope": "required",
       "type": "library",
-      "version": "0.37.0"
+      "version": "0.41.1"
     },
     {
       "author": "The Rust Project Developers",
@@ -6638,7 +6571,7 @@
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#ciborium@0.2.2",
-        "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.37.0",
+        "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_bytes@0.11.19"
       ],
@@ -7089,10 +7022,6 @@
     },
     {
       "dependsOn": [],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.1.5"
-    },
-    {
-      "dependsOn": [],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0"
     },
     {
@@ -7160,12 +7089,6 @@
     },
     {
       "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.1.5"
-      ],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.15.5"
-    },
-    {
-      "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21",
         "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2",
         "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0"
@@ -7180,9 +7103,9 @@
     },
     {
       "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.15.5"
+        "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.17.1"
       ],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.10.0"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.12.2"
     },
     {
       "dependsOn": [],
@@ -7240,7 +7163,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.35.0"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1"
     },
     {
       "dependsOn": [],
@@ -7439,11 +7362,11 @@
         "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#fallible-iterator@0.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#fallible-streaming-iterator@0.1.9",
-        "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.10.0",
-        "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.35.0",
+        "registry+https://github.com/rust-lang/crates.io-index#hashlink@0.12.2",
+        "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1",
         "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.2"
       ],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.37.0"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1"
     },
     {
       "dependsOn": [],

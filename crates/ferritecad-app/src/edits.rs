@@ -513,10 +513,7 @@ pub(crate) mod tests {
                     .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
                     .expect("query");
                 let count = query.column_count();
-                let modified = query
-                    .column_names()
-                    .iter()
-                    .position(|c| *c == "modified_at");
+                let modified = query.column_names().position(|c| c == "modified_at");
                 let mut rows: Vec<Vec<_>> = query
                     .query_map([], |row| {
                         (0..count)
