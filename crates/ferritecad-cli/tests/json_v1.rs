@@ -957,10 +957,7 @@ fn tables(path: &Path) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
                 .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
                 .expect("query");
             let count = query.column_count();
-            let modified = query
-                .column_names()
-                .iter()
-                .position(|c| *c == "modified_at");
+            let modified = query.column_names().position(|c| c == "modified_at");
             let mut rows: Vec<Vec<rusqlite::types::Value>> = query
                 .query_map([], |row| {
                     (0..count)

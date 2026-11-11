@@ -1028,7 +1028,7 @@ fn native_cli_import_removal_reclaims_only_the_last_source_claim() -> Result<()>
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .expect("read candidate");
-        let (sources, claims): (usize, usize) = sql
+        let (sources, claims): (i64, i64) = sql
             .query_row(
                 "SELECT (SELECT count(*) FROM imported_sources),
                     (SELECT count(*) FROM imported_source_refs)",
@@ -1036,7 +1036,7 @@ fn native_cli_import_removal_reclaims_only_the_last_source_claim() -> Result<()>
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("source reachability");
-        assert_eq!((sources, claims), (remaining, remaining));
+        assert_eq!((sources, claims), (remaining as i64, remaining as i64));
         previous = path;
     }
     Ok(())

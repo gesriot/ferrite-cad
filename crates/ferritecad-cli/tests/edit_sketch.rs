@@ -155,7 +155,7 @@ fn native_edit_sketch_process_identity_geometry_and_delivery() {
             ferritecad_types::ContentHash::of_bytes(stored)
                 .as_bytes()
                 .as_slice(),
-            stored.len()
+            stored.len() as i64
         ],
     )
     .expect("attached bytes");

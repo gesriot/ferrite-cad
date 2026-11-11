@@ -28,7 +28,7 @@ policy in ADR 0002.
   - `ferritecad`, built from `crates/ferritecad-cli/Cargo.toml` with default features
 - dependency kinds: normal and build. Dev-dependencies are excluded, so the
   solver bench, the fixtures and the test-only crates are not listed here.
-- third-party packages: 158
+- third-party packages: 156
 - distinct licence texts: 75
 
 ## Packages
@@ -90,7 +90,6 @@ policy in ADR 0002.
 | `fallible-streaming-iterator` | 0.1.9 | `7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `fearless_simd` | 0.4.1 | `b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `find-msvc-tools` | 0.1.10 | `26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de` | `MIT OR Apache-2.0` | `MIT` | text below |
-| `foldhash` | 0.1.5 | `d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2` | `Zlib` | `Zlib` | text below |
 | `foldhash` | 0.2.0 | `77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb` | `Zlib` | `Zlib` | text below |
 | `font-types` | 0.12.2 | `0a7299a780854a6d391be2ae1c8521c9368471b559dbfd6a8dbd9f407eaff100` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `foreign-types` | 0.5.0 | `d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -100,9 +99,8 @@ policy in ADR 0002.
 | `guillotiere` | 0.7.0 | `6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `half` | 2.7.1 | `6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `harfrust` | 0.12.0 | `c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9` | `MIT` | `MIT` | text below |
-| `hashbrown` | 0.15.5 | `9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `hashbrown` | 0.17.1 | `ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a` | `MIT OR Apache-2.0` | `MIT` | text below |
-| `hashlink` | 0.10.0 | `7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `hashlink` | 0.12.2 | `a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `heck` | 0.5.0 | `2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `indexmap` | 2.14.0 | `d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `is_terminal_polyfill` | 1.70.2 | `a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -111,7 +109,7 @@ policy in ADR 0002.
 | `kurbo` | 0.13.1 | `4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `libc` | 0.2.189 | `3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `libm` | 0.2.16 | `b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981` | `MIT` | `MIT` | text below |
-| `libsqlite3-sys` | 0.35.0 | `133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f` | `MIT` | `MIT` | text below |
+| `libsqlite3-sys` | 0.39.1 | `14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3` | `MIT` | `MIT` | text below |
 | `linebender_resource_handle` | 0.1.1 | `d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `litrs` | 1.0.0 | `11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `lock_api` | 0.4.14 | `224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -148,7 +146,7 @@ policy in ADR 0002.
 | `raw-window-metal` | 1.1.0 | `40d213455a5f1dc59214213c7330e074ddf8114c9a42411eb890c767357ce135` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `read-fonts` | 0.41.0 | `046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `rfd` | 0.17.2 | `20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220` | `MIT` | `MIT` | text below |
-| `rusqlite` | 0.37.0 | `165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f` | `MIT` | `MIT` | text below |
+| `rusqlite` | 0.41.1 | `da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594` | `MIT` | `MIT` | text below |
 | `rustc-hash` | 1.1.0 | `08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `rustc-hash` | 2.1.3 | `6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `same-file` | 1.0.6 | `93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502` | `Unlicense OR MIT` | `MIT` | text below |
@@ -3086,8 +3084,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Applies to:
 
-- `libsqlite3-sys` 0.35.0
-- `rusqlite` 0.37.0
+- `libsqlite3-sys` 0.39.1
+- `rusqlite` 0.41.1
 
 ```text
 Copyright (c) 2014 The rusqlite developers
@@ -3407,7 +3405,7 @@ DEALINGS IN THE SOFTWARE.
 
 Applies to:
 
-- `hashlink` 0.10.0
+- `hashlink` 0.12.2
 
 ```text
 This work is derived in part from the `linked-hash-map` crate, Copyright (c)
@@ -3657,7 +3655,6 @@ DEALINGS IN THE SOFTWARE.
 
 Applies to:
 
-- `hashbrown` 0.15.5
 - `hashbrown` 0.17.1
 
 ```text
@@ -3946,7 +3943,6 @@ authorization of the copyright holder.
 
 Applies to:
 
-- `foldhash` 0.1.5
 - `foldhash` 0.2.0
 
 ```text

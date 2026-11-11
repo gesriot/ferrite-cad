@@ -129,7 +129,7 @@ fn rows(
         .prepare(&format!("SELECT rowid,* FROM \"{quoted}\""))
         .or_else(|_| db.prepare(&format!("SELECT * FROM \"{quoted}\"")))
         .expect("table");
-    let columns: Vec<String> = q.column_names().into_iter().map(str::to_owned).collect();
+    let columns: Vec<String> = q.column_names().map(str::to_owned).collect();
     q.query_map([], |r| {
         let mut raw = Vec::new();
         for i in 0..columns.len() {

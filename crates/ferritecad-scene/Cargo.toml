@@ -40,7 +40,7 @@ serde_json = "1"
 ferritecad-occt.workspace = true
 # Only to put a document into a state another program could have left it in,
 # so that reading it can be shown not to rewrite it.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", default-features = false, features = ["cache", "bundled"] }
 tempfile = "3"
 # Test-only, and only to ask whether there is a solver to skip for. What
 # solves a sketch is the evaluator, and this crate never states one anything:

@@ -584,7 +584,7 @@ pub(crate) fn attach_source_claim(source: &std::path::Path) {
     let db = rusqlite::Connection::open(source).expect("SQL");
     let bytes = b"attached Sketch source must remain owned after pointer editing";
     db.execute("INSERT INTO imported_sources(id,format,bytes,content_hash,byte_len,created_at) VALUES(zeroblob(16),'future.sketch-source',?1,?2,?3,'saved')",
-        rusqlite::params![bytes.as_slice(),ferritecad_types::ContentHash::of_bytes(bytes).as_bytes().as_slice(),bytes.len()]).expect("source bytes");
+        rusqlite::params![bytes.as_slice(),ferritecad_types::ContentHash::of_bytes(bytes).as_bytes().as_slice(),bytes.len() as i64]).expect("source bytes");
     db.execute_batch("INSERT INTO imported_source_refs SELECT id,zeroblob(16) FROM objects WHERE kind='sketch'; CREATE TABLE extension(value BLOB); INSERT INTO extension(rowid,value) VALUES(73,X'00FF');").expect("claims and other SQL");
 }
 pub(crate) fn sql_facts(
@@ -609,12 +609,7 @@ pub(crate) fn sql_facts(
                 .expect("table");
             let n = query.column_count();
             let modified = (name == "meta")
-                .then(|| {
-                    query
-                        .column_names()
-                        .iter()
-                        .position(|c| *c == "modified_at")
-                })
+                .then(|| query.column_names().position(|c| c == "modified_at"))
                 .flatten();
             let rows = query
                 .query_map([], |r| {

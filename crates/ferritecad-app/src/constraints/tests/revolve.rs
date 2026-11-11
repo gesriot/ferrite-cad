@@ -924,8 +924,7 @@ fn publish_both(
         .prepare("SELECT rowid,* FROM objects")
         .expect("columns")
         .column_names()
-        .iter()
-        .map(|name| (*name).to_owned())
+        .map(str::to_owned)
         .collect();
     let id_column = columns.iter().position(|name| name == "id").expect("id");
     assert_eq!(a["objects"].len(), b["objects"].len(), "all objects");
