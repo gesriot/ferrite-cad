@@ -137,12 +137,15 @@ fn native_conflicting_sketch_opens_with_named_rules_and_an_unbuilt_dependent() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    for change in &changes {
+    for (change, radius) in changes.iter().zip([5, 6]) {
         let EditChange::AddConstraint { constraint, .. } = change else {
             unreachable!();
         };
         let words = crate::ConstraintWords::of(constraint.id, &constraint.rule);
-        assert!(words.says.starts_with("Radius: curve "));
+        assert_eq!(
+            words.says,
+            format!("Radius: curve {} has radius {radius} mm", curves[0])
+        );
         for expected in [&words.says, &words.identifier] {
             assert!(row.note.contains(expected), "{} lacks {expected}", row.note);
             assert!(text.contains(expected), "{text} lacks {expected}");

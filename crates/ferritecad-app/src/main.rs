@@ -3552,9 +3552,9 @@ impl ApplicationHandler<AppEvent> for App {
                     dirty: self.sessions.dirty(),
                     document_line: &self.sessions.status,
                 };
-                // What the last export did: written
-                // when its answer arrived, borrowed for this frame, and no
-                // scene, report or file read again to produce it.
+                // What the last export did: written when its answer arrived,
+                // borrowed for this frame, and no scene, report or file read
+                // again to produce it.
                 let replacing = self
                     .exports
                     .pending()

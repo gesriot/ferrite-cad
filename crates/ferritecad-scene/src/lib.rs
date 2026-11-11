@@ -95,6 +95,8 @@ pub struct LoadedScene {
     /// the picture is the one solve that could have said it, and asking again
     /// afterwards would be solving the same sketch twice.
     pub sketch_solves: Vec<SketchSolveFacts>,
+    /// The conflict of every sketch that failed over its constraints, in
+    /// document order, as the same rebuild reported it.
     pub sketch_conflicts: Vec<SketchConflict>,
     /// Every sketch of the document, at the coordinates its profile was built
     /// from, in document order.

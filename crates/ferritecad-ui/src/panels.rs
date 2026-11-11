@@ -576,10 +576,14 @@ pub struct RedundantExplanation<'a> {
     pub says: &'a str,
 }
 
+/// One sketch of the open document whose constraints cannot all hold.
 #[derive(Debug)]
 pub struct ConflictedSketch<'a> {
+    /// The name the Model tree shows for it.
     pub name: &'a str,
+    /// The identifier the document stores the sketch under, whole.
     pub object: &'a str,
+    /// The constraints blamed, in the order the document stores them.
     pub constraints: &'a [ConflictingRule<'a>],
 }
 
