@@ -83,7 +83,8 @@ impl ObjectKind {
         )
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    /// Human-readable kind shared by transaction refusals and window commands.
+    pub fn label(self) -> &'static str {
         match self {
             Self::Parameter => "parameter",
             Self::DatumPlane => "datum plane",

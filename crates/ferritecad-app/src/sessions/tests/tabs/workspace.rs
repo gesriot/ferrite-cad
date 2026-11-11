@@ -134,7 +134,7 @@ pub(in crate::sessions::tests::tabs) fn frame(
         &Loads::default(),
         &Exports::default(),
     );
-    let model_available = crate::model_tree::availability(
+    let model_available = crate::commands::availability(
         &w.creates,
         &w.edits,
         &w.sessions,
@@ -142,6 +142,7 @@ pub(in crate::sessions::tests::tabs) fn frame(
         &Loads::default(),
         &Exports::default(),
         &w.input,
+        false,
     );
     let model = w.sessions.has_session().then(|| {
         (
@@ -166,7 +167,6 @@ pub(in crate::sessions::tests::tabs) fn frame(
         height,
         held_back: content.loud,
         document_outcome: &outcome,
-        failure: None,
         export: None,
         replacing: None,
         form,
@@ -188,6 +188,8 @@ pub(in crate::sessions::tests::tabs) fn frame(
         forms_scope,
         model,
         model_available,
+        model_confirmation: None,
+        model_menu: &mut None,
     };
     let mut view = View {
         activity: busy_activity(&line, &outcome, content.loud),

@@ -52,6 +52,7 @@ mod envelope;
 mod formula;
 mod parameters;
 pub use parameters::ParameterValues;
+mod dependent_closure;
 mod graph;
 mod model;
 mod model_tree;

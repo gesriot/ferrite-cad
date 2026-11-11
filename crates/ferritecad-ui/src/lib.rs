@@ -23,14 +23,14 @@ mod panels;
 pub use edit::{EditChoice, EditExtrudeForm, ExtrusionRow, HeightState, edit_extrude_panel};
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
-    Activity, CANCEL_EXPORT, CREATE_DOCUMENT, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,
-    EdgeName, ExportOutcome, FRAME_ALL_KEY, FRAME_KEY, FaceName, GeometryUnavailable, HIDE_KEY,
-    ISOLATE_KEY, LENGTH_UNIT, NEW_DOCUMENT, NEW_DOCUMENT_TITLE, NewChoice, NewContent,
-    NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile, REDO_DOCUMENT,
-    REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SAMPLE_PLATE, SAVE,
-    SAVE_AS, SHORTCUT_PRIMARY, SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, UNDO_DOCUMENT,
-    VIEWS, VertexName, activity_lines, create_panel, definitions_panel, export_panel,
-    new_document_form, open_failure_panel, replace_confirmation, selection_inspector,
+    Activity, CANCEL_EXPORT, CREATE_DOCUMENT, Chosen, ConflictedSketch, ConflictingRule,
+    EMPTY_DOCUMENT, EXPORT_FBX, EdgeName, ExportOutcome, FRAME_ALL_KEY, FRAME_KEY, FaceName,
+    GeometryUnavailable, HIDE_KEY, ISOLATE_KEY, LENGTH_UNIT, NEW_DOCUMENT, NEW_DOCUMENT_TITLE,
+    NewChoice, NewContent, NewDocumentForm, OmittedDefinition, PROJECTION_KEY, PublishedFile,
+    REDO_DOCUMENT, REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows,
+    SAMPLE_PLATE, SAVE, SAVE_AS, SHORTCUT_PRIMARY, SHOW_ALL_KEY, Selected, SolvedSketch,
+    TopologyName, UNDO_DOCUMENT, VIEWS, VertexName, activity_lines, create_panel,
+    definitions_panel, export_panel, new_document_form, replace_confirmation, selection_inspector,
     sketch_solves_panel, toolbar, toolbar_actions,
 };
 
@@ -70,4 +70,7 @@ pub use close_form::{
 };
 
 mod model;
-pub use model::{ModelAction, ModelEdit, ModelKey, ModelNavigation, ModelRow, model_panel};
+pub use model::{
+    ModelAction, ModelCommand, ModelEdit, ModelKey, ModelNavigation, ModelRow, model_commands,
+    model_panel,
+};

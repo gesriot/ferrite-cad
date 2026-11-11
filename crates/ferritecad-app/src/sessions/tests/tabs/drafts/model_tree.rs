@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! §31A: real projection, tab/form owners and egui; no window or device.
 use super::*;
+use crate::commands::{Action as ModelAction, Command, Launch, actions, availability, launch};
 use crate::feature_tests::RequestFacts;
-use crate::model_tree::{actions, availability, open};
 use ferritecad_document::{Dependency, DependencyRole, ObjectPayload};
-use ferritecad_ui::{ModelAction, ModelEdit, ModelKey};
+use ferritecad_ui::{ModelEdit, ModelKey};
 
 fn source(w: &Window) -> &crate::sketch_facts::Source {
     w.scene.edit_source.as_ref().expect("accepted catalogue")
@@ -27,22 +27,26 @@ fn choose(w: &mut Window, object: ObjectId, edit: ModelEdit) -> ModelAction {
         tab: tab.key(),
         epoch: state.epoch,
         row,
-        edit,
+        edit: Command::Edit(edit),
     }
 }
 fn open_action(w: &mut Window, asked: ModelAction) -> bool {
     let reading = source(w).clone();
-    open(
-        asked,
-        &reading,
-        &crate::sketch::accepted::Accepted::default(),
-        &mut w.creates,
-        &mut w.edits,
-        &w.sessions,
-        &w.tabs,
-        &Loads::default(),
-        &Exports::default(),
-        &w.input,
+    matches!(
+        launch(
+            asked,
+            &reading,
+            &crate::sketch::accepted::Accepted::default(),
+            &mut w.creates,
+            &mut w.edits,
+            &w.sessions,
+            &w.tabs,
+            &Loads::default(),
+            &Exports::default(),
+            &w.input,
+            false,
+        ),
+        Ok(Launch::Opened(true))
     )
 }
 
@@ -60,6 +64,7 @@ pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<Loade
         edges: Default::default(),
         vertices: Default::default(),
         sketch_solves: vec![],
+        sketch_conflicts: vec![],
         sketch_presentations: vec![],
     })
 }
@@ -144,7 +149,8 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
             &w.tabs,
             &Loads::default(),
             &Exports::default(),
-            &w.input
+            &w.input,
+            false,
         )
         .expect_err("open form must hold navigation editing")
         .contains("Apply or Cancel")
@@ -277,7 +283,8 @@ fn navigation_open_uses_one_foreground_gesture_and_new_refusal() {
             &w.tabs,
             &loads,
             &Exports::default(),
-            &w.input
+            &w.input,
+            false,
         )
         .is_err()
     );
@@ -382,7 +389,7 @@ fn real_widgets_select_uuid_then_send_the_supported_action_and_bound_the_list() 
     let asked =
         click_widget(&mut w, &ctx, text_rect(&out, "Edit Cut…").center()).expect("explicit action");
     assert_eq!(asked.row.0, early);
-    assert_eq!(asked.edit, ModelEdit::Cut);
+    assert_eq!(asked.edit, Command::Edit(ModelEdit::Cut));
     assert!(open_action(&mut w, asked));
     out = widget_frame(&mut w, &ctx, vec![]).0;
     assert!(

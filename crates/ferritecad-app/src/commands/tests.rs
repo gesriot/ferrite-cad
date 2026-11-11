@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: MIT
+#![allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
+use super::*;
+mod native;
+mod widgets;
+
+#[test]
+fn a_producer_requires_one_complete_meaning_not_one_distinct_producer() {
+    let meaning = ferritecad_scene::EntityMeaning {
+        feature: ObjectId::new(),
+        producer: ObjectId::new(),
+        kind: ferritecad_kernel::SubShapeKind::Face,
+        digest: ferritecad_types::ContentHash::of_bytes(b"named face"),
+        description: "face of the original feature".into(),
+    };
+    assert_eq!(
+        producer(&[]),
+        Err("The selected entity has no stored meaning; the tree selection is unchanged.".into())
+    );
+    assert_eq!(
+        producer(std::slice::from_ref(&meaning)),
+        Ok(meaning.producer)
+    );
+    let mut second = meaning.clone();
+    second.digest = ferritecad_types::ContentHash::of_bytes(b"another meaning");
+    assert_eq!(
+        producer(&[meaning, second]),
+        Err("The selected entity has several meanings; the tree selection is unchanged.".into())
+    );
+}
+
+#[test]
+fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
+    let (_root, _path, mut source) = crate::cuts::tests::session_apply::fixture(1);
+    let saved = crate::cuts::tests::session_apply::selected(&source, 0);
+    let feature = saved.feature;
+    let body = saved.body;
+    let sketch = saved.tool_sketch;
+    let key = (feature, Some(body), None);
+    let commands = [
+        Command::Edit(ModelEdit::Cut),
+        Command::Delete,
+        Command::DeleteWithDependents,
+        Command::Suppress,
+        Command::Unsuppress,
+    ];
+    for command in commands {
+        for reason in [
+            "Apply or Cancel the open form before opening another editor.",
+            "Finish the current operation, New, dialog or gesture before editing.",
+            "Delete or Cancel the pending deletion before another command.",
+        ] {
+            assert_eq!(
+                command.available(&source, key, Err(reason)),
+                Err(reason.into())
+            );
+        }
+    }
+    for command in [Command::Delete, Command::DeleteWithDependents] {
+        for object in [feature, body, sketch] {
+            let row = source
+                .model_tree
+                .rows
+                .iter()
+                .find(|r| r.id.0 == object)
+                .expect("row");
+            assert_eq!(command.available(&source, row.id, Ok(())), Ok(()));
+        }
+    }
+    assert_eq!(
+        Command::Edit(ModelEdit::Cut).available(&source, key, Ok(())),
+        Ok(())
+    );
+    assert_eq!(Command::Suppress.available(&source, key, Ok(())), Ok(()));
+    let row_index = source
+        .model_tree
+        .rows
+        .iter()
+        .position(|r| r.id == key)
+        .expect("feature row");
+    source.model_tree.rows[row_index].id = (feature, None, None);
+    assert_eq!(
+        Command::Suppress.available(&source, (feature, None, None), Ok(())),
+        Err("Only a feature in a Body history can be suppressed.".into())
+    );
+    source.model_tree.rows[row_index].id = key;
+    assert_eq!(
+        Command::Unsuppress.available(&source, key, Ok(())),
+        Err("This feature is not suppressed.".into())
+    );
+    for object in [body, sketch] {
+        let row = source
+            .model_tree
+            .rows
+            .iter()
+            .find(|r| r.id.0 == object)
+            .expect("row");
+        for command in [Command::Suppress, Command::Unsuppress] {
+            assert_eq!(
+                command.available(&source, row.id, Ok(())),
+                Err("Only a feature in a Body history can be suppressed.".into())
+            );
+        }
+        assert_eq!(
+            Command::Edit(ModelEdit::Cut).available(&source, row.id, Ok(())),
+            Err("This editor is unavailable for the selected object.".into())
+        );
+    }
+    source
+        .objects
+        .iter_mut()
+        .find(|o| o.id == feature)
+        .expect("feature")
+        .suppressed = true;
+    assert_eq!(Command::Unsuppress.available(&source, key, Ok(())), Ok(()));
+    assert_eq!(
+        Command::Suppress.available(&source, key, Ok(())),
+        Err("This feature is already suppressed.".into())
+    );
+    let missing = (ObjectId::new(), None, None);
+    assert_eq!(
+        Command::Delete.available(&source, missing, Ok(())),
+        Err("This object is no longer in the displayed model.".into())
+    );
+    source.objects.retain(|o| o.id != feature);
+    assert_eq!(
+        Command::Delete.available(&source, key, Ok(())),
+        Err("This object is no longer in the document.".into())
+    );
+    source.refusal = Some("The document is unavailable.".into());
+    assert_eq!(
+        Command::Delete.available(&source, key, Ok(())),
+        Err("The document is unavailable.".into())
+    );
+}
+
+#[test]
+fn a_pending_confirmation_uses_the_same_idle_gate_as_an_open_editor() {
+    assert_eq!(
+        availability(
+            &Creates::default(),
+            &Edits::default(),
+            &Sessions::default(),
+            &Tabs::new(None),
+            &Loads::default(),
+            &Exports::default(),
+            &ferritecad_ui::ViewportInput::new(),
+            true
+        ),
+        Err("Delete or Cancel the pending deletion before another command.")
+    );
+}
+
+#[test]
+fn confirmation_cancellation_sends_nothing_and_stale_confirmation_refuses() {
+    let (_root, path, source) = crate::cuts::tests::session_apply::fixture(1);
+    let saved = crate::cuts::tests::session_apply::selected(&source, 0);
+    let row = (saved.feature, Some(saved.body), None);
+    let sessions = Sessions::default();
+    let mut tabs = Tabs::new(None);
+    let navigation = tabs.model_navigation(sessions.tab());
+    navigation.selected = Some(row);
+    let action = Action {
+        tab: sessions.tab().key(),
+        epoch: navigation.epoch,
+        row,
+        edit: Command::DeleteWithDependents,
+    };
+    let confirmation = || Confirmation::read(action, &path, source.version).expect("closure");
+    assert!(
+        confirmation()
+            .finish(false, None, &sessions, &tabs, Err("Busy"))
+            .expect("Cancel needs no live source")
+            .is_none()
+    );
+    assert_eq!(
+        confirmation()
+            .finish(true, None, &sessions, &tabs, Ok(()))
+            .expect_err("lost document"),
+        "The deletion belongs to an older document view."
+    );
+    assert_eq!(
+        confirmation()
+            .finish(true, Some(&source), &sessions, &tabs, Err("Busy"))
+            .expect_err("one availability gate"),
+        "Busy"
+    );
+    assert_eq!(
+        confirmation()
+            .finish(true, Some(&source), &sessions, &tabs, Ok(()))
+            .expect_err("no accepted version"),
+        "The command belongs to an older document view."
+    );
+}
+
+#[test]
+fn catalogue_carries_the_same_labels_shortcuts_and_reasons_for_each_surface() {
+    let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
+    let saved = crate::cuts::tests::session_apply::selected(&source, 0);
+    let key = (saved.feature, Some(saved.body), None);
+    let offered = offers(&source, key, Ok(()));
+    let expected: Vec<_> = actions(&source, key)
+        .into_iter()
+        .map(Command::Edit)
+        .chain([
+            Command::Delete,
+            Command::DeleteWithDependents,
+            Command::Suppress,
+            Command::Unsuppress,
+        ])
+        .collect();
+    assert_eq!(
+        offered.iter().map(|o| o.command).collect::<Vec<_>>(),
+        expected
+    );
+    for offer in &offered {
+        assert_eq!(offer.label, offer.command.label());
+        assert_eq!(offer.shortcut, offer.command.shortcut());
+        assert_eq!(
+            offer.available,
+            offer.command.available(&source, key, Ok(()))
+        );
+    }
+    assert_eq!(
+        Command::Delete.shortcut(),
+        Some(egui::KeyboardShortcut::new(
+            egui::Modifiers::NONE,
+            egui::Key::Delete,
+        ))
+    );
+}

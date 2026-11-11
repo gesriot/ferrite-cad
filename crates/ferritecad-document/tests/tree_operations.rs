@@ -20,7 +20,13 @@ struct Chain {
 }
 
 fn chain(document: &mut Document) -> Result<Chain> {
-    let [plane, sketch, body, base, middle, tip] = std::array::from_fn(|_| ObjectId::new());
+    chain_with_ids(document, std::array::from_fn(|_| ObjectId::new()))
+}
+
+fn chain_with_ids(
+    document: &mut Document,
+    [plane, sketch, body, base, middle, tip]: [ObjectId; 6],
+) -> Result<Chain> {
     let feature = |operation| FeatureAddition::Extrude {
         profile: sketch,
         regions: Vec::new(),
@@ -89,6 +95,260 @@ fn tip(document: &Document, id: ObjectId) -> Result<Option<ObjectId>> {
         unreachable!("body")
     };
     Ok(body.tip_feature)
+}
+
+#[test]
+fn dependent_closure_distinguishes_inputs_roots_and_spliceable_history() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut doc = Document::create(dir.path().join("closure.fcad"))?;
+    let c = chain(&mut doc)?;
+    let sorted = |ids: &[ObjectId]| {
+        let mut ids = ids.to_vec();
+        ids.sort();
+        ids
+    };
+    assert_eq!(doc.dependent_closure(c.middle)?, vec![c.middle]);
+    assert_eq!(doc.dependent_closure(c.tip)?, vec![c.tip]);
+    assert_eq!(
+        doc.dependent_closure(c.base)?,
+        sorted(&[c.base, c.middle, c.tip])
+    );
+    assert_eq!(
+        doc.dependent_closure(c.sketch)?,
+        sorted(&[c.sketch, c.base, c.middle, c.tip])
+    );
+    assert_eq!(
+        doc.dependent_closure(c.body)?,
+        sorted(&[c.body, c.base, c.middle, c.tip])
+    );
+    assert_eq!(
+        doc.dependent_closure(c.plane)?,
+        sorted(&[c.plane, c.sketch, c.base, c.middle, c.tip])
+    );
+    let missing = ObjectId::new();
+    let error = doc.dependent_closure(missing).expect_err("unknown object");
+    assert_eq!(error.kind(), ErrorKind::Input);
+    assert!(error.to_string().contains(&missing.to_string()));
+
+    let parameter = ObjectId::new();
+    let formula = ObjectId::new();
+    doc.write_changes(&[
+        Edit::AddParameter {
+            object: parameter,
+            name: "height".into(),
+            dimension: Dimension::Length,
+            expression: "10 mm".into(),
+        },
+        Edit::AddParameter {
+            object: formula,
+            name: "twice".into(),
+            dimension: Dimension::Length,
+            expression: "height * 2".into(),
+        },
+        Edit::SetExpressionText {
+            object: c.middle,
+            slot: ExpressionSlot::ExtrudeDistance,
+            source: "twice".into(),
+        },
+    ])?;
+    assert_eq!(
+        doc.dependent_closure(parameter)?,
+        sorted(&[parameter, formula, c.middle])
+    );
+    let fillet = ObjectId::new();
+    doc.write_changes(&[Edit::AddFeature {
+        object: fillet,
+        body: c.body,
+        name: Some("Distant edge consumer".into()),
+        feature: FeatureAddition::Fillet {
+            edges: vec![ferritecad_document::EntityReference::new(
+                ferritecad_document::ReferenceMeaning {
+                    producer: c.middle,
+                    kind: ferritecad_document::EntityKind::Edge,
+                    digest: ContentHash::of_bytes(b"stored edge"),
+                    selection: ferritecad_document::Selection::One,
+                },
+            )],
+            radius_mm: Expression::constant(1.)?,
+        },
+    }])?;
+    assert_eq!(
+        doc.dependent_closure(c.middle)?,
+        sorted(&[c.middle, fillet])
+    );
+    assert!(
+        !doc.dependencies()?
+            .iter()
+            .any(|d| d.dependent == fillet && d.dependency == c.middle)
+    );
+    let removals: Vec<_> = doc
+        .dependent_closure(c.base)?
+        .into_iter()
+        .map(|object| Edit::RemoveObject { object })
+        .collect();
+    doc.write_changes(&removals)?;
+    assert_eq!(tip(&doc, c.body)?, None);
+    assert!(doc.object(c.sketch)?.is_some());
+    Ok(())
+}
+
+#[test]
+fn dependent_closure_follows_every_saved_reference_and_presentation_children() -> TestResult {
+    use ferritecad_document::{EntityKind, EntityReference, ReferenceMeaning, Selection};
+    let mut doc = Document::create(":memory:")?;
+    let c = chain(&mut doc)?;
+    let reference = |kind| {
+        EntityReference::new(ReferenceMeaning {
+            producer: c.middle,
+            kind,
+            digest: ContentHash::of_bytes(b"named input"),
+            selection: Selection::One,
+        })
+    };
+    let mut expected = vec![c.middle];
+    for feature in [
+        FeatureAddition::Chamfer {
+            edges: vec![reference(EntityKind::Edge)],
+            distance_mm: Expression::constant(1.)?,
+        },
+        FeatureAddition::KeepSolids {
+            selection: ferritecad_document::KeepSelection::ContainingFaces(vec![reference(
+                EntityKind::Face,
+            )]),
+        },
+        FeatureAddition::Extrude {
+            profile: c.sketch,
+            regions: vec![],
+            reversed: false,
+            operation: SolidOperation::Add,
+            end_condition: EndCondition::UpToFace {
+                result: c.tip,
+                face: reference(EntityKind::Face),
+                offset_mm: Expression::constant(0.)?,
+            },
+        },
+        FeatureAddition::Extrude {
+            profile: c.sketch,
+            regions: vec![],
+            reversed: false,
+            operation: SolidOperation::Add,
+            end_condition: EndCondition::UpToVertex {
+                result: c.tip,
+                vertex: reference(EntityKind::Vertex),
+            },
+        },
+    ] {
+        let object = ObjectId::new();
+        doc.write_changes(&[Edit::AddFeature {
+            object,
+            body: c.body,
+            name: Some("Named consumer".into()),
+            feature,
+        }])?;
+        expected.push(object);
+    }
+    let datum = ObjectId::new();
+    let offset = ObjectId::new();
+    doc.write_changes(&[
+        Edit::AddDatumPlane {
+            object: datum,
+            name: Some("Face plane".into()),
+            plane: DatumPlane::Face {
+                result: c.tip,
+                face: reference(EntityKind::Face),
+                offset_mm: Expression::constant(0.)?,
+            },
+        },
+        Edit::AddDatumPlane {
+            object: offset,
+            name: Some("Offset plane".into()),
+            plane: DatumPlane::Offset {
+                from: datum,
+                distance_mm: Expression::constant(2.)?,
+            },
+        },
+    ])?;
+    let child = ObjectId::new();
+    doc.write(|w| {
+        w.put_object(
+            child,
+            Some(c.middle),
+            20,
+            Some("Presentation child"),
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
+                placement: Transform::IDENTITY,
+            }),
+        )
+    })?;
+    expected.extend([datum, offset, child]);
+    expected.sort();
+    assert_eq!(doc.dependent_closure(c.middle)?, expected);
+    assert!(doc.dependencies()?.iter().any(|d| d.dependent == datum
+        && d.dependency == c.tip
+        && d.role == DependencyRole::Support));
+    assert!(doc.dependent_closure(c.tip)?.contains(&datum));
+    assert!(doc.dependent_closure(datum)?.contains(&offset));
+    doc.write_changes(
+        &expected
+            .into_iter()
+            .map(|object| Edit::RemoveObject { object })
+            .collect::<Vec<_>>(),
+    )?;
+    assert_eq!(tip(&doc, c.body)?, Some(c.tip));
+    assert!(doc.object(c.base)?.is_some());
+    Ok(())
+}
+
+#[test]
+fn dependent_closure_refuses_a_history_changed_after_opening() -> TestResult {
+    for mode in 0..3 {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("changed.fcad");
+        let mut doc = Document::create(&path)?;
+        // Visit feature links before the Body, so the two independent broken-link
+        // guards are exercised separately rather than racing in UUID order.
+        let mut ids: [ObjectId; 6] = std::array::from_fn(|_| ObjectId::new());
+        ids.sort();
+        let [plane, sketch, base, middle, tip, body] = ids;
+        let c = chain_with_ids(&mut doc, [plane, sketch, body, base, middle, tip])?;
+        let missing = ObjectId::new();
+        let id = if mode == 2 { c.body } else { c.middle };
+        let mut payload = doc.object(id)?.expect("stored row").payload;
+        if mode == 2 {
+            let ObjectPayload::Body(body) = &mut payload else {
+                unreachable!("Body");
+            };
+            body.tip_feature = Some(missing);
+        } else {
+            let ObjectPayload::Extrude(feature) = &mut payload else {
+                unreachable!("Extrude");
+            };
+            feature.previous = Some(if mode == 0 { missing } else { c.tip });
+        }
+        // Simulate another writer invalidating the already-open view. The normal
+        // transaction never admits either a broken link or a history cycle.
+        let bytes = payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        let sql = rusqlite::Connection::open(&path)?;
+        sql.execute(
+            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+            rusqlite::params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
+        )?;
+        drop(sql);
+        let before = std::fs::read(&path)?;
+        let error = doc
+            .dependent_closure(c.body)
+            .expect_err("broken history must refuse");
+        assert_eq!(error.kind(), ErrorKind::Input);
+        let message = if mode == 2 {
+            format!("missing history feature {missing}")
+        } else {
+            "the stored history is incomplete or cyclic".into()
+        };
+        assert!(error.to_string().contains(&message), "{error}");
+        assert_eq!(std::fs::read(&path)?, before);
+    }
+    Ok(())
 }
 
 #[test]

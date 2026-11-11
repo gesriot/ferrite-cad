@@ -43,11 +43,11 @@ impl ModelEdit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModelAction {
+pub struct ModelAction<C = ModelEdit> {
     pub tab: u64,
     pub epoch: u64,
     pub row: ModelKey,
-    pub edit: ModelEdit,
+    pub edit: C,
 }
 
 #[derive(Debug)]
@@ -61,21 +61,21 @@ pub struct ModelRow<'a> {
     pub solid_count: Option<u32>,
 }
 
-/// Pure navigation plus an explicitly addressed request. `edits_for` supplies the
+/// Pure navigation plus an explicitly addressed request. `commands_for` supplies the
 /// accepted catalogue's supported actions for the currently selected UUID.
-pub fn model_panel(
+pub fn model_panel<C: Copy>(
     ui: &mut egui::Ui,
     tab: u64,
     rows: &[ModelRow<'_>],
     navigation: &mut ModelNavigation,
-    edits_for: impl Fn(ModelKey) -> Vec<ModelEdit>,
-    available: Result<(), &str>,
-) -> Option<ModelAction> {
+    commands_for: impl Fn(ModelKey) -> Vec<ModelCommand<C>>,
+) -> Option<ModelAction<C>> {
     ui.heading("Model");
     if rows.is_empty() {
         ui.label("No stored model objects");
         return None;
     }
+    let mut asked = None;
     let mut hidden = HashSet::new();
     egui::ScrollArea::vertical()
         .id_salt(("model-rows", tab))
@@ -126,7 +126,7 @@ pub fn model_panel(
                                 }
                             }
                         }
-                        if ui
+                        let response = ui
                             .selectable_label(
                                 navigation.selected == Some(row.key),
                                 format!(
@@ -136,11 +136,24 @@ pub fn model_panel(
                                     row.kind
                                 ),
                             )
-                            .on_hover_text(format!("{}\n{}", row.note, row.key.0))
-                            .clicked()
-                        {
+                            .on_hover_text(format!("{}\n{}", row.note, row.key.0));
+                        if response.clicked() {
                             navigation.selected = Some(row.key);
                         }
+                        if response.secondary_clicked() {
+                            navigation.selected = Some(row.key);
+                        }
+                        response.context_menu(|ui| {
+                            if let Some(edit) = model_commands(ui, &commands_for(row.key)) {
+                                asked = Some(ModelAction {
+                                    tab,
+                                    epoch: navigation.epoch,
+                                    row: row.key,
+                                    edit,
+                                });
+                                ui.close();
+                            }
+                        });
                         if let Some(count) = row.solid_count {
                             let noun = if count == 1 { "solid" } else { "solids" };
                             ui.small(format!("{count} {noun}"));
@@ -158,25 +171,55 @@ pub fn model_panel(
         .show(ui, |ui| {
             ui.monospace(row.key.0.to_string());
         });
-    let edits = edits_for(row.key);
-    if edits.is_empty() {
-        ui.label("No supported editor for this object.");
+    let commands = commands_for(row.key);
+    if let Some(edit) = model_commands(ui, &commands) {
+        asked = Some(ModelAction {
+            tab,
+            epoch: navigation.epoch,
+            row: row.key,
+            edit,
+        });
     }
-    if let Err(reason) = available {
-        ui.label(reason);
+    if ui.is_enabled() && !ui.ctx().egui_wants_keyboard_input() {
+        for command in &commands {
+            if command.available.is_ok()
+                && let Some(shortcut) = command.shortcut
+                && ui.input_mut(|input| input.consume_shortcut(&shortcut))
+            {
+                asked = Some(ModelAction {
+                    tab,
+                    epoch: navigation.epoch,
+                    row: row.key,
+                    edit: command.command,
+                });
+            }
+        }
     }
+    asked
+}
+
+/// Presentation supplied by the command owner, shared by buttons and menus.
+#[derive(Debug)]
+pub struct ModelCommand<C> {
+    pub command: C,
+    pub label: &'static str,
+    pub shortcut: Option<egui::KeyboardShortcut>,
+    pub available: Result<(), String>,
+}
+
+pub fn model_commands<C: Copy>(ui: &mut egui::Ui, commands: &[ModelCommand<C>]) -> Option<C> {
     let mut asked = None;
-    for edit in &edits {
-        if ui
-            .add_enabled(available.is_ok(), egui::Button::new(edit.label()))
-            .clicked()
-        {
-            asked = Some(ModelAction {
-                tab,
-                epoch: navigation.epoch,
-                row: row.key,
-                edit: *edit,
-            });
+    for command in commands {
+        let mut button = egui::Button::new(command.label);
+        if let Some(shortcut) = command.shortcut {
+            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        }
+        let response = ui.add_enabled(command.available.is_ok(), button);
+        if response.clicked() {
+            asked = Some(command.command);
+        }
+        if let Err(reason) = &command.available {
+            response.on_disabled_hover_text(reason);
         }
     }
     asked

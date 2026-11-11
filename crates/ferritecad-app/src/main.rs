@@ -36,6 +36,7 @@ mod dialogs;
 mod edits;
 mod entity_names;
 use entity_names::{TopologyWords, topology_name, topology_words};
+mod commands;
 mod edge_selection;
 mod exports;
 mod feature_facts;
@@ -45,7 +46,8 @@ mod keep_solids;
 mod last_tabs;
 #[cfg(target_os = "macos")]
 mod macos_quit;
-mod model_tree;
+mod sketch_conflicts;
+use commands::Chosen;
 mod numeric;
 mod recoveries;
 mod restores;
@@ -71,7 +73,7 @@ use ferritecad_scene::{
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, GeometryUnavailable, HIDE_KEY, Hover, ISOLATE_KEY,
+    Activity, FRAME_ALL_KEY, FRAME_KEY, GeometryUnavailable, HIDE_KEY, Hover, ISOLATE_KEY,
     NewChoice, PROJECTION_KEY, PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch,
     VIEWS, ViewportEvent, ViewportInput,
 };
@@ -434,13 +436,6 @@ struct Loads {
     requested: Option<(LoadGeneration, PathBuf)>,
     /// Where the reading in flight reports how far it has got.
     progress: Option<(LoadGeneration, Arc<ProgressRelay>)>,
-    /// What the last attempt to open a document failed over, when it failed
-    /// over something with parts.
-    ///
-    /// About that attempt and nothing else. Written, replaced and cleared by
-    /// the one place that decides what an answer is worth, so a diagnostic
-    /// cannot outlive the question it answered.
-    conflict: Option<OpenConflict>,
 }
 
 /// What the window says about the document it is showing.
@@ -464,84 +459,6 @@ enum Status {
     Ready { file: String },
     /// Could not be read. The previous model stays, and this says why.
     Failed { file: String, message: String },
-}
-
-/// Why one attempt to open a document failed, in the words a person reads.
-///
-/// Owned by the application rather than by the picture. It is not a fact about
-/// the model on screen: the model on screen came from another file, which
-/// still opens, and this describes the one that did not. Filing it beside what
-/// that model's own solves found out would make a window say that the drawing
-/// in front of the user contradicts itself when it does not.
-///
-/// Every string is made once, when the refusal arrives, from the durable facts
-/// the refusal carried: the document's identifier for the sketch, the
-/// document's identifier for each blamed constraint, and the same sentence
-/// [`describe_constraint`] writes for a repeated constraint of that rule. No
-/// solver is asked anything and no document is opened: by the time one of
-/// these exists the rebuild that produced it is over, and the file may since
-/// have been deleted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenConflict {
-    /// The document that was being opened, named as the attempt named it.
-    file: String,
-    /// The sketch whose constraints disagree, as the document stores it.
-    sketch: String,
-    /// The blamed constraints, in the order the refusal carried them.
-    constraints: Vec<ConstraintWords>,
-}
-
-impl OpenConflict {
-    /// The diagnostic behind a refusal, when the refusal is a conflict.
-    ///
-    /// The type is asked, never the message: a message is a sentence written
-    /// for a person and free to be rewritten, and a window that read one back
-    /// as data would break the next time it was. A refusal that is not a
-    /// conflict answers `None`, and the window shows the one line it has
-    /// always shown.
-    fn of(error: &CadError, file: &str) -> Option<Self> {
-        let conflict = ferritecad_scene::SketchConflict::of(error)?;
-        Some(Self {
-            file: file.to_owned(),
-            sketch: conflict.sketch().to_string(),
-            // In the order the conflict carried them, which is the order the
-            // document stores them. Nothing is sorted, folded or dropped: two
-            // constraints that say the same thing under two identifiers are
-            // two constraints, and a person looking for either has to find it.
-            constraints: conflict
-                .constraints()
-                .iter()
-                .map(|constraint| ConstraintWords::of(constraint.id(), constraint.rule()))
-                .collect(),
-        })
-    }
-
-    /// Each blamed constraint, borrowed, in the order it arrived in.
-    fn rules(&self) -> Vec<ferritecad_ui::ConflictingRule<'_>> {
-        self.constraints
-            .iter()
-            .map(|constraint| ferritecad_ui::ConflictingRule {
-                identifier: &constraint.identifier,
-                says: &constraint.says,
-            })
-            .collect()
-    }
-
-    /// What the section shows this frame, borrowed from this frame's words.
-    ///
-    /// The rules arrive alongside rather than inside, on the same terms as a
-    /// solved sketch's repeated constraints: a panel is given borrowed text
-    /// and the owner of that text is the frame.
-    fn shown<'a>(
-        &'a self,
-        rules: &'a [ferritecad_ui::ConflictingRule<'a>],
-    ) -> ferritecad_ui::OpenFailure<'a> {
-        ferritecad_ui::OpenFailure {
-            file: &self.file,
-            sketch: &self.sketch,
-            constraints: rules,
-        }
-    }
 }
 
 impl Status {
@@ -723,16 +640,7 @@ impl Loads {
         self.current = Some(generation);
         self.requested = Some((generation, path.to_path_buf()));
         self.progress = Some((generation, progress));
-        // Asking for a document is the end of the last attempt's account of
-        // itself. Leaving it up beside `Opening…` would read as this file
-        // having already failed.
-        //
-        // The only place one is taken down, and that is why it is the only
-        // state an account can be in when an answer arrives: nothing else can
-        // reach `Status::Loading`, so a document that opens, a document that
-        // fails for some other reason and a reading given up on all find that
-        // this has already happened.
-        self.conflict = None;
+        // The new attempt replaces the previous attempt's status.
         self.status = Status::Loading {
             generation,
             file: short_name(path),
@@ -765,11 +673,6 @@ impl Loads {
     /// What the window should be saying.
     fn status(&self) -> &Status {
         &self.status
-    }
-
-    /// What the last attempt to open a document failed over, if it did.
-    fn conflict(&self) -> Option<&OpenConflict> {
-        self.conflict.as_ref()
     }
 
     /// The newest thing the load in flight has said about itself.
@@ -814,7 +717,6 @@ impl Loads {
         if matches!(self.status, Status::Loading { .. }) {
             return;
         }
-        self.conflict = None;
         self.shown = None;
         self.status = Status::Ready {
             file: String::new(),
@@ -875,19 +777,10 @@ impl Loads {
                         self.shown = Some(file.clone());
                         Status::Ready { file }
                     }
-                    Err(error) => {
-                        // The one place an account of a failure is written,
-                        // and it is written for the attempt that just failed,
-                        // named by the file that attempt asked for. A refusal
-                        // with no parts writes none, and there is never an
-                        // older one underneath it: asking for this document
-                        // took that one down.
-                        self.conflict = OpenConflict::of(&error, &file);
-                        Status::Failed {
-                            file,
-                            message: error.to_string(),
-                        }
-                    }
+                    Err(error) => Status::Failed {
+                        file,
+                        message: error.to_string(),
+                    },
                 };
                 true
             }
@@ -1494,9 +1387,6 @@ struct Sections<'a> {
     /// The session's own last line (what Apply, Undo or Save last did), shown
     /// inside the Circle and annulus forms so a refusal is not hidden behind them.
     document_outcome: &'a str,
-    /// Why the last attempt to open a document failed, when it failed over
-    /// something with parts.
-    failure: Option<ferritecad_ui::OpenFailure<'a>>,
     /// What the last export did.
     export: Option<ferritecad_ui::ExportOutcome<'a>>,
     /// A destination an export is waiting to be told it may replace.
@@ -1527,6 +1417,8 @@ struct Sections<'a> {
     forms_scope: u64,
     model: Option<(u64, &'a mut ferritecad_ui::ModelNavigation)>,
     model_available: std::result::Result<(), &'static str>,
+    model_confirmation: Option<&'a commands::Confirmation>,
+    model_menu: &'a mut Option<commands::Menu>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -1734,7 +1626,11 @@ fn prepare_arrival<P>(
         loaded.sketch_presentations,
     );
     Ok(PreparedLoad {
-        edit_source: loaded.edit_source.map(crate::sketch_facts::Source::from),
+        edit_source: loaded.edit_source.map(|facts| {
+            let mut source = crate::sketch_facts::Source::from(facts);
+            sketch_conflicts::attach(&mut source, &loaded.sketch_conflicts);
+            source
+        }),
         document: document.to_path_buf(),
         framed: input,
         prepared,
@@ -2304,8 +2200,9 @@ fn commit_scene<P>(
 fn retarget_scene<P>(
     scene: &mut LiveScene<P>,
     document: PathBuf,
-    edit_source: crate::sketch_facts::Source,
+    mut edit_source: crate::sketch_facts::Source,
 ) {
+    crate::sketch_conflicts::follow(scene.edit_source.as_mut(), &mut edit_source);
     scene.document = Some(document);
     scene.sketches.follow(edit_source.version);
     scene.edit_source = Some(edit_source);
@@ -2784,7 +2681,7 @@ struct SolveWords {
 /// nothing here that could be missing.
 ///
 /// One type for both places a constraint is named – a repeated one beside the
-/// sketch it repeats in, and a conflicting one beside the Open that failed
+/// sketch it repeats in, and a conflicting one beside the failed sketch
 /// over it – because they are the same two halves of the same thing. Two
 /// types would be two vocabularies, and the first time either was changed a
 /// window would say one rule two ways.
@@ -3085,6 +2982,8 @@ struct App {
     checkpoint_name: String,
     /// §30N: the Create whose acceptance clears `checkpoint_name`.
     checkpoint_naming: Option<sessions::Address>,
+    model_confirmation: Option<commands::Confirmation>,
+    model_menu: Option<commands::Menu>,
     modifiers: winit::keyboard::ModifiersState,
 }
 
@@ -3527,6 +3426,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if event.state == ElementState::Pressed
                     && !self.tabs.closing_form()
                     && !self.tabs.quitting()
+                    && self.model_confirmation.is_none()
                     && document_command(
                         &event.logical_key,
                         event.text_with_all_modifiers(),
@@ -3649,16 +3549,7 @@ impl ApplicationHandler<AppEvent> for App {
                     dirty: self.sessions.dirty(),
                     document_line: &self.sessions.status,
                 };
-                // The words of the last failed attempt, borrowed for this
-                // frame from the application's own account of it. Nothing is
-                // computed here: these were written when the refusal arrived.
-                let rules = self
-                    .loads
-                    .conflict()
-                    .map(OpenConflict::rules)
-                    .unwrap_or_default();
-                let failure = self.loads.conflict().map(|conflict| conflict.shown(&rules));
-                // And what the last export did, on the same terms: written
+                // What the last export did: written
                 // when its answer arrived, borrowed for this frame, and no
                 // scene, report or file read again to produce it.
                 let replacing = self
@@ -3789,7 +3680,7 @@ impl ApplicationHandler<AppEvent> for App {
                     })
                     .collect();
                 let reopen_report = self.restores.report();
-                let model_available = model_tree::availability(
+                let model_available = commands::availability(
                     &self.creates,
                     &self.edits,
                     &self.sessions,
@@ -3797,6 +3688,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.loads,
                     &self.exports,
                     &self.input,
+                    self.model_confirmation.is_some(),
                 );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
@@ -3908,6 +3800,8 @@ impl ApplicationHandler<AppEvent> for App {
                     Sections {
                         model,
                         model_available,
+                        model_confirmation: self.model_confirmation.as_ref(),
+                        model_menu: &mut self.model_menu,
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
                         can_new: leave,
@@ -3916,7 +3810,6 @@ impl ApplicationHandler<AppEvent> for App {
                         document_outcome: &self.sessions.status,
                         stl_form,
                         edits: &mut self.edits,
-                        failure,
                         export,
                         replacing: replacing.as_deref(),
                         form,
@@ -4092,23 +3985,11 @@ impl ApplicationHandler<AppEvent> for App {
                             }
                             ferritecad_ui::TabChoice::Waiting => {}
                         }
-                        if let Some(asked) = chosen.model
-                            && let Some(live) = &self.live
-                            && let Some(source) = &live.scene.edit_source
-                        {
-                            model_tree::open(
-                                asked,
-                                source,
-                                &live.scene.sketches,
-                                &mut self.creates,
-                                &mut self.edits,
-                                &self.sessions,
-                                &self.tabs,
-                                &self.loads,
-                                &self.exports,
-                                &self.input,
-                            );
-                            self.input.request_redraw();
+                        if let Some(asked) = chosen.model {
+                            self.run_model_command(asked);
+                        }
+                        if let Some(delete) = chosen.confirm_delete {
+                            self.confirm_model_deletion(delete);
                         }
                         if chosen.save {
                             self.save_document();
@@ -4368,6 +4249,19 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some((x, y)) = self.input.take_pick() {
                             self.choose_at(x, y);
                         }
+                        if let Some((x, y)) = self.input.take_context_pick()
+                            && let Some(row) = self.choose_at(x, y)
+                            && let Some(live) = &self.live
+                        {
+                            let at = self.input.region().window((x, y));
+                            self.model_menu = Some(commands::Menu::new(
+                                &self.sessions,
+                                &mut self.tabs,
+                                row,
+                                egui::pos2(at.0, at.1) / live.egui.pixels_per_point(),
+                            ));
+                            self.input.request_redraw();
+                        }
                         // What the pointer is over. A row of the list answers
                         // for itself through the picture, and anywhere else it
                         // is the picture that is asked.
@@ -4461,6 +4355,8 @@ impl App {
             restores,
             checkpoint_name: String::new(),
             checkpoint_naming: None,
+            model_confirmation: None,
+            model_menu: None,
             modifiers: winit::keyboard::ModifiersState::default(),
         }
     }
@@ -5806,48 +5702,6 @@ impl App {
         )
     }
 
-    /// Answers "what is under this point" and chooses it.
-    ///
-    /// One offscreen frame at the camera the window is already using, because
-    /// identities are not written on the path a window takes: paying for them
-    /// on every frame would be paying continuously for something wanted when
-    /// somebody clicks.
-    fn choose_at(&mut self, x: f32, y: f32) {
-        let Some(live) = self.live.as_mut() else {
-            return;
-        };
-
-        // Rounded rather than truncated, and refused outside the picture: a
-        // pointer position is a float in window coordinates and the frame is a
-        // grid of pixels.
-        let (Ok(x), Ok(y)) = (
-            u32::try_from(x.round() as i64),
-            u32::try_from(y.round() as i64),
-        ) else {
-            return;
-        };
-
-        match Self::hit_at(live, self.input.camera(), x as f32, y as f32) {
-            Ok(hit) => {
-                let chosen = selection_at(
-                    hit,
-                    live.scene.prepared.snapshot(),
-                    &live.scene.faces,
-                    &live.scene.edges,
-                    &live.scene.vertices,
-                );
-                if chosen != live.scene.selection {
-                    live.scene.selection = chosen;
-                    self.input.request_redraw();
-                }
-            }
-            // A failed pick chooses nothing and changes nothing. The model is
-            // still on screen and still correct; the click simply went
-            // unanswered.
-            Err(error) => journal::report(format_args!("ferritecad: {error}")),
-        }
-    }
-
     /// Shows what is chosen, if the picture can say where it is.
     ///
     /// The one operation behind both the button and the key. Where the camera
@@ -6864,6 +6718,7 @@ mod tests {
             snapshot,
             catalogue: Vec::new(),
             sketch_solves: Vec::new(),
+            sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
         }
     }
@@ -16990,7 +16845,7 @@ mod tests {
         let repeated: Vec<Vec<ferritecad_ui::RedundantExplanation<'_>>> =
             words.iter().map(SolveWords::repeated).collect();
         let sketches = solved_sketches(&words, &repeated);
-        laid_out(|ui| ferritecad_ui::sketch_solves_panel(ui, &sketches))
+        laid_out(|ui| ferritecad_ui::sketch_solves_panel(ui, &sketches, &[]))
     }
 
     /// Every word one pass of egui actually drew, in the order it drew them.
@@ -18790,63 +18645,6 @@ mod tests {
         assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(scene.visibility, visibility);
         assert_eq!(*camera.camera(), framing);
-    }
-
-    #[test]
-    fn every_family_is_said_in_a_failed_open_exactly_as_it_is_said_when_it_repeats() {
-        let (first, second) = two_curves();
-        let families = eight_families(first, second);
-
-        // One conflict blaming one constraint of every family the document
-        // can store, worded by the one road from a rule to a sentence.
-        let sketch = ferritecad_types::ObjectId::new();
-        let identifiers: Vec<ferritecad_types::StableEntityId> = families
-            .iter()
-            .map(|_| ferritecad_types::StableEntityId::new())
-            .collect();
-        let conflict = OpenConflict {
-            file: "impossible.fcad".to_owned(),
-            sketch: sketch.to_string(),
-            constraints: identifiers
-                .iter()
-                .zip(&families)
-                .map(|(id, (rule, _))| ConstraintWords::of(*id, rule))
-                .collect(),
-        };
-
-        let rules = conflict.rules();
-        let words =
-            laid_out(|ui| ferritecad_ui::open_failure_panel(ui, Some(conflict.shown(&rules))));
-
-        let mut expected = vec![
-            "Open failed".to_owned(),
-            "Problem".to_owned(),
-            "Constraint conflict".to_owned(),
-            "File".to_owned(),
-            "impossible.fcad".to_owned(),
-            "Sketch".to_owned(),
-            sketch.to_string(),
-        ];
-        for (id, (_, says)) in identifiers.iter().zip(&families) {
-            expected.push("Constraint".to_owned());
-            expected.push(id.to_string());
-            expected.push("Says".to_owned());
-            expected.push(says.clone());
-        }
-        assert_eq!(
-            words, expected,
-            "a conflicting constraint is worded differently from a repeated one of the same rule"
-        );
-
-        // No two families read the same, so an arm answering for its
-        // neighbour cannot pass by saying something plausible.
-        let said: std::collections::BTreeSet<&String> =
-            families.iter().map(|(_, says)| says).collect();
-        assert_eq!(
-            said.len(),
-            families.len(),
-            "two families are said the same way"
-        );
     }
 
     #[test]

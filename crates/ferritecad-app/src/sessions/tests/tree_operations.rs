@@ -29,7 +29,13 @@ fn shown(scene: &LoadedScene, feature: ObjectId, suppressed: bool) {
                 ..Default::default()
             },
             |ui| {
-                ferritecad_ui::model_panel(ui, 0, &rows, &mut navigation, |_| vec![], Ok(()));
+                ferritecad_ui::model_panel::<ferritecad_ui::ModelEdit>(
+                    ui,
+                    0,
+                    &rows,
+                    &mut navigation,
+                    |_| vec![],
+                );
             },
         );
         frame.textures_delta.clear();

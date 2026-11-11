@@ -228,18 +228,13 @@ fn native_middle_and_tip_suppression_equal_removal() -> Result<()> {
     }
     Ok(())
 }
-#[test]
-fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants() -> Result<()> {
-    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
-        return Ok(());
-    }
-    let root = tempfile::tempdir()?;
-    let mut paths: Vec<_> = corpus::generate(root.path(), false)?
+fn corpus_paths(root: &Path) -> Result<Vec<(String, std::path::PathBuf)>> {
+    let mut paths: Vec<_> = corpus::generate(root, false)?
         .into_iter()
         .map(|c| (c.name, c.path))
         .collect();
     for name in ["chamfer", "open_slot", "overlapping_tools", "pocket"] {
-        let path = root.path().join(format!("{name}.fcad"));
+        let path = root.join(format!("{name}.fcad"));
         ferritecad_fixtures::write_plate(&path)?;
         let mut doc = Document::open(&path)?;
         let body = ferritecad_fixtures::feature_changes::body(&doc)?;
@@ -278,9 +273,207 @@ fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants
         paths.push((name.into(), path));
     }
     assert_eq!(paths.len(), 14);
-    let acceptance = root.path().join("live-acceptance.fcad");
+    let acceptance = root.join("live-acceptance.fcad");
     ferritecad_fixtures::live_model::write(&acceptance)?;
     paths.push(("live-acceptance".into(), acceptance));
+    Ok(paths)
+}
+
+#[test]
+#[allow(
+    clippy::panic,
+    reason = "identify the exact corpus object whose closure refuses"
+)]
+fn native_dependent_closures_are_accepted_by_the_edit_transaction() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    let mut kernel = OcctKernel::new()?;
+    for (name, source) in corpus_paths(root.path())? {
+        if name == "plate_4_fillets_constraints"
+            && !ferritecad_fixtures::native_dependencies(&[(
+                ferritecad_sketch_solver::is_available(),
+                "PLANEGCS",
+            )])
+        {
+            continue;
+        }
+        let doc = Document::open_read_only(&source)?;
+        let expected = ferritecad_document::DocumentVersion {
+            document_id: doc.meta().document_id,
+            content: doc.content_version()?,
+        };
+        for object in doc.objects()?.into_iter().filter(|o| {
+            matches!(o.payload, ObjectPayload::Sketch(_))
+                || o.payload.kind().is_some_and(|k| k.is_feature())
+        }) {
+            let ids = doc.dependent_closure(object.id)?;
+            let changes = ids
+                .iter()
+                .map(|id| EditChange::RemoveObject { object: *id })
+                .collect();
+            let destination = root.path().join(format!("removed-{}.fcad", object.id));
+            let before = std::fs::read(&source)?;
+            eprintln!(
+                "{name}: remove {} {:?}, closure {ids:?}",
+                object.id, object.name
+            );
+            let result = ferritecad_jobs::edit_copy(
+                &ferritecad_jobs::EditRequest {
+                    source: source.clone(),
+                    expected,
+                    changes,
+                    destination: destination.clone(),
+                },
+                &mut kernel,
+                &OperationContext::default(),
+            );
+            assert_eq!(std::fs::read(&source)?, before);
+            assert_eq!(kernel.live_shape_count(), 0);
+            let edited = result.unwrap_or_else(|error| {
+                panic!(
+                    "{name}: closure of {} {:?} refused: {error}",
+                    object.id, object.name
+                )
+            });
+            assert!(edited.rebuild.failed.is_empty());
+            assert!(edited.rebuild.skipped.is_empty());
+            let candidate = Document::open_read_only(&destination)?;
+            for id in ids {
+                assert!(candidate.object(id)?.is_none());
+            }
+            candidate.close()?;
+            std::fs::remove_file(destination)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn native_cli_removes_one_complete_dependent_closure() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("plate.fcad");
+    ferritecad_fixtures::write_plate(&source)?;
+    let doc = Document::open_read_only(&source)?;
+    let sketch = doc
+        .objects()?
+        .into_iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+        .expect("plate profile")
+        .id;
+    let closure = doc.dependent_closure(sketch)?;
+    let changes: Vec<_> = closure
+        .iter()
+        .map(|id| EditChange::RemoveObject { object: *id })
+        .collect();
+    doc.close()?;
+    let output = root.path().join("removed.fcad");
+    assert_eq!(edit(&source, &output, &changes)?["ok"], true);
+    let result = Document::open_read_only(&output)?;
+    for id in closure {
+        assert!(result.object(id)?.is_none());
+    }
+    assert!(result.objects()?.iter().any(|o| matches!(&o.payload,
+        ObjectPayload::Body(body) if body.tip_feature.is_none())));
+    Ok(())
+}
+
+fn edit_in_process(
+    kernel: &mut OcctKernel,
+    source: &Path,
+    destination: &Path,
+    changes: &[EditChange],
+) -> Result<ferritecad_jobs::EditedDocument> {
+    let document = Document::open_read_only(source)?;
+    let expected = ferritecad_document::DocumentVersion {
+        document_id: document.meta().document_id,
+        content: document.content_version()?,
+    };
+    document.close()?;
+    let before = std::fs::read(source)?;
+    let entries = std::fs::read_dir(destination.parent().expect("directory"))?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<BTreeSet<_>>>()?;
+    let result = ferritecad_jobs::edit_copy(
+        &ferritecad_jobs::EditRequest {
+            source: source.to_path_buf(),
+            expected,
+            changes: changes.to_vec(),
+            destination: destination.to_path_buf(),
+        },
+        kernel,
+        &OperationContext::default(),
+    );
+    assert_eq!(std::fs::read(source)?, before);
+    assert_eq!(kernel.live_shape_count(), 0);
+    if result.is_err() {
+        assert!(!destination.exists(), "refused candidate was published");
+        assert_eq!(
+            std::fs::read_dir(destination.parent().expect("directory"))?
+                .map(|e| e.map(|e| e.path()))
+                .collect::<std::io::Result<BTreeSet<_>>>()?,
+            entries
+        );
+    }
+    result
+}
+
+fn suppression_in_process(
+    kernel: &mut OcctKernel,
+    source: &Path,
+    feature: ObjectId,
+    root: &Path,
+    original: &Facts,
+) -> Result<bool> {
+    let removed = root.join("removed.fcad");
+    if edit_in_process(
+        kernel,
+        source,
+        &removed,
+        &[EditChange::RemoveObject { object: feature }],
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+    let suppressed = root.join("suppressed.fcad");
+    let result = edit_in_process(
+        kernel,
+        source,
+        &suppressed,
+        &[EditChange::SetSuppressed {
+            object: feature,
+            suppressed: true,
+        }],
+    )?;
+    assert_eq!(result.rebuild.suppressed, vec![feature]);
+    equivalent(&facts(&removed)?, &facts(&suppressed)?);
+    let restored = root.join("restored.fcad");
+    edit_in_process(
+        kernel,
+        &suppressed,
+        &restored,
+        &[EditChange::SetSuppressed {
+            object: feature,
+            suppressed: false,
+        }],
+    )?;
+    equivalent(original, &facts(&restored)?);
+    Ok(true)
+}
+
+#[test]
+fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants() -> Result<()> {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    let paths = corpus_paths(root.path())?;
+    let mut kernel = OcctKernel::new()?;
     for (name, source) in paths {
         // A constrained corpus case requires the native solver in addition to OCCT.
         if name == "plate_4_fillets_constraints"
@@ -301,7 +494,8 @@ fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants
             let dir = tempfile::tempdir_in(root.path())?;
             let appended = dir.path().join("appended.fcad");
             let feature = ObjectId::new();
-            accepted(edit(
+            edit_in_process(
+                &mut kernel,
                 &source,
                 &appended,
                 &[EditChange::AddFeature {
@@ -312,13 +506,14 @@ fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants
                         selection: KeepSelection::All,
                     },
                 }],
-            )?);
+            )?;
             let restored = dir.path().join("original.fcad");
-            accepted(edit(
+            edit_in_process(
+                &mut kernel,
                 &appended,
                 &restored,
                 &[EditChange::RemoveObject { object: feature }],
-            )?);
+            )?;
             equivalent(&original, &facts(&restored)?);
         }
         let mut accepted_count = 0;
@@ -328,7 +523,13 @@ fn native_corpus_and_live_acceptance_preserve_removal_and_suppression_invariants
         {
             let dir = tempfile::tempdir_in(root.path())?;
             eprintln!("{name}: {} {:?}", object.id, object.name);
-            accepted_count += usize::from(suppression(&source, object.id, dir.path(), &original)?);
+            accepted_count += usize::from(suppression_in_process(
+                &mut kernel,
+                &source,
+                object.id,
+                dir.path(),
+                &original,
+            )?);
         }
         assert!(accepted_count > 0, "{name} has a removable feature");
     }

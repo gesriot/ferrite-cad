@@ -95,6 +95,7 @@ pub struct LoadedScene {
     /// the picture is the one solve that could have said it, and asking again
     /// afterwards would be solving the same sketch twice.
     pub sketch_solves: Vec<SketchSolveFacts>,
+    pub sketch_conflicts: Vec<SketchConflict>,
     /// Every sketch of the document, at the coordinates its profile was built
     /// from, in document order.
     ///
@@ -846,6 +847,7 @@ struct Picture<'a> {
     /// a fact about triangles, and what it is called is not.
     vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
     sketch_solves: Vec<SketchSolveFacts>,
+    sketch_conflicts: Vec<SketchConflict>,
     sketch_presentations: Vec<SketchPresentation>,
 }
 
@@ -867,6 +869,7 @@ impl Picture<'_> {
             edge_named: BTreeMap::new(),
             vertex_named: BTreeMap::new(),
             sketch_solves: Vec::new(),
+            sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
         }
     }
@@ -1054,6 +1057,11 @@ impl prepare::LoadSink for Picture<'_> {
             if let Some(presentation) = built.sketch_presentation(object.id) {
                 self.sketch_presentations.push(presentation.clone());
             }
+            if let Some(ferritecad_eval::RebuildStatus::Failed { error }) = built.status(object.id)
+                && let Some(conflict) = SketchConflict::of(error)
+            {
+                self.sketch_conflicts.push(conflict.clone());
+            }
             let Some(report) = built.solve_report(object.id) else {
                 continue;
             };
@@ -1230,6 +1238,7 @@ impl prepare::LoadSink for Picture<'_> {
             snapshot,
             catalogue,
             sketch_solves: self.sketch_solves,
+            sketch_conflicts: self.sketch_conflicts,
             sketch_presentations: self.sketch_presentations,
         })
     }

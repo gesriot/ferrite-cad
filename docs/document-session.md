@@ -39,6 +39,47 @@ plate and on a plate under one §29A Chamfer with §29D constraints (the same pl
 The title shows the logical name and the marker and nothing else. The private files
 of the session are never named in the title, a dialog, a status line or a log.
 
+## Model commands
+
+Select a Model row to edit, delete or suppress that stored object. The buttons below
+it, its context menu, the context menu of a picked 3D entity and keyboard shortcuts
+use one command catalogue. Disabled commands explain their reason. An open form,
+pending operation, New, dialog, gesture, tab closure or deletion confirmation must
+finish before another model command can start. Existing editor forms keep their
+supported inputs and apply through the same session as before.
+
+| Command | Availability and result |
+| --- | --- |
+| Edit… | The selected object has a supported editor and editable stored inputs. |
+| Delete | Removes that object; retained dependents cause a full transaction refusal. |
+| Delete with dependents… | Lists every object to remove by name and kind before confirmation. |
+| Suppress | An unsuppressed feature belonging to a Body history. |
+| Unsuppress | A suppressed feature belonging to a Body history. |
+
+Delete also uses the Delete key when a text field does not own keyboard input.
+Confirming a dependent deletion sends one batch and creates one Undo step. Cancel
+sends nothing. Suppression uses the same transactional `SetSuppressed` operation as
+the CLI; it does not suppress dependents. A refusal preserves the accepted file,
+version and scene, and the status shows the full reason. Successful changes become
+dirty and support Undo, Redo and Save after their new picture has been accepted.
+
+`Document::dependent_closure` supplies the deterministic deletion list. It follows
+profile, plane, support and parameter dependencies, saved entity-reference producers,
+and presentation children. History predecessor and Body-tip links are spliced instead
+of followed. Removing a root includes its entire successor chain and leaves its Body
+empty; removing a Body includes its complete history.
+
+Picking a face, edge or vertex with one meaning selects its original producer in
+Model and expands the ancestor rows. Missing or multiple meanings leave Model
+selection unchanged and explain why. Imported STEP entities select their import
+object. A 3D context menu offers the same row commands; selecting a tree row does
+not highlight its geometry in reverse.
+
+A failed sketch's note and Sketch solves panel name conflicting constraints by
+rule, curves and UUID, using the facts already produced by evaluation. The document
+still opens, and dependent features retain their not-built status. Parameter-table
+editing and rollback/insertion remain separate work.
+
 ## What the library owns
 
 `ferritecad_jobs::DocumentSession` (`crates/ferritecad-jobs/src/session.rs`, save in
