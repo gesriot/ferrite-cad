@@ -666,14 +666,13 @@ See [ADR 0008](decisions/0008-multibody-results.md) and the [recipe](keep-solids
 
 The common `edit` request accepts `remove_object` for every object kind and
 `set_suppressed` for history features, plus `set_rollback` and `clear_rollback` for
-Bodies. Removal checks the entire batch, rewrites
-predecessor links and Body tips, and refuses with every remaining dependent.
+Bodies. Removal checks the entire batch, rewrites predecessor links and Body tips,
+and refuses with every remaining dependent.
 Deleting an import also releases source bytes after their last use.
 Suppression passes through the predecessor result without running that feature.
 Both `rebuild --cold` and transaction reports identify suppressed features.
 The window offers the same operations as [model commands](document-session.md#model-commands).
 See [transaction examples](edit-transactions.md) and [ADR 0011](decisions/0011-tree-operations.md).
-
 
 Rollback persists the Body's shown feature while retaining and rebuilding its
 whole history. `inspect` and `inspect --json` expose the marker only when present;

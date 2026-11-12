@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::collections::BTreeMap;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
@@ -1485,7 +1486,13 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
                 None => &stored_kind,
             };
             CadError::input_because(
-                if stored_kind == "body" && envelope.suppressed.is_none() {
+                if stored_kind == "body"
+                    && envelope.type_name == "body"
+                    && envelope.suppressed.is_none()
+                    && envelope
+                        .decode::<BTreeMap<String, ciborium::Value>>()
+                        .is_ok()
+                {
                     format!(
                         "Body '{}' ({id}) has an unreadable history position; \
                          tip_feature and rollback must name feature UUIDs.",

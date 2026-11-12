@@ -97,7 +97,9 @@ fn rollback_round_trips_and_refuses_wrong_targets_atomically() -> TestResult {
 #[test]
 fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult {
     let root = tempfile::tempdir()?;
-    for case in ["outside", "tip", "empty", "text", "null"] {
+    for case in [
+        "outside", "tip", "empty", "text", "null", "envelope", "cbor",
+    ] {
         let path = root.path().join(format!("{case}.fcad"));
         let mut doc = Document::create(&path)?;
         let c = chain(&mut doc)?;
@@ -114,7 +116,7 @@ fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult
             writer.put_object(c.body, None, 4, Some("Part"), &ObjectPayload::Body(payload))
         })?;
         doc.close()?;
-        if matches!(case, "text" | "null") {
+        if matches!(case, "text" | "null" | "envelope" | "cbor") {
             let sql = rusqlite::Connection::open(&path)?;
             let bytes: Vec<u8> = sql.query_row(
                 "SELECT payload FROM objects WHERE id=?1",
@@ -137,6 +139,11 @@ fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult
             };
             envelope.payload.clear();
             ciborium::into_writer(&value, &mut envelope.payload)?;
+            if case == "envelope" {
+                envelope.type_name = "body.future".into();
+            } else if case == "cbor" {
+                envelope.payload = vec![0xff];
+            }
             let bytes = envelope.to_bytes()?;
             sql.execute(
                 "UPDATE objects SET payload=?1, payload_hash=?2 WHERE id=?3",
@@ -173,6 +180,7 @@ fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult
                     c.body
                 )
             }
+            "envelope" | "cbor" => format!("reading body object {} of type body", c.body),
             _ => unreachable!("case"),
         };
         assert_eq!(error.to_string(), format!("invalid input: {message}"));

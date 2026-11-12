@@ -208,7 +208,6 @@ or refuse. Reports list `suppressed` separately from failed/skipped objects, and
 displays that status. JSON omits the `suppressed` list when no object has that status.
 The window exposes these operations through the shared Model command catalogue.
 
-
 ## Rollback and insertion
 
 `set_rollback` takes a Body `object` and a `feature` in its history before the tip.

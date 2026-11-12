@@ -119,8 +119,9 @@ edges refuses, while an explicit all-descendants selection consumes the full set
 ## Solid result sets and KeepSolids
 
 A Body owns one complete predecessor chain and presents the result of its rollback
-marker, or its tip when no marker is stored, without creating objects when rebuilt. Feature results are unordered sets of valid solids. The atomic
-`brep.generative.v2` record contains every member and complete elementary naming/incidence.
+marker, or its tip when no marker is stored, without creating objects when rebuilt.
+Feature results are unordered sets of valid solids. The atomic `brep.generative.v2`
+record contains every member and complete elementary naming/incidence.
 
 `feature.keep_solids` stores `KeepSolids { previous, selection }` in the ordinary CBOR
 envelope. `selection` is `All` or `ContainingFaces(Vec<EntityReference>)`, encoded with
