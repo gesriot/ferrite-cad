@@ -126,11 +126,11 @@ fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult
             let ciborium::Value::Map(fields) = &mut value else {
                 unreachable!("map")
             };
-            let (_, value) = fields
+            let (_, marker_value) = fields
                 .iter_mut()
                 .find(|(key, _)| key == &ciborium::Value::Text("rollback".into()))
                 .expect("marker");
-            *value = if case == "null" {
+            *marker_value = if case == "null" {
                 ciborium::Value::Null
             } else {
                 ciborium::Value::Text("not-a-uuid".into())

@@ -108,6 +108,24 @@ fn exercise<K: Oracle>() -> Result<()> {
             Some(ferritecad_eval::RebuildStatus::Built)
         ));
         assert!(built.report().all_built());
+        for (index, row) in step.scene().catalogue.iter().enumerate() {
+            match row.item {
+                ferritecad_scene::SceneItem::Body(id) if id == case.body => {
+                    assert_ne!(
+                        step.scene().mesh_keys[index],
+                        step.owner.scene.mesh_keys[index],
+                        "changing the shown result changes the Body mesh identity"
+                    );
+                }
+                ferritecad_scene::SceneItem::Body(id) if id == case.other => {
+                    assert_eq!(
+                        step.scene().mesh_keys[index],
+                        step.owner.scene.mesh_keys[index]
+                    );
+                }
+                _ => {}
+            }
+        }
         let independent = step
             .owner
             .scene
