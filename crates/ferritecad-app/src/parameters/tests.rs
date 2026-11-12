@@ -589,6 +589,93 @@ fn accepted_versions_keep_unsent_slots_but_other_documents_and_missing_slots_end
 }
 
 #[test]
+fn owner_completions_do_not_replace_unsent_fields_after_the_tree_selection_changes() {
+    use ferritecad_document::{EndCondition, Expression, FeatureAddition, SolidOperation};
+    let f = fixture();
+    let mut document = Document::open(&f.path).expect("document");
+    let ObjectPayload::Extrude(extrude) = document
+        .object(f.feature)
+        .expect("object")
+        .expect("feature")
+        .payload
+    else {
+        panic!("extrusion")
+    };
+    let other = ObjectId::new();
+    document
+        .write_changes(&[EditChange::AddBody {
+            object: ObjectId::new(),
+            name: Some("B".into()),
+            feature_object: other,
+            feature_name: Some("Other height".into()),
+            feature: FeatureAddition::Extrude {
+                profile: extrude.profile,
+                regions: extrude.regions,
+                reversed: false,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(5.).expect("literal"),
+                },
+                operation: SolidOperation::NewBody,
+            },
+        }])
+        .expect("second feature with the same slot kind");
+    document.close().expect("close");
+    let mut w = open(&f, Drawn::Mock);
+    let address = sessions::Address {
+        tab: w.sessions.tab(),
+        generation: 99,
+    };
+    for (field, selected) in [
+        (Field::Name(f.stock), f.total),
+        (Field::Text(f.stock), f.total),
+        (
+            Field::Slot(f.feature, ExpressionSlot::ExtrudeDistance),
+            other,
+        ),
+    ] {
+        select(&mut w, selected);
+        let draft = w.creates.sketch.parameters.draft.as_mut().expect("form");
+        draft.name = "unsent name".into();
+        draft.text = "unsent expression".into();
+        for (_, text) in &mut draft.slots {
+            *text = "unsent slot".into();
+        }
+        let before = (draft.name.clone(), draft.text.clone(), draft.slots.clone());
+        draft.pending = Some((address, field));
+        w.creates.sketch.parameters.finished(
+            address,
+            true,
+            w.scene.edit_source.as_ref(),
+            "Applied",
+        );
+        let draft = w.creates.sketch.parameters.draft.as_ref().expect("form");
+        assert_eq!(
+            (&draft.name, &draft.text, &draft.slots),
+            (&before.0, &before.1, &before.2),
+            "a completed field belongs to its submitted object, not the new selection"
+        );
+        assert!(draft.pending.is_none());
+    }
+    select(&mut w, f.feature);
+    let mut source = w.scene.edit_source.as_ref().expect("source").clone();
+    source
+        .expression_slots
+        .retain(|saved| saved.object != f.feature);
+    assert!(
+        source
+            .expression_slot(other, ExpressionSlot::ExtrudeDistance)
+            .is_some()
+    );
+    let selected = w.tabs.model_navigation(w.sessions.tab()).selected;
+    let draft = w.creates.sketch.parameters.draft.as_mut().expect("form");
+    draft.select(selected, &source);
+    assert!(
+        draft.slots.is_empty(),
+        "another object's slot must not preserve the selected object's missing slot"
+    );
+}
+
+#[test]
 fn parameter_refusals_keep_the_full_kernel_message_text_version_and_picture() {
     let f = fixture();
     let mut w = open(&f, Drawn::Mock);
