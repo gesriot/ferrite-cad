@@ -49,6 +49,9 @@ mod macos_quit;
 mod sketch_conflicts;
 use commands::Chosen;
 mod numeric;
+mod parameters;
+use numeric::mm;
+use workspace::form_window;
 mod recoveries;
 mod restores;
 mod sessions;
@@ -1416,7 +1419,7 @@ struct Sections<'a> {
     /// same name in another tab.
     forms_scope: u64,
     model: Option<(u64, &'a mut ferritecad_ui::ModelNavigation)>,
-    model_available: std::result::Result<(), &'static str>,
+    model_available: commands::Availability,
     model_confirmation: Option<&'a commands::Confirmation>,
     model_menu: &'a mut Option<commands::Menu>,
 }
@@ -1695,6 +1698,10 @@ fn present<P>(
     // forms about the saved objects of the old one are over: a request made from
     // them could only name the version that was replaced.
     if !switching {
+        forms
+            .editor
+            .parameters
+            .document_arrived(scene.edit_source.as_ref());
         forms.editor.finish_session_change();
     }
     Ok(())
@@ -2857,15 +2864,6 @@ fn segment(segment: SketchSegmentRef) -> String {
     format!("{} to {}", segment.from, segment.to)
 }
 
-/// A length the way a drawing states one.
-///
-/// Millimetres, which is the only unit this document has, printed as the
-/// number that was stored rather than rounded to a house style: a size a
-/// person typed is a size they should be able to recognise.
-fn mm(value: f64) -> String {
-    value.to_string()
-}
-
 /// What the read-only inspector shows about what is chosen.
 ///
 /// One resolution for both halves of the interface: the row a list marks and
@@ -3193,7 +3191,9 @@ impl ApplicationHandler<AppEvent> for App {
                     if let Err(error) = &outcome {
                         journal::report(format_args!("ferritecad: {error}"));
                     }
-                    if self.sessions.finish_scene(generation, outcome) && shown {
+                    let accepted = self.sessions.finish_scene(generation, outcome) && shown;
+                    self.finish_parameters(generation, accepted);
+                    if accepted {
                         // The forms described the picture that was replaced.
                         self.edits.cancel();
                         self.refresh_title();
@@ -3881,7 +3881,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
-                    Ok((chosen, replace, asked, pointed_row, interface_has_pointer)) => {
+                    Ok((mut chosen, replace, asked, pointed_row, interface_has_pointer)) => {
                         if let Some(id) = quit_new_question
                             && answer_window_quit_new(
                                 &mut self.tabs,
@@ -3987,6 +3987,9 @@ impl ApplicationHandler<AppEvent> for App {
                                 }
                             }
                             ferritecad_ui::TabChoice::Waiting => {}
+                        }
+                        if let Some(request) = chosen.parameter.take() {
+                            self.apply_parameter(request);
                         }
                         if let Some(asked) = chosen.model {
                             self.run_model_command(asked);
@@ -5378,7 +5381,9 @@ impl App {
         match edited {
             sessions::Edited::Show(path) => self.stage_scene(generation, path),
             sessions::Edited::Keep(path) => self.keep_picture(generation, path),
-            sessions::Edited::Failed | sessions::Edited::NoChange | sessions::Edited::Ignore => {}
+            sessions::Edited::Failed | sessions::Edited::NoChange | sessions::Edited::Ignore => {
+                self.finish_parameters(generation, false);
+            }
         }
     }
 
@@ -5398,7 +5403,9 @@ impl App {
             journal::report(format_args!("ferritecad: {error}"));
         }
         let shown = outcome.is_ok();
-        if self.sessions.finish_scene(generation, outcome) && shown {
+        let accepted = self.sessions.finish_scene(generation, outcome) && shown;
+        self.finish_parameters(generation, accepted);
+        if accepted {
             if self
                 .checkpoint_naming
                 .take_if(|asked| *asked == generation)
@@ -6338,19 +6345,6 @@ fn in_tab_scope<R>(
     draw: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     ui.push_id((part, tab), draw).inner
-}
-
-/// Floating windows are roots in egui: `Window::new` otherwise derives its ID
-/// only from the title and ignores the parent Ui's tab scope. Include that scope
-/// explicitly so their fields, text undo state and focus belong to one tab too.
-fn form_window<'a>(ui: &egui::Ui, title: &'a str) -> egui::Window<'a> {
-    let window = egui::Window::new(title).id(ui.make_persistent_id(("form-window", title)));
-    // §31B: a form first appears in front of the viewport, not on the panels
-    // beside it. Only where it first appears: it is the person's to move.
-    match workspace::central_of(ui.ctx()) {
-        Some(central) => window.default_pos(central.min + egui::vec2(16.0, 16.0)),
-        None => window,
-    }
 }
 
 /// Turns one window event into what this application means by it.

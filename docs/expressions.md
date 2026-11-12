@@ -29,7 +29,24 @@ Opening reports `input` for syntax errors, unknown names and missing or extra de
 rows. Syntax positions are one-based byte offsets. Rebuild reports dimension errors,
 division by zero, non-finite results and stored-value mismatches on the owning object.
 Independent objects still build. A consumer of a failed parameter identifies that parameter.
-Window forms direct compound expressions to `edit`.
+Numeric window forms accept literals and direct compound expressions to
+**Parameters → Values**. The CLI keeps its existing text-expression refusal.
+
+## In the window
+
+Open **Parameters…** in Actions or **Edit…** on a parameter in Model. Add a length,
+angle or scalar, edit its expression, or rename it; the document rewrites name references.
+The table sorts names bytewise and shows each stored expression, accepted value and
+consumer count. Select a row to see its consumers by name, kind and input slot. Lengths
+use millimetres, angles use degrees, and scalars have no unit. Errors come from the
+accepted rebuild, without evaluating again in the window.
+
+Select another Model object to edit its expression text in **Values**. Constraint slots
+use the same rule words and UUIDs as Sketch solves. Each Apply is one transaction and
+one Undo step. Kernel refusals retain the typed text and appear in full at the field and
+in the status. Parameters stays open after an accepted change; Close discards remaining
+unsubmitted text and permits document Undo/Redo. Parameter deletion uses the shared
+Model catalogue and its dependent-closure confirmation. See [the session contract](document-session.md#parameters).
 
 ## Executable CLI recipe
 

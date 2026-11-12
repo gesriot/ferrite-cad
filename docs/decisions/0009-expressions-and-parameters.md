@@ -46,5 +46,8 @@ and the source position for a syntax error. A failed parameter or mismatched sto
 follows the per-object status rules in [ADR 0006](0006-generic-modelling-core.md).
 Identify the failed parameter to its dependents and continue rebuilding independent objects.
 
-The CLI accepts a text expression or a numeric value and unit for a slot. Window forms edit
-only a single numeric literal with no parameter reference and direct other edits to `edit`.
+The CLI accepts a text expression or a numeric value and unit for a slot. Numeric window
+forms edit only a single literal with no parameter reference and direct other edits to
+Parameters → Values. Parameters sends the existing parameter and expression edits through
+the session owner; it reads accepted values, saved dependencies and rebuild facts without
+duplicating validation or evaluation. The CLI's refusal wording remains unchanged.

@@ -56,6 +56,41 @@ fn visit(
 
 pub(crate) type ParameterEdges = BTreeSet<Dependency>;
 
+/// Label saved dependencies using the same expression grammar as validation.
+/// This reads stated inputs only; it neither evaluates nor changes the graph.
+pub(crate) fn consumers(
+    objects: &[ObjectRecord],
+    saved: &[Dependency],
+) -> Result<Vec<crate::edit::ParameterConsumer>> {
+    let mut result = Vec::new();
+    for edge in saved.iter().filter(|e| e.role == DependencyRole::Parameter) {
+        let Some(ObjectPayload::Parameter(parameter)) = objects
+            .iter()
+            .find(|o| o.id == edge.dependency)
+            .map(|o| &o.payload)
+        else {
+            continue;
+        };
+        let Some(object) = objects.iter().find(|o| o.id == edge.dependent) else {
+            continue;
+        };
+        visit(object.id, &object.payload, |slot, _, formula| {
+            if formula.names().any(|(name, _)| name == parameter.name) {
+                result.push(crate::edit::ParameterConsumer {
+                    parameter: edge.dependency,
+                    object: edge.dependent,
+                    slot: match slot {
+                        Slot::Field(slot) => Some(slot),
+                        Slot::Parameter(_, _) => None,
+                    },
+                });
+            }
+            Ok(())
+        })?;
+    }
+    Ok(result)
+}
+
 pub(crate) fn references<'a>(
     objects: impl Iterator<Item = (ObjectId, &'a ObjectPayload)> + Clone,
 ) -> Result<ParameterEdges> {

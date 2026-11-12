@@ -5,6 +5,9 @@ use crate::{App, AppEvent, dialogs, edits, sessions};
 use ferritecad_document::{DOCUMENT_EXTENSION, DocumentVersion, EditChange};
 use ferritecad_jobs::EditRequest;
 
+pub(crate) const EXPRESSION_REFUSAL: &str =
+    "This value is an expression; edit its text in Parameters → Values.";
+
 #[derive(Clone, Copy)]
 pub(crate) enum Form {
     Cut,
@@ -135,4 +138,13 @@ pub(crate) fn refuse_unsaved_copy(sessions: &mut sessions::Sessions) -> bool {
         sessions.status = "Saving an edited copy is unavailable while the document has unsaved changes: Save or Undo them first.".to_owned();
     }
     sessions.dirty()
+}
+
+/// A length the way a drawing states one.
+///
+/// Millimetres, which is the only unit this document has, printed as the
+/// number that was stored rather than rounded to a house style: a size a
+/// person typed is a size they should be able to recognise.
+pub(crate) fn mm(value: f64) -> String {
+    value.to_string()
 }

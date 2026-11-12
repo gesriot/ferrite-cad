@@ -23,7 +23,7 @@ mod workspace;
 /// How a picture is built for a test: on the mock kernel (kernel-free gates) or
 /// by the window's own scene worker on Open CASCADE (native gates).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Drawn {
+pub(crate) enum Drawn {
     Mock,
     Native,
 }
@@ -61,17 +61,17 @@ fn wait<T>(rx: &mpsc::Receiver<T>) -> T {
 }
 
 /// The parts of the window an arrival touches, as `App` holds them.
-struct Window {
-    scene: crate::LiveScene<()>,
-    input: ViewportInput,
-    sessions: Sessions,
-    tabs: Tabs,
-    checkpoint_name: String,
+pub(crate) struct Window {
+    pub(crate) scene: crate::LiveScene<()>,
+    pub(crate) input: ViewportInput,
+    pub(crate) sessions: Sessions,
+    pub(crate) tabs: Tabs,
+    pub(crate) checkpoint_name: String,
     /// §30P: the shown tab's forms, as `App` holds them (`creates.sketch`).
-    edits: crate::edits::Edits,
-    creates: crate::creates::Creates,
-    private: tempfile::TempDir,
-    drawn: Drawn,
+    pub(crate) edits: crate::edits::Edits,
+    pub(crate) creates: crate::creates::Creates,
+    pub(crate) private: tempfile::TempDir,
+    pub(crate) drawn: Drawn,
 }
 
 impl Window {
@@ -82,7 +82,7 @@ impl Window {
             .expect("model question");
         assert!(self.tabs.decide_quit_model(&self.sessions, id));
     }
-    fn new(drawn: Drawn, store: Option<&RecoveryStore>) -> Self {
+    pub(crate) fn new(drawn: Drawn, store: Option<&RecoveryStore>) -> Self {
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         Self {
@@ -108,7 +108,7 @@ impl Window {
     }
 
     /// `App::show` without the device: `upload` stands for the GPU upload.
-    fn present(
+    pub(crate) fn present(
         &mut self,
         document: &Path,
         loaded: Result<LoadedScene>,
@@ -148,7 +148,7 @@ impl Window {
     }
 
     /// `App::open`: the tab list decides; a candidate is read and accepted.
-    fn open(&mut self, path: &Path) -> Opening {
+    pub(crate) fn open(&mut self, path: &Path) -> Opening {
         let opening = self.tabs.opening(&self.sessions, path);
         if opening == Opening::Load {
             let session = self.open_tab(path).expect("session");
@@ -232,7 +232,7 @@ impl Window {
         self.show_staged(generation, path);
     }
 
-    fn show_staged(&mut self, generation: Address, path: PathBuf) {
+    pub(crate) fn show_staged(&mut self, generation: Address, path: PathBuf) {
         let (tx, rx) = mpsc::channel();
         self.sessions.draw_staged(generation, move |v| {
             tx.send(v).expect("scene");
@@ -243,7 +243,7 @@ impl Window {
         assert!(self.sessions.finish_scene(generation, outcome));
     }
 
-    fn step(&mut self, undo: bool) {
+    pub(crate) fn step(&mut self, undo: bool) {
         let (generation, path) = self.sessions.begin_move(undo).expect("a step");
         if self.sessions.staged_keeps_picture(generation) {
             let (tx, rx) = mpsc::channel();
@@ -326,7 +326,7 @@ impl Window {
         Some((outcome, after))
     }
 
-    fn switch(&mut self, tab: TabId) {
+    pub(crate) fn switch(&mut self, tab: TabId) {
         let (generation, rx) = self.begin_switch(tab, None);
         let loaded = wait(&rx);
         let (outcome, _) = self
@@ -349,7 +349,7 @@ impl Window {
             .expect("answered")
     }
 
-    fn close(&mut self, tab: TabId) -> Result<Option<TabId>> {
+    pub(crate) fn close(&mut self, tab: TabId) -> Result<Option<TabId>> {
         crate::close_shown(
             &mut self.scene,
             &mut self.input,

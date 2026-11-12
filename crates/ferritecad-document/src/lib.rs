@@ -65,7 +65,7 @@ pub use document::{
     MAX_CHECKPOINT_NAME_CHARS, MAX_CHECKPOINTS, ObjectRecord, ReopenedStepImport,
     StepImportRequest, StepImporter, StoredStepImport, checkpoint_name,
 };
-pub use edit::{DocumentVersion, ExtrudeEditSource};
+pub use edit::{DocumentVersion, ExtrudeEditSource, ParameterConsumer};
 pub use envelope::Envelope;
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{

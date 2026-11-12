@@ -5,7 +5,7 @@
 mod tests;
 
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_document::{Document, DocumentVersion, EditChange};
+use ferritecad_document::{Document, DocumentVersion, EditChange, ObjectKind};
 use ferritecad_types::{ObjectId, Result};
 use ferritecad_ui::{ModelAction, ModelCommand, ModelEdit, ModelKey};
 
@@ -13,6 +13,29 @@ use crate::{
     Loads, creates::Creates, edits::Edits, exports::Exports, sessions::Sessions,
     sketch::accepted::Accepted, tabs::Tabs,
 };
+
+/// An open Parameters form defers the operation guard until the command is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    Idle,
+    /// An open form with the ordinary foreground-operation answer still to check.
+    Parameters {
+        operation: Result<(), &'static str>,
+    },
+}
+
+/// One answer shared by the command catalogue and all of its surfaces.
+pub(crate) type Availability = Result<Access, &'static str>;
+
+impl Access {
+    /// Applying the open form uses the same operation answer as its catalogue routes.
+    pub(crate) fn operation(self) -> Result<(), &'static str> {
+        match self {
+            Self::Idle => Ok(()),
+            Self::Parameters { operation } => operation,
+        }
+    }
+}
 
 #[allow(
     clippy::too_many_arguments,
@@ -27,21 +50,28 @@ pub(crate) fn availability(
     exports: &Exports,
     input: &ferritecad_ui::ViewportInput,
     confirming: bool,
-) -> Result<(), &'static str> {
+) -> Availability {
     if confirming {
         return Err("Delete or Cancel the pending deletion before another command.");
     }
-    if edits.form_open() || creates.sketch.saved_object_open() {
+    let parameters = creates.sketch.parameters.active();
+    if edits.form_open() || (creates.sketch.saved_object_open() && !parameters) {
         return Err("Apply or Cancel the open form before opening another editor.");
     }
-    if !crate::can_leave_tab(creates, loads, exports, edits, sessions, input)
+    let operation = if !crate::can_leave_tab(creates, loads, exports, edits, sessions, input)
         || tabs.quitting()
         || tabs.closing_form()
         || !sessions.takes_form_apply()
     {
-        return Err("Finish the current operation, New, dialog or gesture before editing.");
+        Err("Finish the current operation, New, dialog or gesture before editing.")
+    } else {
+        Ok(())
+    };
+    if parameters {
+        Ok(Access::Parameters { operation })
+    } else {
+        operation.map(|()| Access::Idle)
     }
-    Ok(())
 }
 
 /// Only genuinely supported routes of this accepted catalogue, by UUID.
@@ -51,6 +81,13 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     }
     let id = key.0;
     let mut out = Vec::new();
+    if source
+        .objects
+        .iter()
+        .any(|o| o.id == id && o.payload.kind() == Some(ObjectKind::Parameter))
+    {
+        out.push(ModelEdit::Parameters);
+    }
     if source.sketches.iter().any(|c| {
         c.sketch == id && c.refusal.is_none() && c.vertices.is_some() && c.profile_use.is_some()
     }) {
@@ -122,6 +159,7 @@ fn open_editor(
 ) -> bool {
     let id = asked.row.0;
     match asked.edit {
+        ModelEdit::Parameters => creates.sketch.parameters.begin(source),
         ModelEdit::Height => edits.begin_selected(path, source, id),
         ModelEdit::Vertices => creates.sketch.begin_edit(path, source, id),
         ModelEdit::Circle => creates.sketch.begin_circle_edit(path, source, id),
@@ -173,7 +211,7 @@ impl Menu {
         &self,
         ctx: &egui::Context,
         source: &ExtrudeEditSource,
-        idle: std::result::Result<(), &str>,
+        idle: Availability,
     ) -> (Option<Action>, bool) {
         let mut asked = None;
         let mut close = false;
@@ -290,6 +328,8 @@ pub(crate) fn select_row(
 pub(crate) struct Chosen {
     pub(crate) window: ferritecad_ui::Chosen,
     pub(crate) model: Option<Action>,
+    /// One text field submitted by the Parameters form this frame.
+    pub(crate) parameter: Option<crate::parameters::Request>,
     pub(crate) confirm_delete: Option<bool>,
 }
 impl std::ops::Deref for Chosen {
@@ -314,22 +354,33 @@ impl Command {
             Self::Unsuppress => "Unsuppress",
         }
     }
-    fn shortcut(self) -> Option<egui::KeyboardShortcut> {
+    fn shortcuts(self) -> &'static [egui::KeyboardShortcut] {
+        const DELETE: [egui::KeyboardShortcut; 2] = [
+            egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Delete),
+            egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Backspace),
+        ];
         match self {
-            Self::Delete => Some(egui::KeyboardShortcut::new(
-                egui::Modifiers::NONE,
-                egui::Key::Delete,
-            )),
-            Self::Edit(_) | Self::DeleteWithDependents | Self::Suppress | Self::Unsuppress => None,
+            Self::Delete => &DELETE,
+            Self::Edit(_) | Self::DeleteWithDependents | Self::Suppress | Self::Unsuppress => &[],
         }
     }
     fn available(
         self,
         source: &ExtrudeEditSource,
         key: ModelKey,
-        idle: std::result::Result<(), &str>,
+        idle: Availability,
     ) -> std::result::Result<(), String> {
-        idle.map_err(str::to_owned)?;
+        if let Access::Parameters { operation } = idle.map_err(str::to_owned)? {
+            if !matches!(self, Self::Delete | Self::DeleteWithDependents)
+                || !source
+                    .objects
+                    .iter()
+                    .any(|o| o.id == key.0 && o.payload.kind() == Some(ObjectKind::Parameter))
+            {
+                return Err("Close the Parameters form before another command.".into());
+            }
+            operation.map_err(str::to_owned)?;
+        }
         if let Some(reason) = &source.refusal {
             return Err(reason.clone());
         }
@@ -372,7 +423,7 @@ impl Command {
 pub(crate) fn offers(
     source: &ExtrudeEditSource,
     row: ModelKey,
-    idle: std::result::Result<(), &str>,
+    idle: Availability,
 ) -> Vec<ModelCommand<Command>> {
     actions(source, row)
         .into_iter()
@@ -386,7 +437,7 @@ pub(crate) fn offers(
         .map(|command| ModelCommand {
             command,
             label: command.label(),
-            shortcut: command.shortcut(),
+            shortcuts: command.shortcuts(),
             available: command.available(source, row, idle),
         })
         .collect()
@@ -445,7 +496,7 @@ impl Confirmation {
         source: Option<&ExtrudeEditSource>,
         sessions: &Sessions,
         tabs: &Tabs,
-        idle: std::result::Result<(), &str>,
+        idle: Availability,
     ) -> std::result::Result<Option<(DocumentVersion, Vec<EditChange>)>, String> {
         if !delete {
             return Ok(None);

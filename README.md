@@ -20,7 +20,9 @@ Length values use millimetres internally; angles use radians and display degrees
 Slots include Extrude distance (Blind or Symmetric), Fillet radius, Chamfer distance,
 partial Revolve angle, and Sketch constraint Distance, Radius, DirectedAngle, FixedX
 and FixedY (addressed by constraint UUID). Named parameters can drive any of these slots.
-Use the [expression reference and CLI recipe](docs/expressions.md) to edit formulas.
+The window's **Parameters…** form creates, edits and renames parameters; **Values** edits
+expression text for the object selected in Model. Numeric forms keep accepting literals.
+See the [expression reference and CLI recipe](docs/expressions.md).
 
 Use the returned `content_version` with one ordered transaction:
 

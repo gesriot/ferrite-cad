@@ -5,7 +5,7 @@ use ferritecad_document::{DocumentVersion, EditChange};
 use ferritecad_types::StableEntityId;
 
 #[test]
-fn an_open_form_blocks_both_parameter_deletion_routes_without_losing_its_draft() {
+fn an_open_height_form_blocks_both_parameter_deletion_routes_without_losing_its_draft() {
     let (_root, path, _) = crate::cuts::tests::session_apply::fixture(0);
     let parameter = ObjectId::new();
     let mut document = Document::open(&path).expect("fixture");
@@ -52,13 +52,20 @@ fn an_open_form_blocks_both_parameter_deletion_routes_without_losing_its_draft()
             &w.input,
             false,
         );
-        assert_eq!(idle, if open { Err(reason) } else { Ok(()) });
+        assert_eq!(
+            idle,
+            if open {
+                Err(reason)
+            } else {
+                Ok(commands::Access::Idle)
+            }
+        );
         for command in [Command::Delete, Command::DeleteWithDependents] {
             let offer = commands::offers(source, row, idle)
                 .into_iter()
                 .find(|offer| offer.command == command)
                 .expect("catalogue deletion");
-            assert_eq!(offer.available, idle.map_err(str::to_owned));
+            assert_eq!(offer.available, idle.map(|_| ()).map_err(str::to_owned));
             let result = commands::launch(
                 Action {
                     tab: w.sessions.tab().key(),
@@ -443,7 +450,7 @@ fn native_picked_face_context_suppresses_the_same_feature_as_the_tree() {
                 ..Default::default()
             },
             |ui| {
-                action = menu.draw(ui.ctx(), facts, Ok(())).0;
+                action = menu.draw(ui.ctx(), facts, Ok(commands::Access::Idle)).0;
             },
         );
         out.textures_delta.clear();
@@ -617,7 +624,7 @@ fn native_tree_deletion_refusal_confirmation_and_single_undo_publish_atomically(
                 w.scene.edit_source.as_ref(),
                 &w.sessions,
                 &w.tabs,
-                Ok(()),
+                Ok(commands::Access::Idle),
             )
             .expect("confirmed current version");
         if delete {

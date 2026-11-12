@@ -127,6 +127,8 @@ impl Default for AnnulusState {
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
+    /// Text editing over the current accepted document, following Model selection.
+    pub(crate) parameters: crate::parameters::Editor,
     pub(crate) constraints: crate::constraints::Editor,
     /// The circular cut form. Its own editor beside the constraint one: a cut
     /// is added to a body's history, not to a drawing, and it reads a different
@@ -413,6 +415,7 @@ impl Editor {
             || self.cuts.active()
             || self.fillets.active()
             || self.chamfers.active()
+            || self.parameters.active()
     }
     pub(crate) fn dismiss(&mut self) {
         // What the window said about the session is not the draft's: it is said
@@ -471,15 +474,14 @@ impl Editor {
         self.can_apply = can_apply;
         self.unsaved = unsaved;
     }
-    /// The document moved to another accepted version, so every form about a saved
-    /// object described the picture that was replaced. Their drafts end here; a
-    /// request made from them could only name the old version. A drawing in
-    /// progress for a new document is not about the open one and stays.
+    /// Saved-object forms describe the picture that was replaced and end here.
+    /// Parameters reads each accepted version and keeps its unsubmitted text.
+    /// A drawing for a new document is not about the open one and also stays.
     pub(crate) fn finish_session_change(&mut self) {
         // A drawing for a new document stays, but not an anchor held over the picture
         // that was replaced.
         self.forget_anchor();
-        if self.saved_object_open() {
+        if self.saved_object_open() && !self.parameters.active() {
             self.dismiss();
         }
     }
@@ -494,6 +496,7 @@ impl Editor {
             || self.cuts.active()
             || self.fillets.active()
             || self.chamfers.active()
+            || self.parameters.active()
     }
     /// §30P: the drawing window for a new document is open. It is not about the
     /// open document and never goes with a tab.
@@ -1318,7 +1321,8 @@ impl Editor {
             self.chamfers.draw(ui, running);
             return;
         }
-        if !self.active() {
+        // Parameters is drawn with the current accepted source by the workspace.
+        if !self.active() || self.parameters.active() {
             return;
         }
         crate::form_window(

@@ -1363,7 +1363,7 @@ where
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ferritecad_types::ObjectId;
     mod add_chamfer;
@@ -1382,7 +1382,7 @@ mod tests {
     mod owner_panic;
     mod parameters;
     mod recovery;
-    mod tabs;
+    pub(crate) mod tabs;
     mod tree_operations;
     mod up_to_end;
     use ferritecad_document::Document;

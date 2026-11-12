@@ -1025,6 +1025,21 @@ impl prepare::LoadSink for Picture<'_> {
         }
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
         project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
+        source.expression_failures = self
+            .rebuild
+            .failed
+            .iter()
+            .map(|failure| (failure.id, failure.message.clone()))
+            .chain(self.rebuild.skipped.iter().map(|skipped| {
+                let cause = objects
+                    .iter()
+                    .find(|o| o.id == skipped.cause)
+                    .and_then(|o| o.name.as_deref())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| skipped.cause.to_string());
+                (skipped.id, format!("not built: depends on {cause}"))
+            }))
+            .collect();
         self.edit_source = Some(source);
         // The shapes `prepare` tessellates: each body's built tip.
         let drawn = objects
