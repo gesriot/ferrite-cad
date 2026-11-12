@@ -98,47 +98,54 @@ impl Draft {
             .id_salt("parameter rows")
             .max_height(144.)
             .show(ui, |ui| {
-                egui::Grid::new("parameters").striped(true).show(ui, |ui| {
-                    for label in ["Name", "Expression", "Value", "Consumers"] {
-                        ui.strong(label);
-                    }
-                    ui.end_row();
-                    for (id, parameter) in rows {
-                        if ui
-                            .selectable_label(self.selected == Some(id), &parameter.name)
-                            .clicked()
-                            && let Some(row) = source.model_tree.rows.iter().find(|r| r.id.0 == id)
-                        {
-                            commands::select_row(source, navigation, row.id);
-                        }
-                        ui.label(&parameter.expression.source);
-                        ui.label(
-                            source
-                                .expression_failures
-                                .iter()
-                                .find(|(object, _)| *object == id)
-                                .map(|(_, reason)| reason.clone())
-                                .unwrap_or_else(|| {
-                                    words::value(parameter.expression.value(), parameter.dimension)
-                                }),
-                        );
-                        match &source.parameter_consumers {
-                            Ok(consumers) => {
-                                let count = consumers
-                                    .iter()
-                                    .filter(|c| c.parameter == id)
-                                    .map(|c| c.object)
-                                    .collect::<std::collections::BTreeSet<_>>()
-                                    .len();
-                                ui.label(count.to_string());
-                            }
-                            Err(reason) => {
-                                ui.label("Unavailable").on_hover_text(reason);
-                            }
+                egui::Grid::new("parameters")
+                    .striped(true)
+                    .max_col_width(180.)
+                    .show(ui, |ui| {
+                        for label in ["Name", "Expression", "Value", "Consumers"] {
+                            ui.strong(label);
                         }
                         ui.end_row();
-                    }
-                });
+                        for (id, parameter) in rows {
+                            if ui
+                                .selectable_label(self.selected == Some(id), &parameter.name)
+                                .clicked()
+                                && let Some(row) =
+                                    source.model_tree.rows.iter().find(|r| r.id.0 == id)
+                            {
+                                commands::select_row(source, navigation, row.id);
+                            }
+                            ui.label(&parameter.expression.source);
+                            ui.label(
+                                source
+                                    .unbuilt_statuses
+                                    .iter()
+                                    .find(|(object, _)| *object == id)
+                                    .map(|(_, reason)| reason.clone())
+                                    .unwrap_or_else(|| {
+                                        words::value(
+                                            parameter.expression.value(),
+                                            parameter.dimension,
+                                        )
+                                    }),
+                            );
+                            match &source.parameter_consumers {
+                                Ok(consumers) => {
+                                    let count = consumers
+                                        .iter()
+                                        .filter(|c| c.parameter == id)
+                                        .map(|c| c.object)
+                                        .collect::<std::collections::BTreeSet<_>>()
+                                        .len();
+                                    ui.label(count.to_string());
+                                }
+                                Err(reason) => {
+                                    ui.label("Unavailable").on_hover_text(reason);
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
             });
     }
 
@@ -184,6 +191,14 @@ impl Draft {
             }
             ui.separator();
             ui.heading("Values");
+            let status = source
+                .unbuilt_statuses
+                .iter()
+                .find(|(object, _)| *object == id)
+                .map(|(_, status)| status);
+            if let Some(status) = status {
+                ui.label(status);
+            }
             if self.slots.is_empty() {
                 ui.label("The selected object has no value slots.");
             }
@@ -195,7 +210,9 @@ impl Draft {
                 let field = Field::Slot(id, *slot);
                 ui.push_id((id, index), |ui| {
                     ui.label(words::slot(source, id, *slot));
-                    ui.label(words::value(saved.expression.value(), saved.dimension));
+                    if status.is_none() {
+                        ui.label(words::value(saved.expression.value(), saved.dimension));
+                    }
                     ui.text_edit_singleline(text);
                     if ui
                         .add_enabled(

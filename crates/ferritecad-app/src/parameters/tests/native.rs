@@ -388,11 +388,18 @@ fn native_solver_values_edit_a_distance_constraint_and_publish_its_new_solution(
 }
 
 #[test]
-fn native_failed_parameter_rows_show_rebuild_reasons_and_unbuilt_dependents() {
+fn native_failed_parameter_consumers_show_exact_tree_statuses_and_repair_through_widgets() {
     if !native() {
         return;
     }
     let f = fixture();
+    let original = cold(&f.path);
+    let original_tree = original
+        .edit_source
+        .as_ref()
+        .expect("original source")
+        .model_tree
+        .clone();
     let document = Document::open_read_only(&f.path).expect("document");
     let ObjectPayload::Parameter(mut stored) = document
         .object(f.stock)
@@ -427,36 +434,108 @@ fn native_failed_parameter_rows_show_rebuild_reasons_and_unbuilt_dependents() {
         .edit_source
         .as_ref()
         .expect("accepted failure facts");
-    eprintln!("PARAMETER_FAILURE_FACTS {:?}", source.expression_failures);
-    for row in &source.model_tree.rows {
-        eprintln!(
-            "PARAMETER_FAILURE_ROW {} {} {}",
-            row.id.0, row.name, row.note
+    let stock = format!(
+        concat!(
+            "Failed: invalid input: object {} parameter 'stock' expression: ",
+            "invalid input: division by zero"
+        ),
+        f.stock
+    );
+    let total = "Failed: invalid input: depends on parameter stock, which failed";
+    let feature = "Failed: invalid input: depends on parameter total, which failed";
+    let body = source
+        .objects
+        .iter()
+        .find(|object| matches!(object.payload, ObjectPayload::Body(_)))
+        .expect("body")
+        .id;
+    for (id, expected) in [
+        (f.stock, stock.as_str()),
+        (f.total, total),
+        (f.feature, feature),
+        (body, "Rolled back to no built feature because of same"),
+    ] {
+        assert_eq!(
+            source
+                .unbuilt_statuses
+                .iter()
+                .find(|(object, _)| *object == id)
+                .expect("report status")
+                .1,
+            expected
         );
+        for row in source.model_tree.rows.iter().filter(|row| row.id.0 == id) {
+            let saved = original_tree
+                .rows
+                .iter()
+                .find(|saved| saved.id == row.id)
+                .expect("row");
+            assert_eq!(row.name, format!("⚠ {}", saved.name));
+            assert_eq!(row.note, expected);
+        }
     }
-    assert!(
-        source
-            .expression_failures
-            .iter()
-            .any(|(id, reason)| *id == f.stock && reason.contains("division by zero"))
-    );
-    assert!(
-        source
-            .model_tree
-            .rows
-            .iter()
-            .any(|row| row.id.0 == f.feature && row.note.contains("not built"))
-    );
-    assert!(
-        source
-            .expression_failures
-            .iter()
-            .any(|(id, reason)| *id == f.total && reason == "not built: depends on stock")
-    );
     let mut ui = widgets::Ui::new(&mut w);
     let output = ui.settle(&mut w);
-    let labels = widgets::text(&output);
-    assert!(labels.iter().any(|s| s.contains("division by zero")));
-    assert!(labels.iter().any(|s| s == "not built: depends on stock"));
-    assert!(!labels.iter().any(|s| s == "10 mm" || s == "13 mm"));
+    let labels = widgets::form_text(&output);
+    let table: Vec<_> = labels
+        .iter()
+        .take_while(|label| *label != "Values")
+        .collect();
+    assert_eq!(
+        table.iter().filter(|label| ***label == stock).count(),
+        1,
+        "the table must show the failed parameter's complete tree sentence"
+    );
+    assert_eq!(table.iter().filter(|label| ***label == total).count(), 1);
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| *label == "10 mm" || *label == "13 mm")
+            .count(),
+        0
+    );
+    select(&mut w, f.feature);
+    let output = ui.settle(&mut w);
+    let values = widgets::values_text(&output);
+    assert_eq!(values.iter().filter(|label| *label == feature).count(), 1);
+    assert_eq!(values.iter().filter(|label| *label == "total").count(), 1);
+    assert_eq!(values.iter().filter(|label| *label == "13 mm").count(), 0);
+
+    select(&mut w, f.stock);
+    ui.type_field(&mut w, "Parameter expression", "10 mm");
+    assert_eq!(w.scene.edit_source.as_ref().expect("source").refusal, None);
+    let asked = ui
+        .press(&mut w, "Apply parameter", true)
+        .parameter
+        .expect("repair Apply");
+    let accepted = apply_observing(&mut w, asked, |scene| {
+        assert_eq!(
+            scene.edit_source.as_ref().expect("source").model_tree,
+            original_tree
+        );
+    });
+    assert!(accepted, "repair refusal: {}", w.sessions.status);
+    let labels = widgets::form_text(&ui.settle(&mut w));
+    assert_eq!(
+        labels
+            .iter()
+            .find(|label| *label == "10 mm")
+            .map(String::as_str),
+        Some("10 mm")
+    );
+    assert_eq!(
+        labels
+            .iter()
+            .find(|label| *label == "13 mm")
+            .map(String::as_str),
+        Some("13 mm")
+    );
+    assert_eq!(
+        w.scene
+            .edit_source
+            .as_ref()
+            .expect("source")
+            .unbuilt_statuses,
+        vec![]
+    );
 }

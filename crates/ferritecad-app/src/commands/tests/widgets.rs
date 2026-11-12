@@ -247,6 +247,93 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
 }
 
 #[test]
+fn the_entity_menu_uses_the_same_parameter_form_exception_and_operation_guard() {
+    let (_root, path, _) = crate::cuts::tests::session_apply::fixture(0);
+    let mut document = Document::open(&path).expect("document");
+    let id = ferritecad_types::ObjectId::new();
+    document
+        .write_changes(&[EditChange::AddParameter {
+            object: id,
+            name: "stock".into(),
+            dimension: ferritecad_types::Dimension::Length,
+            expression: "10 mm".into(),
+        }])
+        .expect("parameter");
+    let source = ExtrudeEditSource::read(&document).expect("source");
+    document.close().expect("close");
+    let row = source
+        .model_tree
+        .rows
+        .iter()
+        .find(|row| row.id.0 == id)
+        .expect("row")
+        .id;
+    let mut navigation = ferritecad_ui::ModelNavigation {
+        selected: Some(row),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let available = Ok(Access::Parameters { operation: Ok(()) });
+    for command in [Command::Delete, Command::DeleteWithDependents] {
+        let mut output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+        for _ in 0..3 {
+            output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+        }
+        let at = rect(&output, command.label(), false).center();
+        assert_eq!(
+            frame(
+                &ctx,
+                clicks(at, egui::PointerButton::Primary),
+                &source,
+                row,
+                &mut navigation,
+                true,
+                available
+            )
+            .1,
+            Some(Action {
+                tab: 7,
+                epoch: navigation.epoch,
+                row,
+                edit: command
+            })
+        );
+        let busy = Ok(Access::Parameters {
+            operation: Err("Finish the current operation, New, dialog or gesture before editing."),
+        });
+        frame(&ctx, vec![], &source, row, &mut navigation, true, busy);
+        assert_eq!(
+            frame(
+                &ctx,
+                clicks(at, egui::PointerButton::Primary),
+                &source,
+                row,
+                &mut navigation,
+                true,
+                busy
+            )
+            .1,
+            None
+        );
+    }
+    let output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+    let at = rect(&output, "Edit…", false).center();
+    assert_eq!(
+        frame(
+            &ctx,
+            clicks(at, egui::PointerButton::Primary),
+            &source,
+            row,
+            &mut navigation,
+            true,
+            available
+        )
+        .1,
+        None
+    );
+}
+
+#[test]
 fn the_entity_menu_closes_on_its_button_a_click_elsewhere_and_escape_only() {
     let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
     let saved = crate::cuts::tests::session_apply::selected(&source, 0);

@@ -460,6 +460,135 @@ fn accepted_source_reports_dependency_slots_without_guessing_names_in_the_window
 }
 
 #[test]
+fn rename_updates_the_visible_dependent_texts_and_one_undo_restores_them() {
+    let f = fixture();
+    let mut document = Document::open(&f.path).expect("document");
+    document
+        .write_changes(&[EditChange::SetExpressionText {
+            object: f.feature,
+            slot: ExpressionSlot::ExtrudeDistance,
+            source: "stock + 3 mm".into(),
+        }])
+        .expect("direct reference");
+    document.close().expect("close");
+    let mut w = open(&f, Drawn::Mock);
+    let mut ui = widgets::Ui::new(&mut w);
+    ui.type_field(&mut w, "Parameter name", "thickness");
+    let asked = ui
+        .press(&mut w, "Rename", true)
+        .parameter
+        .expect("Rename widget");
+    assert!(apply(&mut w, asked));
+    let labels = widgets::form_text(&ui.settle(&mut w));
+    assert_eq!(
+        labels
+            .iter()
+            .find(|label| *label == "thickness + 3 mm")
+            .map(String::as_str),
+        Some("thickness + 3 mm")
+    );
+    select(&mut w, f.feature);
+    let values = widgets::values_text(&ui.settle(&mut w));
+    assert_eq!(
+        values
+            .iter()
+            .find(|label| *label == "thickness + 3 mm")
+            .map(String::as_str),
+        Some("thickness + 3 mm")
+    );
+    assert_eq!(
+        values
+            .iter()
+            .find(|label| *label == "13 mm")
+            .map(String::as_str),
+        Some("13 mm")
+    );
+    ui.press(&mut w, "Close", true);
+    w.step(true);
+    assert!(!w.sessions.dirty());
+    let source = w.scene.edit_source.as_ref().expect("source");
+    assert_eq!(
+        parameter(source, f.total).expect("total").expression.source,
+        "stock + 3 mm"
+    );
+    assert_eq!(
+        source
+            .expression_slot(f.feature, ExpressionSlot::ExtrudeDistance)
+            .expect("height")
+            .expression
+            .source,
+        "stock + 3 mm"
+    );
+}
+
+#[test]
+fn accepted_versions_keep_unsent_slots_but_other_documents_and_missing_slots_end_their_drafts() {
+    let f = fixture();
+    let other = fixture();
+    let mut w = open(&f, Drawn::Mock);
+    select(&mut w, f.feature);
+    w.creates
+        .sketch
+        .parameters
+        .draft
+        .as_mut()
+        .expect("draft")
+        .slots[0]
+        .1 = "unsent height".into();
+    let asked = request(
+        &w,
+        Field::Add,
+        EditChange::AddParameter {
+            object: ObjectId::new(),
+            name: "later".into(),
+            dimension: Dimension::Scalar,
+            expression: "2".into(),
+        },
+    );
+    assert!(apply(&mut w, asked));
+    let source = w.scene.edit_source.as_ref().expect("source");
+    let row = source
+        .model_tree
+        .rows
+        .iter()
+        .find(|row| row.id.0 == f.feature)
+        .expect("feature row")
+        .id;
+    let draft = w
+        .creates
+        .sketch
+        .parameters
+        .draft
+        .as_mut()
+        .expect("form stayed open");
+    draft.select(Some(row), source);
+    assert_eq!(
+        draft.slots,
+        vec![(ExpressionSlot::ExtrudeDistance, "unsent height".into())]
+    );
+    let mut missing = source.clone();
+    missing.expression_slots.clear();
+    draft.select(Some(row), &missing);
+    assert_eq!(draft.slots, vec![]);
+    draft.select(Some(row), source);
+    assert_eq!(
+        draft.slots,
+        vec![(ExpressionSlot::ExtrudeDistance, "total".into())]
+    );
+    w.creates.sketch.parameters.document_arrived(Some(source));
+    assert!(w.creates.sketch.parameters.active());
+    let other_source = crate::sketch_facts::read(&other.path).expect("other document");
+    w.creates
+        .sketch
+        .parameters
+        .document_arrived(Some(&other_source));
+    assert!(!w.creates.sketch.parameters.active());
+    w.creates.sketch.parameters.begin(source);
+    w.creates.sketch.parameters.document_arrived(None);
+    assert!(!w.creates.sketch.parameters.active());
+}
+
+#[test]
 fn parameter_refusals_keep_the_full_kernel_message_text_version_and_picture() {
     let f = fixture();
     let mut w = open(&f, Drawn::Mock);
@@ -621,6 +750,10 @@ fn parameter_apply_uses_the_catalogue_operation_guard_and_ignores_other_addresse
             .is_none()
     );
     assert!(!w.sessions.busy() && !w.sessions.dirty());
+    assert_eq!(
+        w.sessions.status,
+        "Finish the current operation, New, dialog or gesture before editing."
+    );
     let address = sessions::Address {
         tab: w.sessions.tab(),
         generation: 99,

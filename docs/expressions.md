@@ -40,6 +40,9 @@ The table sorts names bytewise and shows each stored expression, accepted value 
 consumer count. Select a row to see its consumers by name, kind and input slot. Lengths
 use millimetres, angles use degrees, and scalars have no unit. Errors come from the
 accepted rebuild, without evaluating again in the window.
+Failed parameters and objects not built by that rebuild show the Model tree's complete
+status sentence instead of a number. Their expression text remains editable in the same
+form so it can be repaired; Values also hides stored slot numbers after a geometry failure.
 
 Select another Model object to edit its expression text in **Values**. Constraint slots
 use the same rule words and UUIDs as Sketch solves. Each Apply is one transaction and

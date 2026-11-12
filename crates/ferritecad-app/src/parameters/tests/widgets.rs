@@ -182,6 +182,251 @@ pub(super) fn text(output: &egui::FullOutput) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn form_text(output: &egui::FullOutput) -> Vec<String> {
+    text(output)
+        .into_iter()
+        .skip_while(|label| label != "Parameters")
+        .skip(1)
+        .collect()
+}
+
+pub(super) fn values_text(output: &egui::FullOutput) -> Vec<String> {
+    form_text(output)
+        .into_iter()
+        .skip_while(|label| label != "Values")
+        .skip(1)
+        .take_while(|label| label != "Add parameter")
+        .collect()
+}
+
+#[test]
+fn empty_document_opens_parameters_adds_all_dimensions_and_reopens_the_selected_editor() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("empty.fcad");
+    Document::create(&path)
+        .expect("empty document")
+        .close()
+        .expect("close");
+    let mut w = Window::new(Drawn::Mock, None);
+    w.open(&path);
+    let mut ui = Ui::new(&mut w);
+    assert!(!w.creates.sketch.parameters.active());
+    ui.press(&mut w, "Parameters…", false);
+    assert!(
+        w.creates.sketch.parameters.active(),
+        "the first parameter needs no existing row"
+    );
+    for (name, expression, dimension, label, value) in [
+        ("stock", "10 mm", Dimension::Length, "Length", "10 mm"),
+        ("turn", "30 deg", Dimension::Angle, "Angle", "30°"),
+        ("ratio", "2", Dimension::Scalar, "Scalar", "2"),
+    ] {
+        ui.type_field(&mut w, "New name", name);
+        ui.type_field(&mut w, "New expression", expression);
+        ui.press(&mut w, label, true);
+        let asked = ui
+            .press(&mut w, "Add parameter", true)
+            .parameter
+            .expect("Add widget");
+        let EditChange::AddParameter {
+            object,
+            dimension: asked_dimension,
+            ..
+        } = asked.change
+        else {
+            panic!("Add parameter request")
+        };
+        assert_eq!(asked_dimension, dimension);
+        assert!(apply(&mut w, asked));
+        assert_eq!(
+            parameter(w.scene.edit_source.as_ref().expect("source"), object)
+                .expect("added parameter")
+                .expression
+                .source,
+            expression
+        );
+        let labels = form_text(&ui.settle(&mut w));
+        assert_eq!(
+            labels
+                .iter()
+                .find(|word| *word == value)
+                .map(String::as_str),
+            Some(value)
+        );
+    }
+    ui.press(&mut w, "stock", false);
+    let selected = w
+        .tabs
+        .model_navigation(w.sessions.tab())
+        .selected
+        .expect("tree selection");
+    ui.press(&mut w, "Close", true);
+    assert!(!w.creates.sketch.parameters.active());
+    let asked = ui
+        .press(&mut w, "Edit…", false)
+        .model
+        .expect("parameter Edit route");
+    assert_eq!(asked.row, selected);
+    assert_eq!(
+        asked.edit,
+        Command::Edit(ferritecad_ui::ModelEdit::Parameters)
+    );
+    assert!(matches!(
+        launch(&mut w, asked.edit).expect("idle catalogue"),
+        Launch::Opened(true)
+    ));
+    ui.settle(&mut w);
+    let draft = w.creates.sketch.parameters.draft.as_ref().expect("form");
+    assert_eq!(
+        (draft.selected, draft.text.as_str()),
+        (Some(selected.0), "10 mm")
+    );
+    assert!(
+        ui.press(&mut w, "Apply parameter", true)
+            .parameter
+            .is_none(),
+        "unchanged text does not submit another edit"
+    );
+    ui.type_field(&mut w, "Parameter expression", "20 mm");
+    w.sessions.hold_stale_draft();
+    assert!(
+        ui.press(&mut w, "Apply parameter", true)
+            .parameter
+            .is_none(),
+        "the existing held-draft guard also disables the form's Apply"
+    );
+}
+
+#[test]
+fn parameters_entry_and_field_widgets_preserve_existing_read_only_and_pending_guards() {
+    let f = fixture();
+    let mut w = open(&f, Drawn::Mock);
+    let mut ui = Ui::new(&mut w);
+    ui.press(&mut w, "Close", true);
+    w.scene.edit_source.as_mut().expect("source").refusal = Some("read only".into());
+    ui.press(&mut w, "Parameters…", false);
+    assert!(
+        !w.creates.sketch.parameters.active(),
+        "read-only sources do not open an editor"
+    );
+    w.scene.edit_source.as_mut().expect("source").refusal = None;
+    ui.press(&mut w, "Parameters…", false);
+    ui.type_field(&mut w, "Parameter expression", "20 mm");
+    ui.press(&mut w, "Parameters…", false);
+    assert_eq!(
+        w.creates
+            .sketch
+            .parameters
+            .draft
+            .as_ref()
+            .expect("draft")
+            .text,
+        "20 mm",
+        "an open form cannot be replaced through the entry button"
+    );
+    let address = sessions::Address {
+        tab: w.sessions.tab(),
+        generation: 99,
+    };
+    w.creates
+        .sketch
+        .parameters
+        .draft
+        .as_mut()
+        .expect("draft")
+        .pending = Some((address, Field::Text(f.stock)));
+    assert!(
+        ui.press(&mut w, "Apply parameter", true)
+            .parameter
+            .is_none()
+    );
+    ui.press(&mut w, "Close", true);
+    assert!(
+        w.creates.sketch.parameters.active(),
+        "a pending owner address keeps the form"
+    );
+    w.creates
+        .sketch
+        .parameters
+        .finished(address, false, w.scene.edit_source.as_ref(), "Cancelled");
+    w.scene.edit_source.as_mut().expect("source").refusal = Some("read only".into());
+    assert!(
+        ui.press(&mut w, "Apply parameter", true)
+            .parameter
+            .is_none()
+    );
+    ui.press(&mut w, "Close", true);
+    assert!(!w.creates.sketch.parameters.active());
+}
+
+#[test]
+fn values_use_the_tree_sentence_for_skipped_and_geometry_failed_objects_without_cached_numbers() {
+    let f = fixture();
+    for skipped in [false, true] {
+        let mut w = open(&f, Drawn::Mock);
+        let mut report = ferritecad_eval::RebuildReport::default();
+        let expected = if skipped {
+            report.skipped.push(ferritecad_eval::SkippedFeature {
+                id: f.feature,
+                cause: f.stock,
+            });
+            "not built: depends on stock"
+        } else {
+            report.failed.push(ferritecad_eval::FailedFeature {
+                id: f.feature,
+                kind: "kernel".into(),
+                message: "boolean failed".into(),
+            });
+            "Failed: boolean failed"
+        };
+        let source = w.scene.edit_source.as_mut().expect("source");
+        let facts: &mut ferritecad_document::ExtrudeEditSource = source;
+        facts.unbuilt_statuses = ferritecad_scene::project_rebuild_status(
+            &mut facts.model_tree,
+            &facts.objects,
+            &report,
+        );
+        assert_eq!(facts.unbuilt_statuses, vec![(f.feature, expected.into())]);
+        for row in facts
+            .model_tree
+            .rows
+            .iter()
+            .filter(|row| row.id.0 == f.feature)
+        {
+            assert_eq!(row.note, expected);
+        }
+        select(&mut w, f.feature);
+        let mut ui = Ui::new(&mut w);
+        let output = ui.settle(&mut w);
+        let labels = values_text(&output);
+        assert_eq!(labels.iter().filter(|label| *label == expected).count(), 1);
+        assert_eq!(
+            labels.iter().filter(|label| *label == "13 mm").count(),
+            0,
+            "Values must hide the cached number of an unbuilt object"
+        );
+        assert_eq!(labels.iter().filter(|label| *label == "total").count(), 1);
+        ui.type_field(&mut w, "Extrude distance", "stock + 3 mm");
+        // Status presentation does not prevent correcting the stored expression.
+        let draft = w.creates.sketch.parameters.draft.as_ref().expect("form");
+        assert_eq!(
+            draft.slots[0],
+            (ExpressionSlot::ExtrudeDistance, "stock + 3 mm".into())
+        );
+        assert_eq!(
+            ui.press(&mut w, "Apply value", true)
+                .parameter
+                .expect("editable slot")
+                .change,
+            EditChange::SetExpressionText {
+                object: f.feature,
+                slot: ExpressionSlot::ExtrudeDistance,
+                source: "stock + 3 mm".into()
+            }
+        );
+    }
+}
+
 #[test]
 fn parameter_widgets_follow_tree_selection_and_backspace_belongs_to_text_when_focused() {
     let f = fixture();

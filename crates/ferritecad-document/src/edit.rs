@@ -14,8 +14,9 @@ pub struct ExtrudeEditSource {
     pub objects: Vec<ObjectRecord>,
     /// Saved parameter dependency rows, with their stated input slots.
     pub parameter_consumers: std::result::Result<Vec<ParameterConsumer>, String>,
-    /// Failed or unbuilt values reported by the rebuild of this accepted picture.
-    pub expression_failures: Vec<(ObjectId, String)>,
+    /// Every object in the accepted rebuild's failed and skipped lists, with its tree status.
+    /// These include expression and geometry failures, not just failed parameter values.
+    pub unbuilt_statuses: Vec<(ObjectId, String)>,
     pub model_tree: crate::ModelTree,
     pub version: DocumentVersion,
     pub expression_slots: Vec<crate::ExpressionSlotValue>,
@@ -42,7 +43,7 @@ impl ExtrudeEditSource {
                 .dependencies()
                 .and_then(|edges| crate::parameters::consumers(&objects, &edges))
                 .map_err(|error| error.to_string()),
-            expression_failures: Vec::new(),
+            unbuilt_statuses: Vec::new(),
             model_tree: crate::ModelTree::from_dependencies(&objects, document.dependencies()),
             objects: objects.clone(),
             version: DocumentVersion {
