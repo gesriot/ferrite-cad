@@ -45,7 +45,9 @@ Select a Model row to edit, delete or suppress that stored object. The buttons b
 it, its context menu, the context menu of a picked 3D entity and keyboard shortcuts
 use one command catalogue. Disabled commands explain their reason. An open form,
 pending operation, New, dialog, gesture, tab closure or deletion confirmation must
-finish before another model command can start. Existing editor forms keep their
+finish before another model command can start. The Parameters form permits Delete
+and Delete with dependents on a parameter row through every catalogue surface,
+while retaining the operation and confirmation guards. Existing editor forms keep their
 supported inputs and apply through the same session as before.
 
 | Command | Availability and result |
@@ -56,7 +58,7 @@ supported inputs and apply through the same session as before.
 | Suppress | An unsuppressed feature belonging to a Body history. |
 | Unsuppress | A suppressed feature belonging to a Body history. |
 
-Delete also uses the Delete key when a text field does not own keyboard input.
+Delete also uses Delete and Backspace when a text field does not own keyboard input.
 The menu of a picked 3D entity closes on a command, a click elsewhere or Escape.
 Confirming a dependent deletion sends one batch and creates one Undo step. Cancel
 sends nothing. Suppression uses the same transactional `SetSuppressed` operation as
@@ -78,8 +80,38 @@ not highlight its geometry in reverse.
 
 A failed sketch's note and Sketch solves panel name conflicting constraints by
 rule, curves and UUID, using the facts already produced by evaluation. The document
-still opens, and dependent features retain their not-built status. Parameter-table
-editing and rollback/insertion remain separate work.
+still opens, and dependent features retain their not-built status. Rollback and
+insertion remain separate work.
+
+## Parameters
+
+Open **Parameters…** in Actions, including in an empty document, or **Edit…** on a
+parameter row. The table reads the accepted document on every frame: name, expression,
+value and consumer count. Names sort bytewise. Lengths display millimetres, angles
+degrees and scalars no unit. A parameter that the accepted rebuild did not build shows
+the Model tree's status sentence in place of its value. Consumers come from saved
+parameter dependencies and name their object, kind and slot.
+
+The table and Model share one selection. Selecting a parameter shows its consumers,
+its name and expression fields and the catalogue's two deletion commands. Selecting
+another object shows **Values** instead: its stored expression slots, with the same
+status sentence in place of their numbers when that object was not built. Changing the
+selection discards the previous selection's unsubmitted fields; the Add fields remain
+independent.
+
+Add, Rename, Apply parameter and Apply value each send one existing edit through the
+session owner. The library validates names, syntax, dimensions and dependencies. A
+refusal leaves the accepted version and picture unchanged and shows the complete
+reason at the field and in the status, retaining the submitted text. Deletion refusals
+use the ordinary status route. Delete with dependents uses the same confirmation as
+Model; Cancel sends nothing and preserves the form, while Delete creates one Undo step.
+
+An accepted version of the same document keeps Parameters open. Only the submitted
+field is refreshed from that version; other unsubmitted fields survive while their
+object or slot exists. A successful Add clears its input fields. Close discards the
+form's unsubmitted text. Undo, Redo and checkpoints wait for the form to close. Tab
+closure and Quit ask the ordinary unfinished-form question; tab switching and New park
+and restore the draft under the existing stale-version rule. Another document ends it.
 
 ## What the library owns
 

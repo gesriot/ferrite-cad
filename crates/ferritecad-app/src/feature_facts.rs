@@ -288,13 +288,13 @@ pub(crate) fn read(
                 continue;
             }
             if let EndCondition::Blind { distance } = &cut.end_condition
-                && let Some(reason) = distance.numeric_form_refusal()
+                && distance.numeric_form_refusal().is_some()
             {
                 cuts.push(CutParameterChoice {
                     feature: o.id,
                     name: o.name.clone(),
                     saved: None,
-                    refusal: Some(reason.into()),
+                    refusal: Some(crate::numeric::EXPRESSION_REFUSAL.into()),
                 });
                 continue;
             }

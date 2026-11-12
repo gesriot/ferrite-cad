@@ -407,6 +407,18 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
             );
         }
         in_tab_scope(ui, "tab-forms", forms_scope, |ui| {
+            if let Some(source) = scene.edit_source
+                && let Some((tab, navigation)) = &mut sections.model
+            {
+                sections.sketch.parameters.draw(
+                    ui,
+                    source,
+                    *tab,
+                    navigation,
+                    sections.model_available,
+                    &mut answers.chosen,
+                );
+            }
             sections.sketch.draw_choices(
                 ui,
                 sections.can_edit,
@@ -512,7 +524,7 @@ pub(crate) fn quiet_layout(
         model: None,
         model_confirmation: None,
         model_menu: &mut None,
-        model_available: Ok(()),
+        model_available: Ok(commands::Access::Idle),
     };
     let mut view = View {
         activity: Activity {
@@ -547,4 +559,17 @@ pub(crate) fn quiet_layout(
         out.textures_delta.clear();
     }
     answers
+}
+
+/// Floating windows are roots in egui: `Window::new` otherwise derives its ID
+/// only from the title and ignores the parent Ui's tab scope. Include that scope
+/// explicitly so their fields, text undo state and focus belong to one tab too.
+pub(crate) fn form_window<'a>(ui: &egui::Ui, title: &'a str) -> egui::Window<'a> {
+    let window = egui::Window::new(title).id(ui.make_persistent_id(("form-window", title)));
+    // §31B: a form first appears in front of the viewport, not on the panels
+    // beside it. Only where it first appears: it is the person's to move.
+    match central_of(ui.ctx()) {
+        Some(central) => window.default_pos(central.min + egui::vec2(16.0, 16.0)),
+        None => window,
+    }
 }

@@ -5,6 +5,106 @@ use ferritecad_document::{DocumentVersion, EditChange};
 use ferritecad_types::StableEntityId;
 
 #[test]
+fn an_open_height_form_blocks_both_parameter_deletion_routes_without_losing_its_draft() {
+    let (_root, path, _) = crate::cuts::tests::session_apply::fixture(0);
+    let parameter = ObjectId::new();
+    let mut document = Document::open(&path).expect("fixture");
+    document
+        .write_changes(&[EditChange::AddParameter {
+            object: parameter,
+            name: "stock".into(),
+            dimension: ferritecad_types::Dimension::Length,
+            expression: "10 mm".into(),
+        }])
+        .expect("stored parameter");
+    document.close().expect("close");
+    let original = std::fs::read(&path).expect("source bytes");
+    let mut w = Window::new(Drawn::Mock, None);
+    super::model_tree::open_facts(&mut w, &path);
+    let source = w.scene.edit_source.as_ref().expect("accepted facts");
+    let snapshot = w.sessions.export_source().expect("accepted snapshot");
+    let row = source
+        .model_tree
+        .rows
+        .iter()
+        .find(|row| row.id.0 == parameter)
+        .expect("parameter row")
+        .id;
+    let height = source.expression_slots[0].object;
+    let reason = "Apply or Cancel the open form before opening another editor.";
+    for open in [false, true, false] {
+        if open {
+            assert!(w.edits.begin_selected(snapshot.path(), source, height));
+            w.edits.type_height(height, "17.");
+        } else {
+            w.edits.cancel();
+        }
+        let navigation = w.tabs.model_navigation(w.sessions.tab());
+        navigation.selected = Some(row);
+        let epoch = navigation.epoch;
+        let idle = commands::availability(
+            &w.creates,
+            &w.edits,
+            &w.sessions,
+            &w.tabs,
+            &Loads::default(),
+            &Exports::default(),
+            &w.input,
+            false,
+        );
+        assert_eq!(
+            idle,
+            if open {
+                Err(reason)
+            } else {
+                Ok(commands::Access::Idle)
+            }
+        );
+        for command in [Command::Delete, Command::DeleteWithDependents] {
+            let offer = commands::offers(source, row, idle)
+                .into_iter()
+                .find(|offer| offer.command == command)
+                .expect("catalogue deletion");
+            assert_eq!(offer.available, idle.map(|_| ()).map_err(str::to_owned));
+            let result = commands::launch(
+                Action {
+                    tab: w.sessions.tab().key(),
+                    epoch,
+                    row,
+                    edit: command,
+                },
+                source,
+                &w.scene.sketches,
+                &mut w.creates,
+                &mut w.edits,
+                &w.sessions,
+                &w.tabs,
+                &Loads::default(),
+                &Exports::default(),
+                &w.input,
+                false,
+            );
+            if open {
+                assert!(matches!(result, Err(ref error) if error == reason));
+                assert_eq!(w.edits.typed(), Some((Some(height), "17.")));
+            } else {
+                assert!(matches!(
+                    (command, result),
+                    (Command::Delete, Ok(Launch::Apply(_, _)))
+                        | (Command::DeleteWithDependents, Ok(Launch::Confirm(_)))
+                ));
+            }
+            assert_eq!(
+                w.sessions.export_source().expect("accepted").version(),
+                source.version
+            );
+            assert_eq!(std::fs::read(&path).expect("source bytes"), original);
+            assert!(!w.sessions.dirty());
+        }
+    }
+}
+
+#[test]
 fn a_tree_command_rejects_each_stale_address_before_submitting_an_edit() {
     let (_root, path, source) = crate::cuts::tests::session_apply::fixture(1);
     let feature = crate::cuts::tests::session_apply::selected(&source, 0).feature;
@@ -350,7 +450,7 @@ fn native_picked_face_context_suppresses_the_same_feature_as_the_tree() {
                 ..Default::default()
             },
             |ui| {
-                action = menu.draw(ui.ctx(), facts, Ok(())).0;
+                action = menu.draw(ui.ctx(), facts, Ok(commands::Access::Idle)).0;
             },
         );
         out.textures_delta.clear();
@@ -524,7 +624,7 @@ fn native_tree_deletion_refusal_confirmation_and_single_undo_publish_atomically(
                 w.scene.edit_source.as_ref(),
                 &w.sessions,
                 &w.tabs,
-                Ok(()),
+                Ok(commands::Access::Idle),
             )
             .expect("confirmed current version");
         if delete {

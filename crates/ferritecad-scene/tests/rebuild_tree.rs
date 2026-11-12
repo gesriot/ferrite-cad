@@ -32,7 +32,27 @@ fn tree_occurrences_show_errors_root_dependencies_and_body_fallback() {
             cause: chain.first,
         }],
     };
-    ferritecad_scene::project_rebuild_status(&mut tree, &objects, &report);
+    let statuses = ferritecad_scene::project_rebuild_status(&mut tree, &objects, &report);
+    assert_eq!(
+        statuses.len(),
+        3,
+        "forms include both failed and skipped objects"
+    );
+    for (id, expected) in [
+        (chain.first, "Failed: radius does not fit"),
+        (chain.second, "not built: depends on Fillet1"),
+        (chain.body, "Rolled back to Extrude1 because of Fillet1"),
+    ] {
+        let status = &statuses
+            .iter()
+            .find(|(object, _)| *object == id)
+            .expect("unbuilt object status")
+            .1;
+        assert_eq!(status, expected);
+        for row in tree.rows.iter().filter(|row| row.id.0 == id) {
+            assert_eq!(&row.note, status, "tree and form share one sentence");
+        }
+    }
     assert_eq!(tree.unbuilt_features, 2);
     let rows = |id| {
         let rows: Vec<_> = tree.rows.iter().filter(|row| row.id.0 == id).collect();

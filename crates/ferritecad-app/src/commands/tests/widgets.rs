@@ -45,7 +45,7 @@ fn frame(
     row: ModelKey,
     navigation: &mut ferritecad_ui::ModelNavigation,
     entity: bool,
-    idle: std::result::Result<(), &str>,
+    idle: Availability,
 ) -> (egui::FullOutput, Option<Action>) {
     let mut answer = None;
     let input = egui::RawInput {
@@ -107,11 +107,29 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
             selected: Some(row),
             ..Default::default()
         };
-        let mut output = frame(&ctx, vec![], &source, row, &mut navigation, entity, Ok(())).0;
+        let mut output = frame(
+            &ctx,
+            vec![],
+            &source,
+            row,
+            &mut navigation,
+            entity,
+            Ok(Access::Idle),
+        )
+        .0;
         for _ in 0..3 {
-            output = frame(&ctx, vec![], &source, row, &mut navigation, entity, Ok(())).0;
+            output = frame(
+                &ctx,
+                vec![],
+                &source,
+                row,
+                &mut navigation,
+                entity,
+                Ok(Access::Idle),
+            )
+            .0;
         }
-        for offer in offers(&source, row, Ok(())) {
+        for offer in offers(&source, row, Ok(Access::Idle)) {
             assert!(rect(&output, offer.label, false).is_positive());
         }
         let at = rect(&output, "Delete", false).center();
@@ -123,7 +141,7 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
                 row,
                 &mut navigation,
                 entity,
-                Ok(())
+                Ok(Access::Idle)
             )
             .1,
             Some(expected)
@@ -172,12 +190,21 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
                     row,
                     &mut navigation,
                     false,
-                    Ok(())
+                    Ok(Access::Idle)
                 )
                 .1,
                 Some(expected)
             );
-            let output = frame(&ctx, vec![], &source, row, &mut navigation, false, Ok(())).0;
+            let output = frame(
+                &ctx,
+                vec![],
+                &source,
+                row,
+                &mut navigation,
+                false,
+                Ok(Access::Idle),
+            )
+            .0;
             let at = rect(&output, "Ref: Selected Cut · Cut", false).center();
             frame(
                 &ctx,
@@ -186,10 +213,19 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
                 row,
                 &mut navigation,
                 false,
-                Ok(()),
+                Ok(Access::Idle),
             );
-            let output = frame(&ctx, vec![], &source, row, &mut navigation, false, Ok(())).0;
-            for offer in offers(&source, row, Ok(())) {
+            let output = frame(
+                &ctx,
+                vec![],
+                &source,
+                row,
+                &mut navigation,
+                false,
+                Ok(Access::Idle),
+            )
+            .0;
+            for offer in offers(&source, row, Ok(Access::Idle)) {
                 assert!(rect(&output, offer.label, true).is_positive());
             }
             let at = rect(&output, "Delete", true).center();
@@ -201,13 +237,100 @@ fn real_tree_buttons_context_menus_and_shortcuts_share_the_command_catalogue() {
                     row,
                     &mut navigation,
                     false,
-                    Ok(())
+                    Ok(Access::Idle)
                 )
                 .1,
                 Some(expected)
             );
         }
     }
+}
+
+#[test]
+fn the_entity_menu_uses_the_same_parameter_form_exception_and_operation_guard() {
+    let (_root, path, _) = crate::cuts::tests::session_apply::fixture(0);
+    let mut document = Document::open(&path).expect("document");
+    let id = ferritecad_types::ObjectId::new();
+    document
+        .write_changes(&[EditChange::AddParameter {
+            object: id,
+            name: "stock".into(),
+            dimension: ferritecad_types::Dimension::Length,
+            expression: "10 mm".into(),
+        }])
+        .expect("parameter");
+    let source = ExtrudeEditSource::read(&document).expect("source");
+    document.close().expect("close");
+    let row = source
+        .model_tree
+        .rows
+        .iter()
+        .find(|row| row.id.0 == id)
+        .expect("row")
+        .id;
+    let mut navigation = ferritecad_ui::ModelNavigation {
+        selected: Some(row),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let available = Ok(Access::Parameters { operation: Ok(()) });
+    for command in [Command::Delete, Command::DeleteWithDependents] {
+        let mut output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+        for _ in 0..3 {
+            output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+        }
+        let at = rect(&output, command.label(), false).center();
+        assert_eq!(
+            frame(
+                &ctx,
+                clicks(at, egui::PointerButton::Primary),
+                &source,
+                row,
+                &mut navigation,
+                true,
+                available
+            )
+            .1,
+            Some(Action {
+                tab: 7,
+                epoch: navigation.epoch,
+                row,
+                edit: command
+            })
+        );
+        let busy = Ok(Access::Parameters {
+            operation: Err("Finish the current operation, New, dialog or gesture before editing."),
+        });
+        frame(&ctx, vec![], &source, row, &mut navigation, true, busy);
+        assert_eq!(
+            frame(
+                &ctx,
+                clicks(at, egui::PointerButton::Primary),
+                &source,
+                row,
+                &mut navigation,
+                true,
+                busy
+            )
+            .1,
+            None
+        );
+    }
+    let output = frame(&ctx, vec![], &source, row, &mut navigation, true, available).0;
+    let at = rect(&output, "Edit…", false).center();
+    assert_eq!(
+        frame(
+            &ctx,
+            clicks(at, egui::PointerButton::Primary),
+            &source,
+            row,
+            &mut navigation,
+            true,
+            available
+        )
+        .1,
+        None
+    );
 }
 
 #[test]
@@ -231,7 +354,9 @@ fn the_entity_menu_closes_on_its_button_a_click_elsewhere_and_escape_only() {
             ..Default::default()
         };
         let mut answer = (None, false);
-        let mut output = ctx.run_ui(input, |ui| answer = menu.draw(ui.ctx(), &source, Ok(())));
+        let mut output = ctx.run_ui(input, |ui| {
+            answer = menu.draw(ui.ctx(), &source, Ok(Access::Idle))
+        });
         output.textures_delta.clear();
         (output, answer)
     };
@@ -330,7 +455,7 @@ fn delete_shortcut_respects_text_focus_and_a_disabled_model_panel() {
                                 solid_count: Some(1),
                             }],
                             &mut navigation,
-                            |key| offers(&source, key, Ok(())),
+                            |key| offers(&source, key, Ok(Access::Idle)),
                         );
                     });
                     if focused {

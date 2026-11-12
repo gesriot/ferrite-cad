@@ -76,6 +76,26 @@ pub(crate) fn probe(sessions: &Sessions) -> counting::SharedProbe {
     )
 }
 
+pub(crate) fn native_counted(
+    root: &Path,
+    path: &Path,
+) -> Result<(LoadedScene, OpenTab, counting::SharedProbe)> {
+    let probe = counting::SharedProbe::default();
+    let shared = Arc::clone(&probe);
+    let (scene, tab) = open_for_view_with(
+        root,
+        path,
+        &OperationContext::default(),
+        move || {
+            let mut kernel = counting::Counting::wrap(ferritecad_occt::OcctKernel::new()?);
+            kernel.probe = Some(shared);
+            Ok(kernel)
+        },
+        |kernel, bytes| kernel.inner.import_step(bytes),
+    )?;
+    Ok((scene, tab, probe))
+}
+
 pub(crate) fn fail_next(sessions: &Sessions, operation: &'static str) -> usize {
     let probe = probe(sessions);
     let mut state = probe.lock().expect("probe");

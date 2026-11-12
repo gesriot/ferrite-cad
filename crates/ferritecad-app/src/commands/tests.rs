@@ -64,14 +64,17 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
                 .iter()
                 .find(|r| r.id.0 == object)
                 .expect("row");
-            assert_eq!(command.available(&source, row.id, Ok(())), Ok(()));
+            assert_eq!(command.available(&source, row.id, Ok(Access::Idle)), Ok(()));
         }
     }
     assert_eq!(
-        Command::Edit(ModelEdit::Cut).available(&source, key, Ok(())),
+        Command::Edit(ModelEdit::Cut).available(&source, key, Ok(Access::Idle)),
         Ok(())
     );
-    assert_eq!(Command::Suppress.available(&source, key, Ok(())), Ok(()));
+    assert_eq!(
+        Command::Suppress.available(&source, key, Ok(Access::Idle)),
+        Ok(())
+    );
     let row_index = source
         .model_tree
         .rows
@@ -80,12 +83,12 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
         .expect("feature row");
     source.model_tree.rows[row_index].id = (feature, None, None);
     assert_eq!(
-        Command::Suppress.available(&source, (feature, None, None), Ok(())),
+        Command::Suppress.available(&source, (feature, None, None), Ok(Access::Idle)),
         Err("Only a feature in a Body history can be suppressed.".into())
     );
     source.model_tree.rows[row_index].id = key;
     assert_eq!(
-        Command::Unsuppress.available(&source, key, Ok(())),
+        Command::Unsuppress.available(&source, key, Ok(Access::Idle)),
         Err("This feature is not suppressed.".into())
     );
     for object in [body, sketch] {
@@ -97,12 +100,12 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
             .expect("row");
         for command in [Command::Suppress, Command::Unsuppress] {
             assert_eq!(
-                command.available(&source, row.id, Ok(())),
+                command.available(&source, row.id, Ok(Access::Idle)),
                 Err("Only a feature in a Body history can be suppressed.".into())
             );
         }
         assert_eq!(
-            Command::Edit(ModelEdit::Cut).available(&source, row.id, Ok(())),
+            Command::Edit(ModelEdit::Cut).available(&source, row.id, Ok(Access::Idle)),
             Err("This editor is unavailable for the selected object.".into())
         );
     }
@@ -112,30 +115,33 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
         .find(|o| o.id == feature)
         .expect("feature")
         .suppressed = true;
-    assert_eq!(Command::Unsuppress.available(&source, key, Ok(())), Ok(()));
     assert_eq!(
-        Command::Suppress.available(&source, key, Ok(())),
+        Command::Unsuppress.available(&source, key, Ok(Access::Idle)),
+        Ok(())
+    );
+    assert_eq!(
+        Command::Suppress.available(&source, key, Ok(Access::Idle)),
         Err("This feature is already suppressed.".into())
     );
     let missing = (ObjectId::new(), None, None);
     assert_eq!(
-        Command::Delete.available(&source, missing, Ok(())),
+        Command::Delete.available(&source, missing, Ok(Access::Idle)),
         Err("This object is no longer in the displayed model.".into())
     );
     source.refusal = Some("The document is unavailable.".into());
     assert_eq!(
-        Command::Delete.available(&source, key, Ok(())),
+        Command::Delete.available(&source, key, Ok(Access::Idle)),
         Err("The document is unavailable.".into())
     );
     source.refusal = None;
     source.objects.retain(|o| o.id != feature);
     assert_eq!(
-        Command::Delete.available(&source, key, Ok(())),
+        Command::Delete.available(&source, key, Ok(Access::Idle)),
         Err("This object is no longer in the document.".into())
     );
     source.refusal = Some("The document is unavailable.".into());
     assert_eq!(
-        Command::Delete.available(&source, key, Ok(())),
+        Command::Delete.available(&source, key, Ok(Access::Idle)),
         Err("The document is unavailable.".into())
     );
 }
@@ -181,7 +187,7 @@ fn confirmation_cancellation_sends_nothing_and_stale_confirmation_refuses() {
     );
     assert_eq!(
         confirmation()
-            .finish(true, None, &sessions, &tabs, Ok(()))
+            .finish(true, None, &sessions, &tabs, Ok(Access::Idle))
             .expect_err("lost document"),
         "The deletion belongs to an older document view."
     );
@@ -193,7 +199,7 @@ fn confirmation_cancellation_sends_nothing_and_stale_confirmation_refuses() {
     );
     assert_eq!(
         confirmation()
-            .finish(true, Some(&source), &sessions, &tabs, Ok(()))
+            .finish(true, Some(&source), &sessions, &tabs, Ok(Access::Idle))
             .expect_err("no accepted version"),
         "The command belongs to an older document view."
     );
@@ -204,7 +210,7 @@ fn catalogue_carries_the_same_labels_shortcuts_and_reasons_for_each_surface() {
     let (_root, _path, source) = crate::cuts::tests::session_apply::fixture(1);
     let saved = crate::cuts::tests::session_apply::selected(&source, 0);
     let key = (saved.feature, Some(saved.body), None);
-    let offered = offers(&source, key, Ok(()));
+    let offered = offers(&source, key, Ok(Access::Idle));
     let expected: Vec<_> = actions(&source, key)
         .into_iter()
         .map(Command::Edit)
@@ -221,17 +227,17 @@ fn catalogue_carries_the_same_labels_shortcuts_and_reasons_for_each_surface() {
     );
     for offer in &offered {
         assert_eq!(offer.label, offer.command.label());
-        assert_eq!(offer.shortcut, offer.command.shortcut());
+        assert_eq!(offer.shortcuts, offer.command.shortcuts());
         assert_eq!(
             offer.available,
-            offer.command.available(&source, key, Ok(()))
+            offer.command.available(&source, key, Ok(Access::Idle))
         );
     }
     assert_eq!(
-        Command::Delete.shortcut(),
-        Some(egui::KeyboardShortcut::new(
-            egui::Modifiers::NONE,
-            egui::Key::Delete,
-        ))
+        Command::Delete.shortcuts(),
+        &[
+            egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Delete),
+            egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Backspace),
+        ]
     );
 }

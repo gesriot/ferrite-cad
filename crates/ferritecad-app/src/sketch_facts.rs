@@ -120,7 +120,14 @@ pub(crate) struct SavedAnnulus {
     pub height_mm: Option<f64>,
 }
 impl From<ferritecad_document::ExtrudeEditSource> for Source {
-    fn from(facts: ferritecad_document::ExtrudeEditSource) -> Self {
+    fn from(mut facts: ferritecad_document::ExtrudeEditSource) -> Self {
+        // The document's numeric_form_refusal remains the only literal check.
+        // A window offers its text editor; the document and CLI keep their wording.
+        for slot in &mut facts.expression_slots {
+            if slot.refusal.is_some() {
+                slot.refusal = Some(crate::numeric::EXPRESSION_REFUSAL.into());
+            }
+        }
         let (cut_bodies, cut_features, fillet_bodies) = crate::feature_facts::read(&facts.objects);
         let mut result = Self {
             chamfer_bodies: fillet_bodies.clone(),

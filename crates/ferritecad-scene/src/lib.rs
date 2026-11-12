@@ -1024,7 +1024,8 @@ impl prepare::LoadSink for Picture<'_> {
             }
         }
         let mut source = ferritecad_document::ExtrudeEditSource::read(document)?;
-        project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
+        source.unbuilt_statuses =
+            project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
         // The shapes `prepare` tessellates: each body's built tip.
         let drawn = objects
@@ -1387,18 +1388,12 @@ fn semantic_context_identity(
 }
 
 /// Add evaluation facts to every occurrence of an object in the model tree.
+/// Return the same status sentences for all failed and skipped objects for editor forms.
 pub fn project_rebuild_status(
     tree: &mut ferritecad_document::ModelTree,
     objects: &[ObjectRecord],
     report: &ferritecad_eval::RebuildReport,
-) {
-    let name = |id: ObjectId| {
-        objects
-            .iter()
-            .find(|o| o.id == id)
-            .and_then(|o| o.name.clone())
-            .unwrap_or_else(|| id.to_string())
-    };
+) -> Vec<(ObjectId, String)> {
     tree.unbuilt_features = report
         .unbuilt()
         .iter()
@@ -1414,27 +1409,48 @@ pub fn project_rebuild_status(
             row.name = format!("{} · suppressed", row.name);
             row.note = "Suppressed; passes through the predecessor result".into();
         }
-        let note = if let Some(body) = report.degraded_bodies.iter().find(|b| b.id == id) {
-            Some(format!(
-                "Rolled back to {} because of {}",
-                body.rolled_back_to
-                    .map(&name)
-                    .unwrap_or_else(|| "no built feature".into()),
-                name(body.cause)
-            ))
-        } else if let Some(failed) = report.failed.iter().find(|f| f.id == id) {
-            Some(format!("Failed: {}", failed.message))
-        } else {
-            report
-                .skipped
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| format!("not built: depends on {}", name(s.cause)))
-        };
-        if let Some(note) = note {
+        if let Some(note) = rebuild_status_sentence(id, objects, report) {
             row.name = format!("⚠ {}", row.name);
             row.note = note;
         }
+    }
+    report
+        .failed
+        .iter()
+        .map(|failed| failed.id)
+        .chain(report.skipped.iter().map(|skipped| skipped.id))
+        .filter_map(|id| rebuild_status_sentence(id, objects, report).map(|note| (id, note)))
+        .collect()
+}
+
+fn rebuild_status_sentence(
+    id: ObjectId,
+    objects: &[ObjectRecord],
+    report: &ferritecad_eval::RebuildReport,
+) -> Option<String> {
+    let name = |id: ObjectId| {
+        objects
+            .iter()
+            .find(|object| object.id == id)
+            .and_then(|object| object.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    if let Some(body) = report.degraded_bodies.iter().find(|body| body.id == id) {
+        Some(format!(
+            "Rolled back to {} because of {}",
+            body.rolled_back_to
+                .map(&name)
+                .unwrap_or_else(|| "no built feature".into()),
+            name(body.cause)
+        ))
+    } else if let Some(failed) = report.failed.iter().find(|failed| failed.id == id) {
+        Some(format!("Failed: {}", failed.message))
+    } else {
+        report
+            .skipped
+            .iter()
+            .find(|skipped| skipped.id == id)
+            .map(|skipped| format!("not built: depends on {}", name(skipped.cause)))
     }
 }
 

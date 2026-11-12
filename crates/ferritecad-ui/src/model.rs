@@ -24,6 +24,8 @@ pub enum ModelEdit {
     Fillet,
     Chamfer,
     RevolveAngle,
+    /// Edit parameter names and expression text in the document's Parameters form.
+    Parameters,
 }
 
 impl ModelEdit {
@@ -38,6 +40,7 @@ impl ModelEdit {
             Self::Fillet => "Edit Fillet radius…",
             Self::Chamfer => "Edit Chamfer distance…",
             Self::RevolveAngle => "Edit Revolve angle…",
+            Self::Parameters => "Edit…",
         }
     }
 }
@@ -183,8 +186,10 @@ pub fn model_panel<C: Copy>(
     if ui.is_enabled() && !ui.ctx().egui_wants_keyboard_input() {
         for command in &commands {
             if command.available.is_ok()
-                && let Some(shortcut) = command.shortcut
-                && ui.input_mut(|input| input.consume_shortcut(&shortcut))
+                && command
+                    .shortcuts
+                    .iter()
+                    .any(|shortcut| ui.input_mut(|input| input.consume_shortcut(shortcut)))
             {
                 asked = Some(ModelAction {
                     tab,
@@ -203,7 +208,8 @@ pub fn model_panel<C: Copy>(
 pub struct ModelCommand<C> {
     pub command: C,
     pub label: &'static str,
-    pub shortcut: Option<egui::KeyboardShortcut>,
+    /// Equivalent keys defined by the command owner, in display order.
+    pub shortcuts: &'static [egui::KeyboardShortcut],
     pub available: Result<(), String>,
 }
 
@@ -211,8 +217,15 @@ pub fn model_commands<C: Copy>(ui: &mut egui::Ui, commands: &[ModelCommand<C>]) 
     let mut asked = None;
     for command in commands {
         let mut button = egui::Button::new(command.label);
-        if let Some(shortcut) = command.shortcut {
-            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        if !command.shortcuts.is_empty() {
+            button = button.shortcut_text(
+                command
+                    .shortcuts
+                    .iter()
+                    .map(|key| ui.ctx().format_shortcut(key))
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+            );
         }
         let response = ui.add_enabled(command.available.is_ok(), button);
         if response.clicked() {
