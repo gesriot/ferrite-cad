@@ -127,6 +127,7 @@ fn populate(document: &mut Document) -> Result<Plate> {
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(plate.extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -299,7 +300,10 @@ fn a_failed_edit_leaves_the_document_exactly_as_it_was() {
                 None,
                 7,
                 Some("Doomed"),
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             Err::<(), _>(CadError::constraint("the caller changed its mind"))
         })
@@ -438,7 +442,10 @@ fn a_kind_column_cannot_disagree_with_its_cbor_envelope() {
                 None,
                 0,
                 None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             Ok(())
         })
@@ -608,7 +615,10 @@ fn modification_time_advances_only_on_a_successful_edit() {
                 None,
                 0,
                 None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             Ok(())
         })
@@ -629,7 +639,10 @@ fn unknown_types_and_corrupt_payloads_refuse_open_without_changing_the_file() {
                     None,
                     0,
                     None,
-                    &ObjectPayload::Body(Body { tip_feature: None }),
+                    &ObjectPayload::Body(Body {
+                        tip_feature: None,
+                        rollback: None,
+                    }),
                 )?;
                 Ok(())
             })

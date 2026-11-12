@@ -2,6 +2,7 @@
 #![allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 use super::*;
 mod native;
+mod rollback;
 mod widgets;
 
 #[test]
@@ -43,6 +44,8 @@ fn every_command_shares_idle_refusals_and_states_its_object_requirement() {
         Command::DeleteWithDependents,
         Command::Suppress,
         Command::Unsuppress,
+        Command::Rollback,
+        Command::RollToEnd,
     ];
     for command in commands {
         for reason in [
@@ -219,6 +222,8 @@ fn catalogue_carries_the_same_labels_shortcuts_and_reasons_for_each_surface() {
             Command::DeleteWithDependents,
             Command::Suppress,
             Command::Unsuppress,
+            Command::Rollback,
+            Command::RollToEnd,
         ])
         .collect();
     assert_eq!(
@@ -240,4 +245,107 @@ fn catalogue_carries_the_same_labels_shortcuts_and_reasons_for_each_surface() {
             egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Backspace),
         ]
     );
+}
+
+#[test]
+fn rollback_catalogue_uses_the_body_marker_and_preserves_every_idle_guard() {
+    let (_root, path, _) = crate::cuts::tests::session_apply::fixture(2);
+    let mut doc = Document::open(&path).expect("document");
+    let source: ExtrudeEditSource = ferritecad_document::ExtrudeEditSource::read(&doc)
+        .expect("source")
+        .into();
+    let cut = crate::cuts::tests::session_apply::selected(&source, 0);
+    let body_id = cut.body;
+    let rows: Vec<_> = source
+        .model_tree
+        .rows
+        .iter()
+        .filter(|r| r.id.1 == Some(body_id) && r.id.2.is_none())
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(rows.len(), 3);
+    let base = rows[0];
+    let middle = rows[1];
+    let tip = rows[2];
+    let body = (body_id, None, None);
+    for row in [base, middle, tip, body] {
+        assert_eq!(
+            Command::RollToEnd.available(&source, row, Ok(Access::Idle)),
+            Err("This Body is not rolled back.".into())
+        );
+        for command in [Command::Rollback, Command::RollToEnd] {
+            assert!(command.shortcuts().is_empty());
+            for reason in [
+                "Apply or Cancel the open form before opening another editor.",
+                "Finish the current operation, New, dialog or gesture before editing.",
+                "Delete or Cancel the pending deletion before another command.",
+            ] {
+                assert_eq!(
+                    command.available(&source, row, Err(reason)),
+                    Err(reason.into())
+                );
+            }
+            assert_eq!(
+                command.available(&source, row, Ok(Access::Parameters { operation: Ok(()) })),
+                Err("Close the Parameters form before another command.".into())
+            );
+        }
+    }
+    assert_eq!(
+        Command::Rollback.available(&source, tip, Ok(Access::Idle)),
+        Err("The Body already shows this feature.".into())
+    );
+    for row in source
+        .model_tree
+        .rows
+        .iter()
+        .filter(|r| r.id.1.is_none() || r.id.2.is_some())
+    {
+        assert_eq!(
+            Command::Rollback.available(&source, row.id, Ok(Access::Idle)),
+            Err("Only a feature in a Body history can be rolled back to.".into())
+        );
+        if row.id != body {
+            assert_eq!(
+                Command::RollToEnd.available(&source, row.id, Ok(Access::Idle)),
+                Err("Only a Body or a feature in its history can roll to the end.".into())
+            );
+        }
+    }
+    assert_eq!(
+        Command::Rollback.available(&source, middle, Ok(Access::Idle)),
+        Ok(())
+    );
+    doc.write_changes(&[EditChange::SetRollback {
+        object: body_id,
+        feature: Some(middle.0),
+    }])
+    .expect("marker");
+    let source: ExtrudeEditSource = ferritecad_document::ExtrudeEditSource::read(&doc)
+        .expect("source")
+        .into();
+    assert_eq!(
+        Command::Rollback.available(&source, middle, Ok(Access::Idle)),
+        Err("The Body already shows this feature.".into())
+    );
+    assert_eq!(
+        Command::Rollback.available(&source, tip, Ok(Access::Idle)),
+        Err("This feature ends the history; use Roll to end.".into())
+    );
+    assert_eq!(
+        Command::Rollback.available(&source, base, Ok(Access::Idle)),
+        Ok(())
+    );
+    for row in [base, middle, tip, body] {
+        assert_eq!(
+            Command::RollToEnd.available(&source, row, Ok(Access::Idle)),
+            Ok(())
+        );
+        for offer in offers(&source, row, Ok(Access::Idle)) {
+            assert_eq!(
+                offer.available,
+                offer.command.available(&source, row, Ok(Access::Idle))
+            );
+        }
+    }
 }

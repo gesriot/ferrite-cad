@@ -1147,7 +1147,10 @@ fn replacing_an_import_with_an_ordinary_object_releases_its_source() {
                 None,
                 0,
                 Some("Native body"),
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             Ok(())
         })
@@ -1276,7 +1279,10 @@ fn a_missing_reachability_row_blocks_edits_before_gc_can_destroy_the_source() {
                 None,
                 0,
                 None,
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             Ok(())
         })

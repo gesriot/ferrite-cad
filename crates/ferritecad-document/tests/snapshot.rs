@@ -231,8 +231,10 @@ fn backup_keeps_objects_extension_tables_and_the_pinned_reading() {
     let source = root.path().join("source.fcad");
     let output = root.path().join("snapshot.fcad");
     let mut doc = Document::create(&source).expect("create");
-    let payload =
-        ferritecad_document::ObjectPayload::Body(ferritecad_document::Body { tip_feature: None });
+    let payload = ferritecad_document::ObjectPayload::Body(ferritecad_document::Body {
+        tip_feature: None,
+        rollback: None,
+    });
     let id = ferritecad_types::ObjectId::new();
     doc.write(|w| w.put_object(id, None, 21, Some("Body"), &payload))
         .expect("stored object");

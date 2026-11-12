@@ -119,6 +119,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -157,6 +158,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             Some("Plate2"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(second),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -483,7 +485,10 @@ fn a_later_failure_keeps_what_the_cache_restored() {
                 None,
                 3,
                 Some("Plate"),
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )?;
             w.remove_dependency(Dependency {
                 dependent: plate.body,

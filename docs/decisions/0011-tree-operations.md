@@ -4,7 +4,8 @@
 
 Deleting and suppressing history entries changes the same document used by CLI edits and live
 sessions. Keep the session's publication, Undo and refusal rules from ADR 0005, ADR 0006 D2/D5
-and ADR 0010. Window commands and rollback insertion remain separate work.
+and ADR 0010. Window commands use the common catalogue;
+[ADR 0012](0012-history-rollback.md) defines rollback and insertion.
 
 ## Removal
 

@@ -26,6 +26,7 @@ pub fn added_constraints(changes: &[crate::EditChange]) -> Vec<&crate::SketchCon
             | crate::EditChange::RenameParameter { .. }
             | crate::EditChange::RemoveObject { .. }
             | crate::EditChange::SetSuppressed { .. }
+            | crate::EditChange::SetRollback { .. }
             | crate::EditChange::SetExpressionText { .. }
             | crate::EditChange::SetKeepSelection { .. }
             | crate::EditChange::AddDatumPlane { .. }

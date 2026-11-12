@@ -265,6 +265,7 @@ fn write_annular_document(
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

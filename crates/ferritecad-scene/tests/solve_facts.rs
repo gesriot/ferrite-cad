@@ -225,6 +225,7 @@ fn write(
                     Some("Plate"),
                     &ObjectPayload::Body(Body {
                         tip_feature: Some(extrude),
+                        rollback: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {

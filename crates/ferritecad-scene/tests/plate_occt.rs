@@ -370,6 +370,7 @@ fn curve_end_derivations_separate_the_two_corners_of_a_lens() {
                 Some("Lens"),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(extrude),
+                    rollback: None,
                 }),
             )?;
             w.add_dependency(Dependency {

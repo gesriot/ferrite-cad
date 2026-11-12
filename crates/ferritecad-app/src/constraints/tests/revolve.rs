@@ -107,6 +107,7 @@ pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> Ob
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(revolve),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

@@ -9,7 +9,7 @@ use ferritecad_viewport::{
 use ferritecad_viewport_gpu::Renderer;
 use std::sync::Arc;
 
-fn renderer() -> Result<Option<Renderer>> {
+pub(super) fn renderer() -> Result<Option<Renderer>> {
     if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
         return Ok(None);
     }

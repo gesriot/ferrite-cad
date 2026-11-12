@@ -641,6 +641,7 @@ fn gate(name: &str) {
             | ferritecad_document::EditChange::RenameParameter { .. }
             | ferritecad_document::EditChange::RemoveObject { .. }
             | ferritecad_document::EditChange::SetSuppressed { .. }
+            | ferritecad_document::EditChange::SetRollback { .. }
             | ferritecad_document::EditChange::SetExpressionText { .. }
             | ferritecad_document::EditChange::SetKeepSelection { .. }
             | ferritecad_document::EditChange::AddDatumPlane { .. }

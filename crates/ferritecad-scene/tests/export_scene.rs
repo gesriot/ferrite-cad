@@ -384,6 +384,7 @@ fn several_bodies(path: &Path, count: usize) -> Vec<ObjectId> {
                     Some("Plate"),
                     &ObjectPayload::Body(Body {
                         tip_feature: Some(extrude),
+                        rollback: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {
@@ -615,7 +616,10 @@ fn a_body_with_nothing_built_into_it_is_not_exported_and_is_not_a_failure() {
                 None,
                 100,
                 Some("Not built yet"),
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )
         })
         .expect("adds an empty body");
@@ -1763,6 +1767,7 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
                     Some("Native"),
                     &ObjectPayload::Body(Body {
                         tip_feature: Some(extrude),
+                        rollback: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {

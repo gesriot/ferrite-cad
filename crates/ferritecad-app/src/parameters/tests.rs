@@ -245,6 +245,8 @@ fn parameters_catalogue_exception_checks_both_command_and_kind_then_operation() 
         Command::DeleteWithDependents,
         Command::Suppress,
         Command::Unsuppress,
+        Command::Rollback,
+        Command::RollToEnd,
     ];
     let objects: Vec<_> = w
         .scene

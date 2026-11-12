@@ -91,7 +91,8 @@ fn ordered_additions_dependencies_names_and_end_transitions() {
     assert_eq!(
         added.object(b).expect("body").expect("row").payload,
         ObjectPayload::Body(Body {
-            tip_feature: Some(second.feature)
+            tip_feature: Some(second.feature),
+            rollback: None,
         })
     );
     let refs = verify(&dest);
@@ -597,6 +598,7 @@ fn stored_history_integrity_rejects_forks_and_shared_bodies() {
                 } else {
                     base
                 }),
+                rollback: None,
             })
         };
         d.write(|w| {

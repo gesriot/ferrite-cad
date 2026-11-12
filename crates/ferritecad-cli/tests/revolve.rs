@@ -346,6 +346,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(revolve),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

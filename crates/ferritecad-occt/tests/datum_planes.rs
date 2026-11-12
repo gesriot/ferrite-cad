@@ -424,6 +424,7 @@ fn partial_revolve_caps_support_planes_and_curved_faces_refuse() {
         &mut doc,
         ObjectPayload::Body(Body {
             tip_feature: Some(feature),
+            rollback: None,
         }),
     );
     let built = build(&doc, &mut kernel);

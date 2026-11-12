@@ -157,6 +157,7 @@ fn body(d: &mut Document, tip: ObjectId) {
         d,
         ObjectPayload::Body(Body {
             tip_feature: Some(tip),
+            rollback: None,
         }),
     );
 }

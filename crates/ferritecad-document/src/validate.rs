@@ -81,6 +81,7 @@ impl ValidationReport {
 pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
     let mut report = ValidationReport::default();
     let objects = document.objects()?;
+    crate::history::check_markers(&objects)?;
     check_occurrence_ownership(&objects, &mut report);
     let by_id: BTreeMap<ObjectId, &crate::document::ObjectRecord> =
         objects.iter().map(|o| (o.id, o)).collect();

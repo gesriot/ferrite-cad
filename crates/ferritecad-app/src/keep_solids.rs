@@ -103,7 +103,7 @@ impl Commands {
             for object in &source.objects {
                 let (target, label) = match &object.payload {
                     ObjectPayload::Body(body) => {
-                        let Some(tip) = body.tip_feature else {
+                        let Some(tip) = body.shown_feature() else {
                             continue;
                         };
                         if source.objects.iter().any(|o| {
@@ -151,4 +151,113 @@ impl Commands {
 enum Target {
     Body(ObjectId),
     Feature(ObjectId),
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "widget witnesses fail at the missing control")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rolled_back_body_offers_all_at_the_shown_result_despite_a_later_keep_feature() {
+        let (_root, path, _) = crate::cuts::tests::session_apply::fixture(1);
+        let mut doc = ferritecad_document::Document::open(&path).expect("document");
+        let body = ferritecad_fixtures::feature_changes::body(&doc).expect("Body");
+        let (base, _, _) =
+            ferritecad_fixtures::feature_changes::base_profile(&doc, body).expect("base");
+        let tip = ObjectId::new();
+        doc.write_changes(&[
+            EditChange::AddFeature {
+                object: tip,
+                body,
+                name: Some("Keep solids".into()),
+                feature: FeatureAddition::KeepSolids {
+                    selection: KeepSelection::All,
+                },
+            },
+            EditChange::SetRollback {
+                object: body,
+                feature: Some(base),
+            },
+        ])
+        .expect("marked Body ending in KeepSolids");
+        let source = Source::read(&doc).expect("facts");
+        let ctx = egui::Context::default();
+        let mut commands = Commands {
+            ready: true,
+            ..Default::default()
+        };
+        let mut draw = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| commands.draw(ui, Some(&path), Some(&source)),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let label = |output: &egui::FullOutput, text: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == text => {
+                        Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing widget {text}"))
+        };
+        let click = |at| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        let output = draw(vec![]);
+        draw(click(label(&output, "Keep solid pieces")));
+        let mut output = draw(vec![]);
+        for _ in 0..4 {
+            output = draw(vec![]);
+        }
+        label(&output, &format!("Body same — {body}"));
+        draw(click(label(&output, "All")));
+        let request = commands.take_request().expect("All for the Body");
+        let inserted = request.changes[0].object();
+        assert!(matches!(&request.changes[..], [EditChange::AddFeature {
+            body: target, feature: FeatureAddition::KeepSolids { selection: KeepSelection::All }, ..
+        }] if *target == body));
+        doc.write_changes(&request.changes).expect("insert All");
+        assert_eq!(
+            doc.object(inserted)
+                .expect("read")
+                .expect("inserted")
+                .payload
+                .previous_feature(),
+            Some(base)
+        );
+        let ObjectPayload::Body(saved) = doc.object(body).expect("read").expect("Body").payload
+        else {
+            unreachable!("Body")
+        };
+        assert_eq!(saved.rollback, Some(inserted));
+        assert_eq!(saved.tip_feature, Some(tip));
+    }
 }

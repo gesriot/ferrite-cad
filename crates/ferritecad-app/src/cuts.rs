@@ -599,7 +599,7 @@ impl Subject {
                     plane: target.plane,
                     boundary: target.boundary.clone(),
                     height_mm: target.height_mm,
-                    modifies: target.tip_feature,
+                    modifies: target.shown_feature,
                     editing: None,
                 })
             }

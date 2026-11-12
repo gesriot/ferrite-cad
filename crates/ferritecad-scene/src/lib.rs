@@ -1013,7 +1013,10 @@ impl prepare::LoadSink for Picture<'_> {
         for object in objects {
             match &object.payload {
                 ObjectPayload::Body(body) => {
-                    if let Some(key) = body.tip_feature.and_then(|tip| built.result_key(tip)) {
+                    if let Some(key) = body
+                        .shown_feature()
+                        .and_then(|shown| built.result_key(shown))
+                    {
                         self.body_results.insert(object.id, key);
                     }
                 }
@@ -1027,7 +1030,7 @@ impl prepare::LoadSink for Picture<'_> {
         source.unbuilt_statuses =
             project_rebuild_status(&mut source.model_tree, objects, &self.rebuild);
         self.edit_source = Some(source);
-        // The shapes `prepare` tessellates: each body's built tip.
+        // The shapes `prepare` tessellates: each Body's shown result.
         let drawn = objects
             .iter()
             .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
@@ -2934,6 +2937,7 @@ mod tests {
                         Some("Plate"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(extrude),
+                            rollback: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {
@@ -4986,7 +4990,10 @@ mod tests {
                     None,
                     1,
                     Some("Body1"),
-                    &ObjectPayload::Body(Body { tip_feature: None }),
+                    &ObjectPayload::Body(Body {
+                        tip_feature: None,
+                        rollback: None,
+                    }),
                 )
             })
             .expect("writes the document");
@@ -5389,6 +5396,7 @@ mod tests {
                     Some("Plate"),
                     &ObjectPayload::Body(Body {
                         tip_feature: Some(extrude),
+                        rollback: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {

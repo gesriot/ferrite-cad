@@ -212,6 +212,10 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             format!("keep {}, previous {}", keep.selection, keep.previous)
         }
         ObjectPayload::Body(b) => match b.tip_feature {
+            Some(tip) if b.rollback.is_some() => format!(
+                "tip feature {tip}, rollback {}",
+                b.shown_feature().expect("marker")
+            ),
             Some(tip) => format!("tip feature {tip}"),
             None => "empty".to_owned(),
         },

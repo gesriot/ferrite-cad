@@ -691,6 +691,7 @@ pub(crate) mod tests {
                 Some("Plate"),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(extrude),
+                    rollback: None,
                 }),
             )?;
             for (dependent, dependency, role) in [

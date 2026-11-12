@@ -204,6 +204,7 @@ fn store_plate(
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(plate.extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {

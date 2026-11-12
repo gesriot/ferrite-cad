@@ -227,6 +227,7 @@ fn native_single_vertex_of_the_second_body_moves_in_a_mixed_transaction() {
                 Some("Second body"),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(feature),
+                    rollback: None,
                 }),
             )?;
             w.add_dependency(Dependency {

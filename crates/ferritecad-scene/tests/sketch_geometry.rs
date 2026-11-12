@@ -281,6 +281,7 @@ fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
                         Some("Plate"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(extrude),
+                            rollback: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {

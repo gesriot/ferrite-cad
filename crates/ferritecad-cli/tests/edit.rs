@@ -218,6 +218,7 @@ fn native_feature_slots_round_trip_and_the_second_body_is_editable() {
                         Some("Second body"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(chosen),
+                            rollback: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {
@@ -379,6 +380,7 @@ fn polygon(path: &Path, constraints: bool, revolve: bool) {
             None,
             &ObjectPayload::Body(Body {
                 tip_feature: Some(feature),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {

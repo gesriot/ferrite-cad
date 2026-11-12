@@ -321,6 +321,7 @@ pub fn write_plate(path: &Path) -> Result<()> {
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -528,6 +529,7 @@ pub fn write_fillet_chain(path: &Path, radius: f64) -> Result<FilletChain> {
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(second),
+                rollback: None,
             }),
         )?;
         w.remove_dependency(Dependency {
@@ -673,6 +675,7 @@ pub fn added_constraints(
             | ferritecad_document::EditChange::RenameParameter { .. }
             | ferritecad_document::EditChange::RemoveObject { .. }
             | ferritecad_document::EditChange::SetSuppressed { .. }
+            | ferritecad_document::EditChange::SetRollback { .. }
             | ferritecad_document::EditChange::SetExpressionText { .. }
             | ferritecad_document::EditChange::SetKeepSelection { .. }
             | ferritecad_document::EditChange::AddDatumPlane { .. }

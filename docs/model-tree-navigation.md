@@ -47,6 +47,17 @@ intermediate bodies or geometry highlights are built for an old history feature.
 CLI, jobs, schema, FFI, solver, UUIDs and feature semantics are unchanged. No new
 dependencies, persistence, rename/reorder/suppression or STEP assembly explorer.
 
+## Stored rollback position
+
+The stored-only projection appends ` · rolled back` to a Body with a marker. Its
+note is `Shows the result of {feature}; 1 later feature is not shown.` or
+`Shows the result of {feature}; {n} later features are not shown.` Each later
+feature appends ` · not shown`. Rows still follow the complete predecessor chain,
+including after insertion; stored object order is not history order. Rebuild
+warnings add `⚠` and replace the note with the existing failure sentence while
+retaining these suffixes. Suppression and the deliberate marker do not introduce
+a new failure status. See [ADR 0012](decisions/0012-history-rollback.md).
+
 ## Verification
 
 Executed locally on macOS arm64, with serial builds (`CARGO_BUILD_JOBS=1`) and

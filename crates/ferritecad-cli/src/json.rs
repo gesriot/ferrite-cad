@@ -262,6 +262,8 @@ struct Body {
     body_id: ObjectId,
     name: Option<String>,
     history: Vec<ObjectId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rollback: Option<ObjectId>,
 }
 
 pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
@@ -672,6 +674,10 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .map(|o| Body {
                 body_id: o.id,
                 name: o.name.clone(),
+                rollback: match &o.payload {
+                    ferritecad_document::ObjectPayload::Body(body) => body.rollback,
+                    _ => unreachable!("Body rows"),
+                },
                 history: source
                     .model_tree
                     .rows

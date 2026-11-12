@@ -68,6 +68,7 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId, Vec<StableEntityId>) {
                 3,
                 ObjectPayload::Body(Body {
                     tip_feature: Some(extrude),
+                    rollback: None,
                 }),
             ),
         ] {

@@ -217,6 +217,7 @@ impl Plate {
                     Some("Body"),
                     &ObjectPayload::Body(Body {
                         tip_feature: Some(extrude),
+                        rollback: None,
                     }),
                 )?;
                 for (dependent, dependency, role) in [
@@ -886,7 +887,9 @@ fn fillet_at(f: &Fixture, corner: [f64; 2], r: f64, name: &str) -> (PathBuf, Mea
     let body = objects.iter().find(|o| o.id == body_id).expect("Body");
     assert!(matches!(
         body.payload,
-        ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == fillet_id
+        ObjectPayload::Body(ferritecad_document::Body {
+            tip_feature: Some(t), ..
+        }) if t == fillet_id
     ));
     let refs = crate::names::snapshot(&d);
     crate::names::assert_added(&source_refs, &refs, fillet_id, 7);
@@ -4616,7 +4619,9 @@ mod sequential {
 
         assert!(objects.iter().any(|o| matches!(
             o.payload,
-            ObjectPayload::Body(ferritecad_document::Body { tip_feature: Some(t) }) if t == second_id
+            ObjectPayload::Body(ferritecad_document::Body {
+                tip_feature: Some(t), ..
+            }) if t == second_id
         )));
         let now = crate::names::snapshot(&d);
         d.close().expect("close");

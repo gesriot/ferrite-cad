@@ -117,7 +117,8 @@ UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o ne
 `cut-circular-copy source.fcad --body UUID --expect-version HASH --request
 request.json -o copy.fcad [--json]` вырезает круглый инструмент на базовой
 XY-плоскости детали на конечную глубину вдоль +Z. Body сохраняет свой UUID, а
-его tip становится новой фичей; история выражена явно
+без маркера отката его tip становится новой фичей; с маркером фича вставляется
+после него, а маркер переходит на новую фичу. История выражена явно
 ([ADR 4](decisions/0004-feature-predecessor.md)).
 §26C расширяет ту же команду на [второй отдельный circular Cut](generic-sweeps.md):
 все четыре сочетания through/pocket, зазор между дисками строго больше 1e-7 mm,
@@ -664,10 +665,19 @@ See [ADR 0008](decisions/0008-multibody-results.md) and the [recipe](keep-solids
 ## Tree operations
 
 The common `edit` request accepts `remove_object` for every object kind and
-`set_suppressed` for history features. Removal checks the entire batch, rewrites
+`set_suppressed` for history features, plus `set_rollback` and `clear_rollback` for
+Bodies. Removal checks the entire batch, rewrites
 predecessor links and Body tips, and refuses with every remaining dependent.
 Deleting an import also releases source bytes after their last use.
 Suppression passes through the predecessor result without running that feature.
 Both `rebuild --cold` and transaction reports identify suppressed features.
 The window offers the same operations as [model commands](document-session.md#model-commands).
 See [transaction examples](edit-transactions.md) and [ADR 0011](decisions/0011-tree-operations.md).
+
+
+Rollback persists the Body's shown feature while retaining and rebuilding its
+whole history. `inspect` and `inspect --json` expose the marker only when present;
+`rebuild` names both the tip and shown feature. `add_feature` inserts after the
+marker and advances it, or appends when no marker exists. STL, FBX and STEP export
+the shown result; the existing degraded-Body export refusal remains in force.
+See [rollback transactions](edit-transactions.md#rollback-and-insertion).

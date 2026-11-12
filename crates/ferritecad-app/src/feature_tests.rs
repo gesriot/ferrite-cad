@@ -32,6 +32,7 @@ impl RequestFacts for EditRequest {
                 | EditChange::RenameParameter { .. }
                 | EditChange::RemoveObject { .. }
                 | EditChange::SetSuppressed { .. }
+                | EditChange::SetRollback { .. }
                 | EditChange::SetExpressionText { .. }
                 | EditChange::SetKeepSelection { .. }
                 | EditChange::AddDatumPlane { .. }
@@ -82,6 +83,7 @@ impl RequestFacts for EditRequest {
                 | EditChange::RenameParameter { .. }
                 | EditChange::RemoveObject { .. }
                 | EditChange::SetSuppressed { .. }
+                | EditChange::SetRollback { .. }
                 | EditChange::SetExpressionText { .. }
                 | EditChange::SetKeepSelection { .. }
                 | EditChange::AddDatumPlane { .. }
@@ -123,6 +125,7 @@ impl RequestFacts for EditRequest {
                 | EditChange::RenameParameter { .. }
                 | EditChange::RemoveObject { .. }
                 | EditChange::SetSuppressed { .. }
+                | EditChange::SetRollback { .. }
                 | EditChange::SetExpressionText { .. }
                 | EditChange::SetKeepSelection { .. }
                 | EditChange::AddDatumPlane { .. }
@@ -164,6 +167,7 @@ impl RequestFacts for EditRequest {
                 | EditChange::RenameParameter { .. }
                 | EditChange::RemoveObject { .. }
                 | EditChange::SetSuppressed { .. }
+                | EditChange::SetRollback { .. }
                 | EditChange::SetExpressionText { .. }
                 | EditChange::SetKeepSelection { .. }
                 | EditChange::AddDatumPlane { .. }
@@ -194,6 +198,7 @@ impl RequestFacts for EditRequest {
                 | EditChange::RenameParameter { .. }
                 | EditChange::RemoveObject { .. }
                 | EditChange::SetSuppressed { .. }
+                | EditChange::SetRollback { .. }
                 | EditChange::SetExpressionText { .. }
                 | EditChange::SetKeepSelection { .. }
                 | EditChange::AddDatumPlane { .. }

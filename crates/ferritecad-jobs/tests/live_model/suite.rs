@@ -484,3 +484,6 @@ fn parameter_key_uses_value_and_no_change_keeps_the_accepted_picture() -> Result
     assert!(!live.session().can_undo());
     Ok(())
 }
+
+#[path = "rollback.rs"]
+mod rollback;

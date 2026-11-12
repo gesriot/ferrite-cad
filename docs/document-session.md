@@ -57,6 +57,8 @@ supported inputs and apply through the same session as before.
 | Delete with dependents… | Lists every object to remove by name and kind before confirmation. |
 | Suppress | An unsuppressed feature belonging to a Body history. |
 | Unsuppress | A suppressed feature belonging to a Body history. |
+| Roll back to here | A history feature before the tip and different from the shown feature; stores the Body marker. |
+| Roll to end | A rolled-back Body or any of its history features; clears the marker. |
 
 Delete also uses Delete and Backspace when a text field does not own keyboard input.
 The menu of a picked 3D entity closes on a command, a click elsewhere or Escape.
@@ -81,7 +83,10 @@ not highlight its geometry in reverse.
 A failed sketch's note and Sketch solves panel name conflicting constraints by
 rule, curves and UUID, using the facts already produced by evaluation. The document
 still opens, and dependent features retain their not-built status. Rollback and
-insertion remain separate work.
+insertion use [ADR 0012](decisions/0012-history-rollback.md). Moving the marker
+retains the full evaluated history and changes the shown result. Cut, Fillet,
+Chamfer and KeepSolids insert after the marker, advancing it. The two rollback
+commands have no shortcuts and retain the catalogue's form and operation guards.
 
 ## Parameters
 

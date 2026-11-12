@@ -369,6 +369,7 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
                 Some("Second"),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(second_feature),
+                    rollback: None,
                 }),
             )?;
             w.add_dependency(Dependency {
@@ -431,6 +432,7 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
                 Some(&first_text),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(second_feature),
+                    rollback: None,
                 }),
             )?;
             Ok(())

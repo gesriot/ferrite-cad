@@ -683,13 +683,34 @@ impl Sketch {
     }
 }
 
-/// A feature history exposing the whole solid set of its tip.
+/// A complete feature history exposing the solid set at its shown position.
 /// Rebuild never creates document objects for disconnected pieces.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Body {
-    /// The last feature that contributed to this body, or `None` while it is
-    /// still empty.
+    /// The last feature of the complete history, or `None` for an empty Body.
     pub tip_feature: Option<ObjectId>,
+    /// An earlier history feature to show and insert after; absence shows the tip.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "rollback_id"
+    )]
+    pub rollback: Option<ObjectId>,
+}
+
+fn rollback_id<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<ObjectId>, D::Error> {
+    ObjectId::deserialize(d).map(Some).map_err(|error| {
+        serde::de::Error::custom(format!("rollback must name a feature UUID: {error}"))
+    })
+}
+
+impl Body {
+    /// The result displayed and consumed by new feature additions, without truncating history.
+    pub fn shown_feature(&self) -> Option<ObjectId> {
+        self.rollback.or(self.tip_feature)
+    }
 }
 
 /// How far an extrusion runs.
@@ -1809,7 +1830,10 @@ mod tests {
                 }],
                 constraints: Vec::new(),
             }),
-            ObjectPayload::Body(Body { tip_feature: None }),
+            ObjectPayload::Body(Body {
+                tip_feature: None,
+                rollback: None,
+            }),
             ObjectPayload::Extrude(sample_extrude()),
         ];
 
