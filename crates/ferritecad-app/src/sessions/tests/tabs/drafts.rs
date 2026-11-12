@@ -26,6 +26,7 @@ mod open_over_new;
 mod quit_forms;
 /// §30W: window New stays whole through Quit.
 mod quit_new;
+mod tree_commands;
 /// §31M: the saved angles of a constraints form follow its tab.
 mod turn_form;
 

@@ -129,12 +129,13 @@ pub struct ViewportInput {
     /// In the window's pixels, as the events gave it.
     pointer: Option<(f32, f32)>,
     dragging: Option<PointerButton>,
-    /// Where an unclaimed primary press landed, in the window's pixels, while
+    /// Where an unclaimed selection or context press landed, in the window's pixels, while
     /// it might still become a click rather than a drag.
     pressed_at: Option<(f32, f32)>,
     /// Where the user asked what something is, in the picture's own pixels,
     /// until somebody answers.
     pick: Option<(f32, f32)>,
+    context_pick: Option<(f32, f32)>,
     /// What the pointer is asking about, until somebody answers. Overwritten
     /// rather than queued: a hand crossing the window asks about where it
     /// stopped, and answering every place it passed through would be a
@@ -165,6 +166,7 @@ impl ViewportInput {
             dragging: None,
             pressed_at: None,
             pick: None,
+            context_pick: None,
             hover: Hover::Unchanged,
             magnified: None,
             // The first frame has never been drawn, so it is owed.
@@ -209,6 +211,7 @@ impl ViewportInput {
         self.by_hand(|camera| camera.resize(region.width(), region.height()));
         self.region = region;
         self.pick = None;
+        self.context_pick = None;
         self.pressed_at = None;
         self.hover = Hover::Cleared;
         self.redraw = true;
@@ -353,15 +356,16 @@ impl ViewportInput {
                 // A press begins either a gesture or a click, and neither is a
                 // question about what is merely under the pointer.
                 self.hover = Hover::Cleared;
-                if button == PointerButton::Primary {
+                if matches!(button, PointerButton::Primary | PointerButton::Secondary) {
                     self.pressed_at = self.pointer;
                 }
             }
             ViewportEvent::PointerReleased(button) => {
-                if self.dragging == Some(button) {
-                    self.dragging = None;
+                if self.dragging != Some(button) {
+                    return;
                 }
-                if button != PointerButton::Primary {
+                self.dragging = None;
+                if button == PointerButton::Middle {
                     return;
                 }
                 // A press and a release in nearly the same place is a question
@@ -372,7 +376,12 @@ impl ViewportInput {
                     && (to_x - from_x).abs() <= CLICK_SLOP
                     && (to_y - from_y).abs() <= CLICK_SLOP
                 {
-                    self.pick = Some(self.region.local((from_x, from_y)));
+                    let at = Some(self.region.local((from_x, from_y)));
+                    match button {
+                        PointerButton::Primary => self.pick = at,
+                        PointerButton::Secondary => self.context_pick = at,
+                        PointerButton::Middle => unreachable!("handled above"),
+                    }
                     // The application answers picks while drawing a frame.
                     // Without a redraw request here, an ordinary click would
                     // be answered only if egui or the OS happened to ask for
@@ -544,6 +553,7 @@ impl ViewportInput {
         }
         self.hover = Hover::Cleared;
         self.pick = None;
+        self.context_pick = None;
         self.pressed_at = None;
         self.redraw = true;
     }
@@ -613,6 +623,7 @@ impl ViewportInput {
         self.dragging = None;
         self.pressed_at = None;
         self.pick = None;
+        self.context_pick = None;
         // A question about a picture nobody is looking at any more.
         self.hover = Hover::Cleared;
         self.redraw = true;
@@ -641,6 +652,11 @@ impl ViewportInput {
     /// rebuilding, or an interface that wants to animate.
     pub fn request_redraw(&mut self) {
         self.redraw = true;
+    }
+
+    /// Takes the place whose model commands the user requested.
+    pub fn take_context_pick(&mut self) -> Option<(f32, f32)> {
+        self.context_pick.take()
     }
 
     /// Takes the place the user asked about, if they asked.
@@ -2254,6 +2270,46 @@ mod tests {
         input.accept_load(Ok(empty)).expect("an empty scene loads");
         assert_eq!(input.camera().eye(), before.eye());
         assert_eq!(input.camera().target(), before.target());
+    }
+
+    #[test]
+    fn context_click_is_distinct_from_selection_pan_and_unclaimed_releases() {
+        let mut input = ready();
+        let at = ViewportEvent::PointerMoved { x: 120., y: 80. };
+        let press = ViewportEvent::PointerPressed(PointerButton::Secondary);
+        let release = ViewportEvent::PointerReleased(PointerButton::Secondary);
+        input.handle(at, false);
+        let camera = *input.camera();
+        input.handle(press, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(input.take_pick(), None);
+        input.handle(release, false);
+        assert_eq!(*input.camera(), camera);
+        assert_eq!(input.take_context_pick(), Some((120., 80.)));
+        assert_eq!(input.take_context_pick(), None);
+        assert_eq!(input.take_pick(), None);
+        for claimed in [true, false] {
+            input.handle(at, false);
+            input.handle(press, claimed);
+            if !claimed {
+                input.handle(ViewportEvent::PointerMoved { x: 160., y: 80. }, false);
+            }
+            input.handle(release, false);
+            assert_eq!(input.take_context_pick(), None);
+        }
+        input.handle(at, false);
+        input.handle(press, false);
+        input.handle(ViewportEvent::GestureCancelled, false);
+        input.handle(release, false);
+        assert_eq!(input.take_context_pick(), None);
+        input.handle(at, false);
+        input.handle(press, false);
+        input.handle(release, false);
+        input.forget_pending();
+        assert_eq!(input.take_context_pick(), None);
     }
 
     /// Presses and releases at one place, which is what a click is.

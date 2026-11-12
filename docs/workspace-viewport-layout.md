@@ -318,8 +318,7 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
   window is no longer the middle of the model.
 * Everything that expects **controls over the model**: the toolbar, tab row,
   Create/Edit buttons, definitions and inspector are no longer stacked in the root
-  interface under the toolbar (README's "under the toolbar" for `Export` and
-  `Open failed` was corrected; the tab row of `document-tabs.md` is still directly
+  interface under the toolbar (the tab row of `document-tabs.md` is still directly
   beneath the toolbar buttons). §31A's step 3 ("existing definitions, Frame/Hide/Isolate
   and topology inspector remain reachable") now means the top strip and **Details**.
 * **Model** was at x ≈ 260 pt wide; it is 230 pt by default, and **Actions** is a

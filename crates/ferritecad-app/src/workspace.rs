@@ -32,11 +32,11 @@ use std::path::Path;
 
 use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_ui::{
-    Activity, Chosen, ModelRow, NewChoice, ReplaceChoice, RowVisibility, Selected, SolvedSketch,
+    Activity, ModelRow, NewChoice, ReplaceChoice, RowVisibility, Selected, SolvedSketch,
 };
 use ferritecad_viewport::PixelRect;
 
-use crate::{Sections, in_tab_scope, model_tree, sketch::accepted::Accepted};
+use crate::{Sections, commands, in_tab_scope, sketch::accepted::Accepted};
 
 /// The most room the action buttons and the tabs may take at the top, each, in
 /// points: two rows. The buttons wrap into them at ordinary widths so that all
@@ -103,7 +103,7 @@ pub(crate) struct View<'a> {
 /// What the person asked for in this frame, and where the picture is.
 #[derive(Debug)]
 pub(crate) struct Answers {
-    pub(crate) chosen: Chosen,
+    pub(crate) chosen: commands::Chosen,
     pub(crate) replace: ReplaceChoice,
     pub(crate) asked: NewChoice,
     pub(crate) pointed_row: Option<usize>,
@@ -114,7 +114,7 @@ pub(crate) struct Answers {
 impl Default for Answers {
     fn default() -> Self {
         Self {
-            chosen: Chosen::default(),
+            chosen: commands::Chosen::default(),
             replace: ReplaceChoice::default(),
             asked: NewChoice::default(),
             pointed_row: None,
@@ -197,7 +197,7 @@ fn width_range(
 /// Lays the whole interface out and draws it, and returns what was asked for.
 pub(crate) fn compose(ui: &mut egui::Ui, view: &mut View<'_>) -> Answers {
     let mut answers = Answers::default();
-    let modal = view.sections.closing_form;
+    let modal = view.sections.closing_form || view.sections.model_confirmation.is_some();
     let activity = view.activity;
     let window = ui.available_width();
 
@@ -212,7 +212,7 @@ pub(crate) fn compose(ui: &mut egui::Ui, view: &mut View<'_>) -> Answers {
                     .max_height(TOOLBAR_MAX_HEIGHT)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        answers.chosen = ferritecad_ui::toolbar_actions(ui, activity);
+                        answers.chosen.window = ferritecad_ui::toolbar_actions(ui, activity);
                     });
                 let tabs = view.sections.tabs;
                 egui::ScrollArea::vertical()
@@ -276,6 +276,19 @@ pub(crate) fn compose(ui: &mut egui::Ui, view: &mut View<'_>) -> Answers {
             });
         });
 
+    if !modal
+        && let Some(menu) = view.sections.model_menu.as_ref()
+        && let Some(source) = view.scene.edit_source
+    {
+        let (asked, close) = menu.draw(ui.ctx(), source, view.sections.model_available);
+        if let Some(action) = asked {
+            answers.chosen.model = Some(action);
+        }
+        if close || asked.is_some() {
+            *view.sections.model_menu = None;
+        }
+    }
+
     // What no panel covers. Deliberately not a panel of its own: see the module
     // documentation.
     answers.central = ui.available_rect_before_wrap();
@@ -294,18 +307,11 @@ fn model(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
     };
     let source = view.scene.edit_source;
     let rows = model_rows(source);
-    answers.chosen.model = ferritecad_ui::model_panel(
-        ui,
-        *tab,
-        &rows,
-        navigation,
-        |key| {
-            source
-                .map(|source| model_tree::actions(source, key))
-                .unwrap_or_default()
-        },
-        available,
-    );
+    answers.chosen.model = ferritecad_ui::model_panel(ui, *tab, &rows, navigation, |key| {
+        source
+            .map(|source| commands::offers(source, key, available))
+            .unwrap_or_default()
+    });
 }
 
 pub(crate) fn model_rows(source: Option<&ExtrudeEditSource>) -> Vec<ModelRow<'_>> {
@@ -336,6 +342,10 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
     let sections = &mut view.sections;
     let scene = &view.scene;
 
+    if let Some(confirmation) = sections.model_confirmation {
+        answers.chosen.confirm_delete = confirmation.draw(ui);
+        return;
+    }
     if sections.closing_form {
         // Only the question. The rest of the window is drawn disabled, and its
         // forms are not drawn at all: they are not what is being asked.
@@ -373,7 +383,6 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         }
         ferritecad_ui::create_panel(ui, sections.created);
         ferritecad_ui::export_panel(ui, sections.export);
-        ferritecad_ui::open_failure_panel(ui, sections.failure);
     });
 
     // Getting work back: the last window's files, crash copies, checkpoints.
@@ -451,7 +460,7 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         ui.separator();
         // What the rebuild behind this picture found out about the drawings it
         // was built from. Not an inspector and not part of the choice.
-        ferritecad_ui::sketch_solves_panel(ui, scene.solves);
+        crate::sketch_conflicts::panel(ui, scene.solves, scene.edit_source);
     });
 }
 
@@ -484,7 +493,6 @@ pub(crate) fn quiet_layout(
         },
         held_back: false,
         document_outcome: "",
-        failure: None,
         export: None,
         replacing: None,
         form,
@@ -502,6 +510,8 @@ pub(crate) fn quiet_layout(
         },
         forms_scope: 0,
         model: None,
+        model_confirmation: None,
+        model_menu: &mut None,
         model_available: Ok(()),
     };
     let mut view = View {

@@ -228,7 +228,13 @@ fn visible_count(source: &crate::sketch_facts::Source, expected: &str) {
                 ..Default::default()
             },
             |ui| {
-                ferritecad_ui::model_panel(ui, 0, &rows, &mut navigation, |_| vec![], Ok(()));
+                ferritecad_ui::model_panel::<ferritecad_ui::ModelEdit>(
+                    ui,
+                    0,
+                    &rows,
+                    &mut navigation,
+                    |_| vec![],
+                );
             },
         );
         frame.textures_delta.clear();

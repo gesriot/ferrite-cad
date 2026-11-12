@@ -5,6 +5,7 @@ use ferritecad_types::{ObjectId, Result, StableEntityId};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Source {
     facts: ferritecad_document::ExtrudeEditSource,
+    pub conflicts: Vec<crate::sketch_conflicts::Conflict>,
     pub cut_bodies: Vec<crate::feature_facts::CutChoice>,
     pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
     pub fillet_bodies: Vec<crate::feature_facts::EdgeChoice>,
@@ -127,6 +128,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             cut_features,
             fillet_bodies,
             facts,
+            conflicts: Vec::new(),
             sketches: vec![],
             constraint_sketches: vec![],
             circle_sketches: vec![],

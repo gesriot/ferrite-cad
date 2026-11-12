@@ -324,7 +324,11 @@ impl Tabs {
         self.model_navigation.entry(tab).or_default()
     }
 
-    pub(crate) fn model_addressed(&self, tab: TabId, action: ferritecad_ui::ModelAction) -> bool {
+    pub(crate) fn model_addressed<C>(
+        &self,
+        tab: TabId,
+        action: ferritecad_ui::ModelAction<C>,
+    ) -> bool {
         self.model_navigation
             .get(&tab)
             .is_some_and(|s| s.epoch == action.epoch && s.selected == Some(action.row))
