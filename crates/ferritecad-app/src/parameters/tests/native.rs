@@ -477,16 +477,12 @@ fn native_failed_parameter_consumers_show_exact_tree_statuses_and_repair_through
     let mut ui = widgets::Ui::new(&mut w);
     let output = ui.settle(&mut w);
     let labels = widgets::form_text(&output);
-    let table: Vec<_> = labels
-        .iter()
-        .take_while(|label| *label != "Values")
-        .collect();
     assert_eq!(
-        table.iter().filter(|label| ***label == stock).count(),
+        labels.iter().filter(|label| **label == stock).count(),
         1,
-        "the table must show the failed parameter's complete tree sentence"
+        "only the table shows the selected failed parameter's complete tree sentence"
     );
-    assert_eq!(table.iter().filter(|label| ***label == total).count(), 1);
+    assert_eq!(labels.iter().filter(|label| **label == total).count(), 1);
     assert_eq!(
         labels
             .iter()

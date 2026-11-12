@@ -504,8 +504,16 @@ fn parameter_widgets_follow_tree_selection_and_backspace_belongs_to_text_when_fo
         // Refocus for the next iteration, without submitting the draft.
         ui.type_field(&mut w, "Parameter expression", "18 m");
     }
+    let labels = form_text(&ui.settle(&mut w));
+    for absent in ["Values", "The selected object has no value slots."] {
+        assert!(
+            !labels.iter().any(|s| s == absent),
+            "a selected parameter has no {absent}"
+        );
+    }
     select(&mut w, f.feature);
     let output = ui.settle(&mut w);
+    assert!(form_text(&output).iter().any(|s| s == "Values"));
     assert!(text(&output).iter().any(|s| s == "Extrude distance"));
     assert!(
         w.creates
@@ -516,6 +524,21 @@ fn parameter_widgets_follow_tree_selection_and_backspace_belongs_to_text_when_fo
             .expect("draft")
             .text
             .is_empty()
+    );
+    let body = w
+        .scene
+        .edit_source
+        .as_ref()
+        .expect("source")
+        .objects
+        .iter()
+        .find(|object| matches!(object.payload, ObjectPayload::Body(_)))
+        .expect("body")
+        .id;
+    select(&mut w, body);
+    assert_eq!(
+        values_text(&ui.settle(&mut w)),
+        ["The selected object has no value slots."]
     );
 }
 

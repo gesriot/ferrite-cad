@@ -188,50 +188,51 @@ impl Draft {
                     ));
                 }
                 self.error(ui, Field::Text(id));
-            }
-            ui.separator();
-            ui.heading("Values");
-            let status = source
-                .unbuilt_statuses
-                .iter()
-                .find(|(object, _)| *object == id)
-                .map(|(_, status)| status);
-            if let Some(status) = status {
-                ui.label(status);
-            }
-            if self.slots.is_empty() {
-                ui.label("The selected object has no value slots.");
-            }
-            for index in 0..self.slots.len() {
-                let (slot, text) = &mut self.slots[index];
-                let Some(saved) = source.expression_slot(id, *slot) else {
-                    continue;
-                };
-                let field = Field::Slot(id, *slot);
-                ui.push_id((id, index), |ui| {
-                    ui.label(words::slot(source, id, *slot));
-                    if status.is_none() {
-                        ui.label(words::value(saved.expression.value(), saved.dimension));
-                    }
-                    ui.text_edit_singleline(text);
-                    if ui
-                        .add_enabled(
-                            *text != saved.expression.source,
-                            egui::Button::new("Apply value"),
-                        )
-                        .clicked()
-                    {
-                        submitted = Some((
-                            field,
-                            EditChange::SetExpressionText {
-                                object: id,
-                                slot: *slot,
-                                source: text.clone(),
-                            },
-                        ));
-                    }
-                });
-                self.error(ui, field);
+            } else {
+                ui.separator();
+                ui.heading("Values");
+                let status = source
+                    .unbuilt_statuses
+                    .iter()
+                    .find(|(object, _)| *object == id)
+                    .map(|(_, status)| status);
+                if let Some(status) = status {
+                    ui.label(status);
+                }
+                if self.slots.is_empty() {
+                    ui.label("The selected object has no value slots.");
+                }
+                for index in 0..self.slots.len() {
+                    let (slot, text) = &mut self.slots[index];
+                    let Some(saved) = source.expression_slot(id, *slot) else {
+                        continue;
+                    };
+                    let field = Field::Slot(id, *slot);
+                    ui.push_id((id, index), |ui| {
+                        ui.label(words::slot(source, id, *slot));
+                        if status.is_none() {
+                            ui.label(words::value(saved.expression.value(), saved.dimension));
+                        }
+                        ui.text_edit_singleline(text);
+                        if ui
+                            .add_enabled(
+                                *text != saved.expression.source,
+                                egui::Button::new("Apply value"),
+                            )
+                            .clicked()
+                        {
+                            submitted = Some((
+                                field,
+                                EditChange::SetExpressionText {
+                                    object: id,
+                                    slot: *slot,
+                                    source: text.clone(),
+                                },
+                            ));
+                        }
+                    });
+                    self.error(ui, field);
+                }
             }
         } else {
             ui.label("Choose a parameter or another object in Model to edit its values.");

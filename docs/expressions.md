@@ -39,17 +39,18 @@ angle or scalar, edit its expression, or rename it; the document rewrites name r
 The table sorts names bytewise and shows each stored expression, accepted value and
 consumer count. Select a row to see its consumers by name, kind and input slot. Lengths
 use millimetres, angles use degrees, and scalars have no unit. Errors come from the
-accepted rebuild, without evaluating again in the window.
-Failed parameters and objects not built by that rebuild show the Model tree's complete
-status sentence instead of a number. Their expression text remains editable in the same
-form so it can be repaired; Values also hides stored slot numbers after a geometry failure.
+accepted rebuild, without evaluating again in the window. Failed parameters and objects
+not built by that rebuild show the Model tree's complete status sentence instead of a
+number. Their expression text remains editable in the same form so it can be repaired;
+Values also hides stored slot numbers after a geometry failure.
 
-Select another Model object to edit its expression text in **Values**. Constraint slots
-use the same rule words and UUIDs as Sketch solves. Each Apply is one transaction and
-one Undo step. Kernel refusals retain the typed text and appear in full at the field and
-in the status. Parameters stays open after an accepted change; Close discards remaining
-unsubmitted text and permits document Undo/Redo. Parameter deletion uses the shared
-Model catalogue and its dependent-closure confirmation. See [the session contract](document-session.md#parameters).
+Select another Model object to edit its expression text in **Values**, which replaces
+the parameter fields. Constraint slots use the same rule words and UUIDs as Sketch
+solves. Each Apply is one transaction and one Undo step. Kernel refusals retain the
+typed text and appear in full at the field and in the status. Parameters stays open
+after an accepted change; Close discards remaining unsubmitted text and permits document
+Undo/Redo. Parameter deletion uses the shared Model catalogue and its dependent-closure
+confirmation. See [the session contract](document-session.md#parameters).
 
 ## Executable CLI recipe
 

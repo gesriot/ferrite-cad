@@ -88,13 +88,16 @@ insertion remain separate work.
 Open **Parameters…** in Actions, including in an empty document, or **Edit…** on a
 parameter row. The table reads the accepted document on every frame: name, expression,
 value and consumer count. Names sort bytewise. Lengths display millimetres, angles
-degrees and scalars no unit; a failed parameter displays its existing rebuild reason.
-Consumers come from saved parameter dependencies and name their object, kind and slot.
+degrees and scalars no unit. A parameter that the accepted rebuild did not build shows
+the Model tree's status sentence in place of its value. Consumers come from saved
+parameter dependencies and name their object, kind and slot.
 
-The table and Model share one selection. Selecting a parameter shows its name and
-expression fields and the catalogue's two deletion commands. Selecting another object
-shows its stored expression slots in **Values**. Changing the selection discards the
-previous selection's unsubmitted fields; the Add fields remain independent.
+The table and Model share one selection. Selecting a parameter shows its consumers,
+its name and expression fields and the catalogue's two deletion commands. Selecting
+another object shows **Values** instead: its stored expression slots, with the same
+status sentence in place of their numbers when that object was not built. Changing the
+selection discards the previous selection's unsubmitted fields; the Add fields remain
+independent.
 
 Add, Rename, Apply parameter and Apply value each send one existing edit through the
 session owner. The library validates names, syntax, dimensions and dependencies. A

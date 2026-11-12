@@ -39,8 +39,8 @@ The handler and widget use one availability result: finish/cancel an open form f
 except that Parameters permits both deletion commands on a parameter row through all
 catalogue surfaces; foreground work, New, dialogs and gestures retain their exclusions.
 Parameters follows the same tree selection, and a table click selects that tree row.
-No form is copied,
-cancelled, applied or reconstructed by navigation; ordinary tab drafts remain §30P–W.
+No form is copied, cancelled, applied or reconstructed by navigation; ordinary tab
+drafts remain §30P–W.
 
 The panel is a bounded, scrolling side panel beneath the toolbar/tab strip. No
 intermediate bodies or geometry highlights are built for an old history feature.
