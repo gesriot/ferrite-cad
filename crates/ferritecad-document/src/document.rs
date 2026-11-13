@@ -1494,7 +1494,7 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
                         .is_ok()
                 {
                     format!(
-                        "Body '{}' ({id}) has an unreadable history position; \
+                        "body '{}' ({id}) has an unreadable history position; \
                          tip_feature and rollback must name feature UUIDs.",
                         name.as_deref().unwrap_or("Unnamed")
                     )

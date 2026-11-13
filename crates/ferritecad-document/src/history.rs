@@ -45,26 +45,12 @@ pub(crate) fn check_markers(objects: &[ObjectRecord]) -> Result<()> {
     let by_id: BTreeMap<_, _> = objects.iter().map(|o| (o.id, o)).collect();
     for object in objects {
         if let ObjectPayload::Body(body) = &object.payload {
-            check_rollback(
-                body,
-                &format!(
-                    "body '{}' ({})",
-                    object.name.as_deref().unwrap_or("Unnamed"),
-                    object.id
-                ),
-                body.rollback,
-                |id| {
-                    by_id.get(&id).map(|o| {
-                        (
-                            o.payload.previous_feature(),
-                            format!(
-                                "feature '{}' ({id})",
-                                o.name.as_deref().unwrap_or("Unnamed")
-                            ),
-                        )
-                    })
-                },
-            )?;
+            let label = |o: &ObjectRecord| o.payload.label(o.name.as_deref(), o.id);
+            check_rollback(body, &label(object), body.rollback, |id| {
+                by_id
+                    .get(&id)
+                    .map(|o| (o.payload.previous_feature(), label(o)))
+            })?;
         }
     }
     Ok(())

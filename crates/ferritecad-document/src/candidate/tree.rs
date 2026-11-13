@@ -3,12 +3,7 @@ use super::*;
 
 impl Row {
     fn label(&self) -> String {
-        format!(
-            "{} '{}' ({})",
-            self.payload.kind().expect("decoded object kind").label(),
-            self.name.as_deref().unwrap_or("Unnamed"),
-            self.id
-        )
+        self.payload.label(self.name.as_deref(), self.id)
     }
 }
 
@@ -25,15 +20,9 @@ impl Candidate {
             )));
         };
         crate::history::check_rollback(body, &row.label(), feature, |id| {
-            self.objects.get(&id).map(|o| {
-                (
-                    o.payload.previous_feature(),
-                    format!(
-                        "feature '{}' ({id})",
-                        o.name.as_deref().unwrap_or("Unnamed")
-                    ),
-                )
-            })
+            self.objects
+                .get(&id)
+                .map(|o| (o.payload.previous_feature(), o.label()))
         })?;
         let ObjectPayload::Body(body) = &mut self.edit(id)?.payload else {
             unreachable!("checked Body")

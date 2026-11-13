@@ -211,13 +211,10 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
         ObjectPayload::KeepSolids(keep) => {
             format!("keep {}, previous {}", keep.selection, keep.previous)
         }
-        ObjectPayload::Body(b) => match b.tip_feature {
-            Some(tip) if b.rollback.is_some() => format!(
-                "tip feature {tip}, rollback {}",
-                b.shown_feature().expect("marker")
-            ),
-            Some(tip) => format!("tip feature {tip}"),
-            None => "empty".to_owned(),
+        ObjectPayload::Body(b) => match (b.tip_feature, b.rollback) {
+            (Some(tip), Some(marker)) => format!("tip feature {tip}, rollback {marker}"),
+            (Some(tip), None) => format!("tip feature {tip}"),
+            (None, _) => "empty".to_owned(),
         },
         ObjectPayload::ImportedStep(i) => format!(
             "scene: {} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",

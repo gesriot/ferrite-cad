@@ -1390,6 +1390,15 @@ impl ObjectPayload {
         ObjectKind::parse(self.type_name())
     }
 
+    /// How a refusal names an object with this payload: kind, name and UUID.
+    pub(crate) fn label(&self, name: Option<&str>, id: ObjectId) -> String {
+        format!(
+            "{} '{}' ({id})",
+            self.kind().expect("decoded object kind").label(),
+            name.unwrap_or("Unnamed"),
+        )
+    }
+
     /// Encodes the current payload for storage.
     pub fn to_storage_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;

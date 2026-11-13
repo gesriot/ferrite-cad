@@ -103,11 +103,11 @@ impl Commands {
             for object in &source.objects {
                 let (target, label) = match &object.payload {
                     ObjectPayload::Body(body) => {
-                        let Some(tip) = body.shown_feature() else {
+                        let Some(shown) = body.shown_feature() else {
                             continue;
                         };
                         if source.objects.iter().any(|o| {
-                            o.id == tip && matches!(o.payload, ObjectPayload::KeepSolids(_))
+                            o.id == shown && matches!(o.payload, ObjectPayload::KeepSolids(_))
                         }) {
                             continue;
                         }

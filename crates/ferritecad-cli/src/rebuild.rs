@@ -228,13 +228,9 @@ fn report(
                 if let Some(tip) = body.tip_feature {
                     write!(line, "tip {}", named(tip)).expect("writing to a String cannot fail");
                 }
-                if body.rollback.is_some() {
-                    write!(
-                        line,
-                        "; shows {}",
-                        named(body.shown_feature().expect("marker"))
-                    )
-                    .expect("writing to a String cannot fail");
+                if let Some(marker) = body.rollback {
+                    write!(line, "; shows {}", named(marker))
+                        .expect("writing to a String cannot fail");
                 }
             }
             _ => {}

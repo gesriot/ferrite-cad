@@ -13,8 +13,8 @@ fn set(object: ObjectId, feature: Option<ObjectId>) -> Edit {
     Edit::SetRollback { object, feature }
 }
 
-fn named(id: ObjectId, name: &str) -> String {
-    format!("feature '{name}' ({id})")
+fn named(kind: &str, id: ObjectId, name: &str) -> String {
+    format!("{kind} '{name}' ({id})")
 }
 
 fn part(id: ObjectId) -> String {
@@ -72,7 +72,7 @@ fn rollback_round_trips_and_refuses_wrong_targets_atomically() -> TestResult {
             set(c.body, Some(c.sketch)),
             format!(
                 "{} is not in the history of {}.",
-                named(c.sketch, "Profile"),
+                named("sketch", c.sketch, "Profile"),
                 part(c.body)
             ),
         ),
@@ -80,7 +80,7 @@ fn rollback_round_trips_and_refuses_wrong_targets_atomically() -> TestResult {
             set(c.body, Some(c.tip)),
             format!(
                 "{} is the tip of {}; use clear_rollback to show the end of its history.",
-                named(c.tip, "Tip"),
+                named("Extrude", c.tip, "Tip"),
                 part(c.body)
             ),
         ),
@@ -160,22 +160,22 @@ fn opening_refuses_each_invalid_marker_without_touching_the_file() -> TestResult
         let message = match case {
             "outside" => format!(
                 "{} is not in the history of {}.",
-                named(c.sketch, "Profile"),
+                named("sketch", c.sketch, "Profile"),
                 part(c.body)
             ),
             "tip" => format!(
                 "{} is the tip of {}; use clear_rollback to show the end of its history.",
-                named(c.tip, "Tip"),
+                named("Extrude", c.tip, "Tip"),
                 part(c.body)
             ),
             "empty" => format!(
                 "{} is empty and cannot roll back to {}.",
                 part(c.body),
-                named(c.base, "Base")
+                named("Extrude", c.base, "Base")
             ),
             "text" | "null" => {
                 format!(
-                    "Body 'Part' ({}) has an unreadable history position; \
+                    "body 'Part' ({}) has an unreadable history position; \
                      tip_feature and rollback must name feature UUIDs.",
                     c.body
                 )

@@ -109,7 +109,7 @@ fn native_rollback_cli_edits_inspects_rebuilds_and_exports_the_shown_result() ->
             1,
             marker(body, Some(sketch)),
             format!(
-                "invalid input: feature 'Profile' ({sketch}) is not in the history of \
+                "invalid input: sketch 'Profile' ({sketch}) is not in the history of \
                  body 'Plate' ({body})."
             ),
         ),
@@ -117,7 +117,7 @@ fn native_rollback_cli_edits_inspects_rebuilds_and_exports_the_shown_result() ->
             2,
             marker(body, Some(cut.feature)),
             format!(
-                "invalid input: feature 'Cut' ({}) is the tip of body 'Plate' ({body}); \
+                "invalid input: Extrude 'Cut' ({}) is the tip of body 'Plate' ({body}); \
              use clear_rollback to show the end of its history.",
                 cut.feature
             ),
