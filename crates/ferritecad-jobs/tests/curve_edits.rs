@@ -263,7 +263,7 @@ fn empty_sketch_addition_builds_and_its_new_extrusion_refuses() -> TestResult {
     );
     let reason = format!(
         "invalid input: sketch {added} gives no profile: invalid input: the sketch has no \
-         model geometry, so there is no profile to extrude"
+         main Line, Arc or Circle, so it gives no profile"
     );
     let expected = format!(
         "Part ({}), Extrude ({}): edit would leave features unbuilt:\n\
