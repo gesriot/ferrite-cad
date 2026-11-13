@@ -164,14 +164,34 @@ fn reversed_arc_and_alternating_lines_keep_their_saved_end_names() -> TestResult
     let context = OperationContext::default();
     let reference = rebuild_cold(&f.doc, &mut k, &context)?;
     let counts = check(&reference, &f, &mut k, 3. * (80. + 12.5 * PI));
-    let mut changed = base;
+    let arc = base[2].id;
+    let mut changed = base.clone();
     for i in [0, 2] {
         reverse(&mut changed[i]);
     }
     changed.swap(1, 3);
-    f.replace(changed);
-    let built = rebuild_cold(&f.doc, &mut k, &context)?;
-    assert_eq!(check(&built, &f, &mut k, 3. * (80. + 12.5 * PI)), counts);
+    let mut alternating = base;
+    for i in [0, 2, 3] {
+        reverse(&mut alternating[i]);
+    }
+    // Start on an unchanged Line so the stored reversed Arc must be reoriented.
+    alternating.swap(0, 1);
+    for (curves, reversed_arc) in [(changed, false), (alternating, true)] {
+        f.replace(curves);
+        let built = rebuild_cold(&f.doc, &mut k, &context)?;
+        assert_eq!(check(&built, &f, &mut k, 3. * (80. + 12.5 * PI)), counts);
+        assert_eq!(
+            built
+                .profile(f.sketch)
+                .expect("profile")
+                .segments()
+                .find(|segment| segment.label == arc)
+                .expect("Arc segment")
+                .reversed,
+            reversed_arc
+        );
+        built.release_all(&mut k);
+    }
     Ok(())
 }
 #[test]
