@@ -122,11 +122,11 @@ fn unbuilt(f: &Drawing, reason: &str) -> String {
 fn making_a_consumed_boundary_construction_refuses_all_new_failures() -> TestResult {
     let curves = rectangle();
     let removed = curves[0].id;
-    let open = curves[1].id;
+    let open = curves[3].id;
     let f = Drawing::new(curves, true);
     let reason = format!(
         "invalid input: sketch {} gives no profile: invalid input: the profile does not \
-         close: curve {open} has a free start at (10, 0)",
+         close: curve {open} has a free end at (0, 0)",
         f.sketch
     );
     refusal(
@@ -143,11 +143,11 @@ fn making_a_consumed_boundary_construction_refuses_all_new_failures() -> TestRes
 fn removing_a_consumed_boundary_refuses_all_new_failures() -> TestResult {
     let curves = rectangle();
     let removed = curves[0].id;
-    let open = curves[1].id;
+    let open = curves[3].id;
     let f = Drawing::new(curves, true);
     let reason = format!(
         "invalid input: sketch {} gives no profile: invalid input: the profile does not \
-         close: curve {open} has a free start at (10, 0)",
+         close: curve {open} has a free end at (0, 0)",
         f.sketch
     );
     refusal(

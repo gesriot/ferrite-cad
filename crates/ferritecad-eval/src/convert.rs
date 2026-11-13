@@ -318,16 +318,15 @@ fn chain_loops(mut remaining: Vec<ProfileSegment>) -> Result<Vec<ProfileLoop>> {
     let mut ends = Vec::new();
     for segment in &remaining {
         if !segment.geometry.is_closed() {
-            ends.push((segment.label, false, segment.geometry.start()?));
-            ends.push((segment.label, true, segment.geometry.end()?));
+            ends.push((segment.label, segment.geometry.start()?));
+            ends.push((segment.label, segment.geometry.end()?));
         }
     }
     // Check all joints before walking: a completed loop must not conceal an attached branch.
-    let mut free = None;
-    for &(curve, end, point) in &ends {
-        let neighbours: Vec<_> = ends.iter().filter(|(_, _, p)| joins(point, *p)).collect();
+    for &(_, point) in &ends {
+        let neighbours: Vec<_> = ends.iter().filter(|(_, p)| joins(point, *p)).collect();
         if neighbours.len() > 2 {
-            let mut curves: Vec<_> = neighbours.iter().map(|(id, _, _)| *id).collect();
+            let mut curves: Vec<_> = neighbours.iter().map(|(id, _)| *id).collect();
             curves.sort();
             curves.dedup();
             let curves = curves
@@ -340,16 +339,6 @@ fn chain_loops(mut remaining: Vec<ProfileSegment>) -> Result<Vec<ProfileLoop>> {
                 point.x, point.y
             )));
         }
-        if neighbours.len() == 1 && free.is_none() {
-            free = Some((curve, end, point));
-        }
-    }
-    if let Some((curve, end, point)) = free {
-        let end = if end { "end" } else { "start" };
-        return Err(CadError::input(format!(
-            "the profile does not close: curve {curve} has a free {end} at ({}, {})",
-            point.x, point.y
-        )));
     }
     let mut loops = Vec::new();
     while !remaining.is_empty() {
@@ -376,8 +365,14 @@ fn chain_loops(mut remaining: Vec<ProfileSegment>) -> Result<Vec<ProfileLoop>> {
                 }
             });
             let Some((index, reverse)) = next else {
+                // Keep the failed walk's final curve as its witness, including when reversed.
+                let end = if last.stored_end(true) {
+                    "end"
+                } else {
+                    "start"
+                };
                 return Err(CadError::input(format!(
-                    "the profile does not close: curve {} has a free end at ({}, {})",
+                    "the profile does not close: curve {} has a free {end} at ({}, {})",
                     last.label, tail.x, tail.y
                 )));
             };

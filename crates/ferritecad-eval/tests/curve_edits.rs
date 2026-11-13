@@ -74,8 +74,17 @@ fn point_only_drawing_builds_without_a_profile() {
 fn an_open_chain_names_its_free_stored_endpoint() {
     let curves = vec![line([0., 0.], [10., 0.]), line([10., 0.], [10., 8.])];
     let reason = format!(
-        "invalid input: the profile does not close: curve {} has a free start at (0, 0)",
-        curves[0].id
+        "invalid input: the profile does not close: curve {} has a free end at (10, 8)",
+        curves[1].id
+    );
+    no_profile(curves, reason);
+}
+#[test]
+fn an_open_reversed_segment_names_its_free_stored_start() {
+    let curves = vec![line([0., 0.], [10., 0.]), line([10., 8.], [10., 0.])];
+    let reason = format!(
+        "invalid input: the profile does not close: curve {} has a free start at (10, 8)",
+        curves[1].id
     );
     no_profile(curves, reason);
 }
@@ -103,7 +112,7 @@ fn a_dangling_main_line_is_not_dropped_beside_a_closed_loop() {
     let mut curves = rectangle();
     let extra = line([20., 0.], [20., 8.]);
     let reason = format!(
-        "invalid input: the profile does not close: curve {} has a free start at (20, 0)",
+        "invalid input: the profile does not close: curve {} has a free end at (20, 8)",
         extra.id
     );
     curves.push(extra);

@@ -198,7 +198,7 @@ fn cli_rebuild_calls_an_open_sketch_built_and_gives_its_complete_profile_reason(
         row,
         format!(
             "  {}  {:<12}  {:<16}Built; no profile: invalid input: the profile does not \
-             close: curve {} has a free start at (0, 0)",
+             close: curve {} has a free end at (10, 0)",
             f.sketch, "Drawing", "sketch", c.id
         )
     );

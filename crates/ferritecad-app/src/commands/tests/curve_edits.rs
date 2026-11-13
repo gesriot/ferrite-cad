@@ -124,7 +124,7 @@ fn scrambled_drawing_opens_constraints_with_its_exact_curve_list_and_keeps_delet
 fn repair_document_attributes_missing_profile_to_the_consumer_and_body() {
     let curves = vec![line([0., 0.], [10., 0.])];
     let reason = format!(
-        "invalid input: the profile does not close: curve {} has a free start at (0, 0)",
+        "invalid input: the profile does not close: curve {} has a free end at (10, 0)",
         curves[0].id
     );
     let f = Drawing::new(curves, true);
