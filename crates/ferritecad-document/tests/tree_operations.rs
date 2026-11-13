@@ -616,7 +616,10 @@ fn a_presentation_parent_never_silently_deletes_its_child() -> TestResult {
             None,
             0,
             Some("Parent"),
-            &ObjectPayload::Body(ferritecad_document::Body { tip_feature: None }),
+            &ObjectPayload::Body(ferritecad_document::Body {
+                tip_feature: None,
+                rollback: None,
+            }),
         )?;
         w.put_object(
             child,
@@ -688,3 +691,6 @@ fn unknown_objects_and_non_boolean_flags_are_input_errors() -> TestResult {
     }
     Ok(())
 }
+
+#[path = "tree_operations/rollback.rs"]
+mod rollback;

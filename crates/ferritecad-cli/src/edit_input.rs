@@ -91,6 +91,13 @@ pub(super) enum Change {
         object: ObjectId,
         suppressed: bool,
     },
+    SetRollback {
+        object: ObjectId,
+        feature: ObjectId,
+    },
+    ClearRollback {
+        object: ObjectId,
+    },
     SetExpression {
         object: ObjectId,
         slot: ExpressionSlot,
@@ -236,6 +243,14 @@ impl Change {
             Self::SetSuppressed { object, suppressed } => {
                 EditChange::SetSuppressed { object, suppressed }
             }
+            Self::SetRollback { object, feature } => EditChange::SetRollback {
+                object,
+                feature: Some(feature),
+            },
+            Self::ClearRollback { object } => EditChange::SetRollback {
+                object,
+                feature: None,
+            },
             Self::SetExpression {
                 object,
                 slot,

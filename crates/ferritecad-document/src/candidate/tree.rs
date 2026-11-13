@@ -3,16 +3,77 @@ use super::*;
 
 impl Row {
     fn label(&self) -> String {
-        format!(
-            "{} '{}' ({})",
-            self.payload.kind().expect("decoded object kind").label(),
-            self.name.as_deref().unwrap_or("Unnamed"),
-            self.id
-        )
+        self.payload.label(self.name.as_deref(), self.id)
     }
 }
 
 impl Candidate {
+    pub(crate) fn set_rollback(&mut self, id: ObjectId, feature: Option<ObjectId>) -> Result<()> {
+        let row = self
+            .objects
+            .get(&id)
+            .ok_or_else(|| CadError::input(format!("unknown object {id}")))?;
+        let ObjectPayload::Body(body) = &row.payload else {
+            return Err(CadError::input(format!(
+                "{} is not a Body; only a Body can be rolled back.",
+                row.label()
+            )));
+        };
+        crate::history::check_rollback(body, &row.label(), feature, |id| {
+            self.objects
+                .get(&id)
+                .map(|o| (o.payload.previous_feature(), o.label()))
+        })?;
+        let ObjectPayload::Body(body) = &mut self.edit(id)?.payload else {
+            unreachable!("checked Body")
+        };
+        body.rollback = feature;
+        Ok(())
+    }
+
+    pub(crate) fn add_feature(
+        &mut self,
+        id: ObjectId,
+        body: ObjectId,
+        name: &Option<String>,
+        feature: &crate::FeatureAddition,
+    ) -> Result<()> {
+        let saved = self.edit(body)?;
+        let ObjectPayload::Body(part) = &saved.payload else {
+            return Err(CadError::input(format!("object {body} is not a Body")));
+        };
+        let previous = part.shown_feature();
+        let marker = part.rollback;
+        let mut next = part.tip_feature;
+        let mut successor = None;
+        if marker.is_some() {
+            let mut seen = BTreeSet::new();
+            while let Some(current) = next {
+                if !seen.insert(current) {
+                    break;
+                }
+                next = self.objects[&current].payload.previous_feature();
+                if next == marker {
+                    successor = Some(current);
+                    break;
+                }
+            }
+        }
+        self.add(id, name, feature.payload(previous)?)?;
+        if let Some(successor) = successor {
+            set_previous(&mut self.edit(successor)?.payload, Some(id));
+        }
+        let ObjectPayload::Body(part) = &mut self.edit(body)?.payload else {
+            unreachable!("checked Body")
+        };
+        if marker.is_some() {
+            part.rollback = Some(id);
+        } else {
+            part.tip_feature = Some(id);
+        }
+        Ok(())
+    }
+
     pub(crate) fn remove(&mut self, id: ObjectId) -> Result<()> {
         if !self.objects.contains_key(&id) {
             return Err(CadError::input(format!("unknown object {id}")));
@@ -85,10 +146,21 @@ impl Candidate {
             .collect();
         for id in retained {
             let row = &self.objects[&id];
-            let previous = match &row.payload {
-                ObjectPayload::Body(body) => body.tip_feature,
-                payload => payload.previous_feature(),
-            };
+            if let ObjectPayload::Body(body) = &row.payload {
+                let tip = self.surviving_previous(body.tip_feature);
+                let marker = self
+                    .surviving_previous(body.rollback)
+                    .filter(|id| Some(*id) != tip);
+                if tip != body.tip_feature || marker != body.rollback {
+                    let ObjectPayload::Body(body) = &mut self.edit(id)?.payload else {
+                        unreachable!("Body history")
+                    };
+                    body.tip_feature = tip;
+                    body.rollback = marker;
+                }
+                continue;
+            }
+            let previous = row.payload.previous_feature();
             let next = self.surviving_previous(previous);
             if next == previous {
                 continue;
@@ -97,22 +169,14 @@ impl Candidate {
                 ObjectPayload::Extrude(e) if e.operation == crate::SolidOperation::NewBody)
                 || matches!(&row.payload,
                     ObjectPayload::Revolve(r) if r.operation == crate::SolidOperation::NewBody);
-            if next.is_none() && !matches!(row.payload, ObjectPayload::Body(_)) && !starts_body {
+            if next.is_none() && !starts_body {
                 conflicts.push(format!(
                     "{} cannot remain without a predecessor; its operation does not start a body",
                     row.label()
                 ));
                 continue;
             }
-            match &mut self.edit(id)?.payload {
-                ObjectPayload::Body(body) => body.tip_feature = next,
-                ObjectPayload::Extrude(feature) => feature.previous = next,
-                ObjectPayload::Revolve(feature) => feature.previous = next,
-                ObjectPayload::Fillet(feature) => feature.previous = next.expect("predecessor"),
-                ObjectPayload::Chamfer(feature) => feature.previous = next.expect("predecessor"),
-                ObjectPayload::KeepSolids(feature) => feature.previous = next.expect("predecessor"),
-                _ => unreachable!("only history links are rewired"),
-            }
+            set_previous(&mut self.edit(id)?.payload, next);
         }
         // Resolve text against the full named parameter catalogue before removing its entries.
         let parameters = references(self.objects.iter().map(|(id, o)| (*id, &o.payload)))?;
@@ -162,5 +226,22 @@ impl Candidate {
             self.added.remove(id);
         }
         Ok(())
+    }
+}
+
+fn set_previous(payload: &mut ObjectPayload, previous: Option<ObjectId>) {
+    match payload {
+        ObjectPayload::Extrude(feature) => feature.previous = previous,
+        ObjectPayload::Revolve(feature) => feature.previous = previous,
+        ObjectPayload::Fillet(feature) => feature.previous = previous.expect("predecessor"),
+        ObjectPayload::Chamfer(feature) => feature.previous = previous.expect("predecessor"),
+        ObjectPayload::KeepSolids(feature) => feature.previous = previous.expect("predecessor"),
+        ObjectPayload::Body(_)
+        | ObjectPayload::Sketch(_)
+        | ObjectPayload::DatumPlane(_)
+        | ObjectPayload::Parameter(_)
+        | ObjectPayload::ImportedStep(_) => {
+            unreachable!("only feature history links are rewired")
+        }
     }
 }

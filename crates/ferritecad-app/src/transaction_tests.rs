@@ -38,6 +38,7 @@ pub fn sketch(request: &EditRequest) -> ObjectId {
             | EditChange::RenameParameter { .. }
             | EditChange::RemoveObject { .. }
             | EditChange::SetSuppressed { .. }
+            | EditChange::SetRollback { .. }
             | EditChange::SetExpressionText { .. }
             | EditChange::SetKeepSelection { .. }
             | EditChange::AddDatumPlane { .. }
@@ -174,6 +175,7 @@ pub fn constraints(request: &EditRequest) -> SketchConstraintEdits {
             | EditChange::RenameParameter { .. }
             | EditChange::RemoveObject { .. }
             | EditChange::SetSuppressed { .. }
+            | EditChange::SetRollback { .. }
             | EditChange::SetExpressionText { .. }
             | EditChange::SetKeepSelection { .. }
             | EditChange::AddDatumPlane { .. }
@@ -282,6 +284,7 @@ pub fn vertices_in(request: &EditRequest, stored: &Sketch) -> Vec<SketchVertex> 
                     | EditChange::RenameParameter { .. }
                     | EditChange::RemoveObject { .. }
                     | EditChange::SetSuppressed { .. }
+                    | EditChange::SetRollback { .. }
                     | EditChange::SetExpressionText { .. }
                     | EditChange::SetKeepSelection { .. }
                     | EditChange::AddDatumPlane { .. }
@@ -353,6 +356,7 @@ fn circles(request: &EditRequest) -> Vec<CircleValues> {
                     | EditChange::RenameParameter { .. }
                     | EditChange::RemoveObject { .. }
                     | EditChange::SetSuppressed { .. }
+                    | EditChange::SetRollback { .. }
                     | EditChange::SetExpressionText { .. }
                     | EditChange::SetKeepSelection { .. }
                     | EditChange::AddDatumPlane { .. }

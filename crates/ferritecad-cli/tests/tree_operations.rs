@@ -11,6 +11,8 @@ use std::process::Command;
 use ferritecad_bench::corpus;
 #[path = "../../ferritecad-fixtures/tests/support/naming.rs"]
 mod naming;
+#[path = "tree_operations/rollback.rs"]
+mod rollback;
 
 type Names = BTreeMap<Name, BTreeSet<Name>>;
 struct Facts {

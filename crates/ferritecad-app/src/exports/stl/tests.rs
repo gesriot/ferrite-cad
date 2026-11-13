@@ -220,6 +220,7 @@ fn two_bodies(source: &Path) -> (ObjectId, ObjectId) {
             Some("Twin"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(feature),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {

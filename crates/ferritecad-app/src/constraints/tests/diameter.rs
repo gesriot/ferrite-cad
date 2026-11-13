@@ -78,6 +78,7 @@ pub(crate) fn write_round_profile(path: &Path, radii: &[f64]) -> Vec<StableEntit
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

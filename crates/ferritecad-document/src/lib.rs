@@ -38,6 +38,7 @@ mod edit;
 mod expression_edit;
 pub use expression_edit::{EditChange, ExpressionSlot, ExpressionSlotValue, FeatureAddition};
 mod height_edit;
+mod history;
 mod polygon;
 mod revolve;
 mod sketch_changes;

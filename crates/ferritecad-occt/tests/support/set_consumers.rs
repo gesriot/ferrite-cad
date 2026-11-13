@@ -190,8 +190,10 @@ fn planar_set_supports_multiple_regions_vertex_offsets_and_a_face_datum() {
         .expect("objects")
         .into_iter()
         .find_map(|o| {
-            matches!(o.payload, ObjectPayload::Body(Body { tip_feature: Some(tip) })
-            if tip == ceiling.result)
+            matches!(
+                o.payload,
+                ObjectPayload::Body(Body { tip_feature: Some(tip), .. }) if tip == ceiling.result
+            )
             .then_some(o.id)
         })
         .expect("support body");

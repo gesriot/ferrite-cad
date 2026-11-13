@@ -18,6 +18,12 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::SetSuppressed { object, suppressed } => {
             json!({"kind":"set_suppressed","object":object,"suppressed":suppressed})
         }
+        EditChange::SetRollback { object, feature: Some(feature) } => {
+            json!({"kind":"set_rollback","object":object,"feature":feature})
+        }
+        EditChange::SetRollback { object, feature: None } => {
+            json!({"kind":"clear_rollback","object":object})
+        }
         EditChange::RemoveObject { object } => {
             json!({"kind":"remove_object","object":object})
         }

@@ -796,6 +796,7 @@ pub(super) fn write_solid_document(path: &Path, points: &[[f64; 2]]) -> Vec<Stab
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(revolve),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

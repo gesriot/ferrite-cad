@@ -257,6 +257,7 @@ fn a_document_that_cannot_be_built_fails_and_says_why() {
                 body.name.as_deref(),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(ObjectId::new()),
+                    rollback: None,
                 }),
             )?;
             Ok(())

@@ -159,6 +159,7 @@ fn boolean_sweep_provenance_and_cache() {
             &mut d,
             ObjectPayload::Body(Body {
                 tip_feature: Some(tip),
+                rollback: None,
             }),
         );
         check(&d, tip, volume);

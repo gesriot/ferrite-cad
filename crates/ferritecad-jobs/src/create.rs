@@ -535,6 +535,7 @@ fn populate_profile(
             Some(body_name),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
 
@@ -640,6 +641,7 @@ fn populate_revolve(
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(revolve),
+                rollback: None,
             }),
         )?;
         writer.add_dependency(Dependency {
@@ -718,6 +720,7 @@ fn populate_circle(
             Some(body_name),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
 
@@ -832,6 +835,7 @@ fn populate_annulus(
             Some(body_name),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
 

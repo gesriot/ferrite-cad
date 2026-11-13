@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use super::*;
 
-fn clicks(at: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+pub(super) fn clicks(at: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
     vec![
         egui::Event::PointerMoved(at),
         egui::Event::PointerButton {
@@ -19,7 +19,7 @@ fn clicks(at: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
     ]
 }
 
-fn rect(output: &egui::FullOutput, label: &str, last: bool) -> egui::Rect {
+pub(super) fn rect(output: &egui::FullOutput, label: &str, last: bool) -> egui::Rect {
     let rows: Vec<_> = output
         .shapes
         .iter()

@@ -78,6 +78,13 @@ pub enum EditChange {
     RemoveObject {
         object: ObjectId,
     },
+    /// Set the shown history position of a Body; absence shows its tip.
+    SetRollback {
+        /// Body whose displayed result and insertion position change.
+        object: ObjectId,
+        /// Earlier feature in that Body, or no rollback marker.
+        feature: Option<ObjectId>,
+    },
     SetSuppressed {
         object: ObjectId,
         suppressed: bool,
@@ -257,6 +264,7 @@ impl EditChange {
             | Self::RenameParameter { .. }
             | Self::RemoveObject { .. }
             | Self::SetSuppressed { .. }
+            | Self::SetRollback { .. }
             | Self::SetExpressionText { .. }
             | Self::SetKeepSelection { .. }
             | Self::AddDatumPlane { .. }
@@ -291,6 +299,7 @@ impl EditChange {
             | Self::RenameParameter { object, .. }
             | Self::RemoveObject { object }
             | Self::SetSuppressed { object, .. }
+            | Self::SetRollback { object, .. }
             | Self::SetExpressionText { object, .. }
             | Self::SetKeepSelection { object, .. }
             | Self::AddDatumPlane { object, .. }
@@ -412,6 +421,7 @@ impl EditChange {
             | Self::RenameParameter { .. }
             | Self::RemoveObject { .. }
             | Self::SetSuppressed { .. }
+            | Self::SetRollback { .. }
             | Self::SetExpressionText { .. }
             | Self::AddDatumPlane { .. }
             | Self::AddBody { .. }
@@ -469,6 +479,7 @@ impl EditChange {
             | Self::RenameParameter { .. }
             | Self::RemoveObject { .. }
             | Self::SetSuppressed { .. }
+            | Self::SetRollback { .. }
             | Self::AddDatumPlane { .. }
             | Self::AddBody { .. }
             | Self::AddSketch { .. }
@@ -676,6 +687,9 @@ impl Document {
                     }
                     EditChange::RenameParameter { name, .. } => candidate.rename(id, name)?,
                     EditChange::RemoveObject { .. } => candidate.remove(id)?,
+                    EditChange::SetRollback { feature, .. } => {
+                        candidate.set_rollback(id, *feature)?;
+                    }
                     EditChange::SetSuppressed { suppressed, .. } => {
                         candidate.set_suppressed(id, *suppressed)?;
                     }
@@ -693,6 +707,7 @@ impl Document {
                             name,
                             ObjectPayload::Body(crate::Body {
                                 tip_feature: Some(*feature_object),
+                                rollback: None,
                             }),
                         )?;
                     }
@@ -708,15 +723,7 @@ impl Document {
                         feature,
                         ..
                     } => {
-                        let saved = candidate.edit(*body)?;
-                        let ObjectPayload::Body(body_payload) = &saved.payload else {
-                            return Err(CadError::input(format!("object {body} is not a Body")));
-                        };
-                        let previous = body_payload.tip_feature;
-                        candidate.add(id, name, feature.payload(previous)?)?;
-                        candidate.edit(*body)?.payload = ObjectPayload::Body(crate::Body {
-                            tip_feature: Some(id),
-                        });
+                        candidate.add_feature(id, *body, name, feature)?;
                     }
                     EditChange::SetExpressionText { .. }
                     | EditChange::SetKeepSelection { .. }

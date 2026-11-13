@@ -1196,6 +1196,7 @@ fn write_annular_fixture(path: &Path) {
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

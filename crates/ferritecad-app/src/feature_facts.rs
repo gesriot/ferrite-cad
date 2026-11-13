@@ -60,7 +60,7 @@ impl CircularCut {
             reversed: false,
         };
         feature
-            .payload(Some(target.tip_feature))?
+            .payload(Some(target.shown_feature))?
             .to_storage_bytes()?;
         Ok(vec![
             EditChange::AddSketch {
@@ -107,7 +107,8 @@ impl CircularCut {
 pub(crate) struct CutTarget {
     pub body: ObjectId,
     pub plane: ObjectId,
-    pub tip_feature: ObjectId,
+    /// The displayed history result consumed by a new Cut, including a stored rollback.
+    pub shown_feature: ObjectId,
     pub boundary: Vec<[f64; 2]>,
     pub height_mm: f64,
 }
@@ -211,18 +212,20 @@ pub(crate) fn read(
         let ObjectPayload::Body(b) = &body.payload else {
             continue;
         };
-        let Some(tip) = b.tip_feature else { continue };
+        let Some(shown) = b.shown_feature() else {
+            continue;
+        };
         edges.push(EdgeChoice {
             body: body.id,
             name: body.name.clone(),
             target: Some(EdgeTarget {
                 body: body.id,
-                previous_feature: tip,
+                previous_feature: shown,
             }),
             refusal: None,
         });
         let mut chain = Vec::new();
-        let mut cursor = Some(tip);
+        let mut cursor = b.tip_feature;
         let mut seen = std::collections::BTreeSet::new();
         while let Some(id) = cursor {
             if !seen.insert(id) {
@@ -270,7 +273,7 @@ pub(crate) fn read(
         let target = CutTarget {
             body: body.id,
             plane: sketch.plane,
-            tip_feature: tip,
+            shown_feature: shown,
             boundary: lines.iter().map(|(_, p, _)| [p.x, p.y]).collect(),
             height_mm,
         };

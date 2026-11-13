@@ -27,6 +27,20 @@ Removing an import deletes its source claim, and bytes with no remaining claims 
 in that transaction. No surviving dependency or presentation child is deleted implicitly.
 See [Tree operations](decisions/0011-tree-operations.md).
 
+A Body payload has an optional `rollback` feature UUID. The writer omits it when
+absent. A present marker must belong to that Body's complete predecessor chain,
+strictly before `tip_feature`; an empty Body cannot have one. Opening refuses a
+non-UUID, a marker outside the chain, a marker equal to the tip or a marker on an
+empty Body, identifying the Body and feature. No new dependency role is stored.
+All history features still rebuild. The marker changes only the displayed result
+and where additions are inserted, including for exports.
+
+An insertion splices the new feature after the marker, rewrites the old successor's
+`previous` and `predecessor` row, and moves the marker to the new feature without
+changing the tip. Removing the marker moves it to the nearest retained predecessor,
+or clears it if none remains. A marker that equals the tip after removing the tail
+is cleared. See [rollback and insertion](decisions/0012-history-rollback.md).
+
 A `.fcad-cache` sidecar is tagged `FCAC`. It uses WAL and normal durability, and
 binds derived blobs to a document id, kernel build and input key. Unreadable or
 mismatched caches are discarded and recreated. A cached entry whose bytes no
@@ -104,9 +118,10 @@ edges refuses, while an explicit all-descendants selection consumes the full set
 
 ## Solid result sets and KeepSolids
 
-A Body owns one predecessor chain and presents its entire tip result, without creating
-objects when rebuilt. Feature results are unordered sets of valid solids. The atomic
-`brep.generative.v2` record contains every member and complete elementary naming/incidence.
+A Body owns one complete predecessor chain and presents the result of its rollback
+marker, or its tip when no marker is stored, without creating objects when rebuilt.
+Feature results are unordered sets of valid solids. The atomic `brep.generative.v2`
+record contains every member and complete elementary naming/incidence.
 
 `feature.keep_solids` stores `KeepSolids { previous, selection }` in the ordinary CBOR
 envelope. `selection` is `All` or `ContainingFaces(Vec<EntityReference>)`, encoded with

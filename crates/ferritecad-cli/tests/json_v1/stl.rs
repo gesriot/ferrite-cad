@@ -77,6 +77,7 @@ fn twins(path: &Path) -> [ObjectId; 2] {
                 Some(TWIN),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(second_feature),
+                    rollback: None,
                 }),
             )?;
             w.add_dependency(Dependency {
@@ -155,7 +156,10 @@ fn body_discovery_preserves_domains_order_nulls_and_the_pinned_reading() {
                 Some(first),
                 -100,
                 Some("No tip"),
-                &ObjectPayload::Body(Body { tip_feature: None }),
+                &ObjectPayload::Body(Body {
+                    tip_feature: None,
+                    rollback: None,
+                }),
             )
         })
         .expect("saved body without geometry");

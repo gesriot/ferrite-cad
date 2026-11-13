@@ -11375,6 +11375,7 @@ mod tests {
                         Some("Bracket"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(extrude),
+                            rollback: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {
@@ -16725,6 +16726,7 @@ mod tests {
                         Some("Plate"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(extrude),
+                            rollback: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {

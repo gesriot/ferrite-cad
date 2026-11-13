@@ -134,6 +134,7 @@ pub(crate) fn write_round(
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

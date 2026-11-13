@@ -422,7 +422,7 @@ fn run<K: GeometryKernel + ?Sized>(
             }
             state.statuses.insert(*id, RebuildStatus::Skipped { cause });
             if let ObjectPayload::Body(body) = &object.payload {
-                let mut current = body.tip_feature;
+                let mut current = body.shown_feature();
                 let mut fallback = None;
                 while let Some(feature) = current {
                     if matches!(
@@ -747,17 +747,17 @@ fn run<K: GeometryKernel + ?Sized>(
                 }
 
                 ObjectPayload::Body(body) => {
-                    // A body in this slice is a name for its tip feature's result.
+                    // A Body aliases its shown feature result without truncating evaluation.
                     // It creates nothing, so it owns nothing to release.
-                    if let Some(tip) = body.tip_feature {
-                        if matches!(state.status(tip), Some(RebuildStatus::Suppressed))
-                            && state.shape(tip).is_none()
+                    if let Some(shown) = body.shown_feature() {
+                        if matches!(state.status(shown), Some(RebuildStatus::Suppressed))
+                            && state.shape(shown).is_none()
                         {
                             return Ok(());
                         }
-                        let shape = state.shapes.get(&tip).copied().ok_or_else(|| {
+                        let shape = state.shapes.get(&shown).copied().ok_or_else(|| {
                             CadError::input(format!(
-                                "body {id} names tip feature {tip}, which produced no shape"
+                                "body {id} shows feature {shown}, which produced no shape"
                             ))
                         })?;
                         state.shapes.insert(*id, shape);

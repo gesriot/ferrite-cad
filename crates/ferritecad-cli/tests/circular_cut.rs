@@ -254,6 +254,7 @@ fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

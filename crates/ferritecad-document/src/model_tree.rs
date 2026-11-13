@@ -92,10 +92,38 @@ impl ModelTree {
                 // Do not advertise the partial tail as a complete history.
                 chain.clear();
             }
+            let ObjectPayload::Body(part) = &body.payload else {
+                unreachable!("Body projection")
+            };
+            let marker = part
+                .rollback
+                .and_then(|id| chain.iter().position(|o| o.id == id));
+            if let Some(later) = marker {
+                let shown = chain[later];
+                let name = shown.name.clone().unwrap_or_else(|| shown.id.to_string());
+                let row = rows.last_mut().expect("Body row");
+                row.name.push_str(" · rolled back");
+                let count = if later == 1 {
+                    "1 later feature is not shown.".to_owned()
+                } else {
+                    format!("{later} later features are not shown.")
+                };
+                row.note = format!("Shows the result of {name}; {count}");
+            }
+            let mut not_shown = false;
             for feature in chain.into_iter().rev() {
                 let occurrence = (feature.id, Some(body.id), None);
                 in_history.insert(feature.id);
                 rows.push(row(feature, occurrence, Some(root), 1, "History reference"));
+                if not_shown {
+                    rows.last_mut()
+                        .expect("feature row")
+                        .name
+                        .push_str(" · not shown");
+                }
+                if marker.is_some() && part.rollback == Some(feature.id) {
+                    not_shown = true;
+                }
                 for profile in dependencies(feature.id, DependencyRole::Profile) {
                     if let Some(object) = by_id.get(&profile) {
                         rows.push(row(

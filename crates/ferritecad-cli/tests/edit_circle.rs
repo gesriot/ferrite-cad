@@ -184,6 +184,7 @@ fn write_circle_document(path: &Path, center: [f64; 2], radius: f64, height: f64
             Some("Body"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         for (dependent, dependency, role) in [

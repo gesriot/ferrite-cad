@@ -110,6 +110,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {

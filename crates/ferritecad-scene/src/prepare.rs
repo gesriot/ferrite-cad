@@ -508,7 +508,7 @@ where
                 ObjectPayload::Body(body) => {
                     // A body with no tip feature is empty by definition rather
                     // than broken: nothing has been built into it yet.
-                    if body.tip_feature.is_none()
+                    if body.shown_feature().is_none()
                         || (matches!(
                             built.status(object.id),
                             Some(ferritecad_eval::RebuildStatus::Built)
@@ -991,7 +991,7 @@ fn face_tessellation_refusal(reason: &CadError) -> Option<TessellationRefusal> {
 /// anything that is not geometry to begin with.
 fn draws(object: &ObjectRecord) -> bool {
     match &object.payload {
-        ObjectPayload::Body(body) => body.tip_feature.is_some(),
+        ObjectPayload::Body(body) => body.shown_feature().is_some(),
         ObjectPayload::ImportedStep(_) => true,
         ObjectPayload::KeepSolids(_) => false, // Its Body presents the complete result.
         _ => false,

@@ -182,6 +182,8 @@ pub(crate) enum Command {
     DeleteWithDependents,
     Suppress,
     Unsuppress,
+    Rollback,
+    RollToEnd,
 }
 
 pub(crate) type Action = ModelAction<Command>;
@@ -352,6 +354,8 @@ impl Command {
             Self::DeleteWithDependents => "Delete with dependents…",
             Self::Suppress => "Suppress",
             Self::Unsuppress => "Unsuppress",
+            Self::Rollback => "Roll back to here",
+            Self::RollToEnd => "Roll to end",
         }
     }
     fn shortcuts(self) -> &'static [egui::KeyboardShortcut] {
@@ -361,7 +365,12 @@ impl Command {
         ];
         match self {
             Self::Delete => &DELETE,
-            Self::Edit(_) | Self::DeleteWithDependents | Self::Suppress | Self::Unsuppress => &[],
+            Self::Edit(_)
+            | Self::DeleteWithDependents
+            | Self::Suppress
+            | Self::Unsuppress
+            | Self::Rollback
+            | Self::RollToEnd => &[],
         }
     }
     fn available(
@@ -415,9 +424,47 @@ impl Command {
                     .into());
                 }
             }
+            Self::Rollback => {
+                if !object.payload.kind().is_some_and(ObjectKind::is_feature) || key.1.is_none() {
+                    return Err("Only a feature in a Body history can be rolled back to.".into());
+                }
+                let (_, body) = history_body(source, key)
+                    .ok_or("Only a feature in a Body history can be rolled back to.")?;
+                if body.shown_feature() == Some(object.id) {
+                    return Err("The Body already shows this feature.".into());
+                }
+                if body.tip_feature == Some(object.id) {
+                    return Err("This feature ends the history; use Roll to end.".into());
+                }
+            }
+            Self::RollToEnd => {
+                let (_, body) = history_body(source, key)
+                    .ok_or("Only a Body or a feature in its history can roll to the end.")?;
+                if body.rollback.is_none() {
+                    return Err("This Body is not rolled back.".into());
+                }
+            }
         }
         Ok(())
     }
+}
+
+fn history_body(
+    source: &ExtrudeEditSource,
+    row: ModelKey,
+) -> Option<(ObjectId, &ferritecad_document::Body)> {
+    let id = match row {
+        (_, Some(body), None) => body,
+        (object, None, None) => object,
+        (_, _, Some(_)) => return None,
+    };
+    source
+        .objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ferritecad_document::ObjectPayload::Body(body) if object.id == id => Some((id, body)),
+            _ => None,
+        })
 }
 
 pub(crate) fn offers(
@@ -433,6 +480,8 @@ pub(crate) fn offers(
             Command::DeleteWithDependents,
             Command::Suppress,
             Command::Unsuppress,
+            Command::Rollback,
+            Command::RollToEnd,
         ])
         .map(|command| ModelCommand {
             command,
@@ -590,6 +639,13 @@ pub(crate) fn launch(
             vec![EditChange::SetSuppressed {
                 object: asked.row.0,
                 suppressed: asked.edit == Command::Suppress,
+            }],
+        )),
+        Command::Rollback | Command::RollToEnd => Ok(Launch::Apply(
+            source.version,
+            vec![EditChange::SetRollback {
+                object: history_body(source, asked.row).expect("available Body").0,
+                feature: (asked.edit == Command::Rollback).then_some(asked.row.0),
             }],
         )),
     }

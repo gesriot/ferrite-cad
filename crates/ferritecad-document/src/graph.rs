@@ -25,7 +25,7 @@ pub enum DependencyRole {
     /// stored twice — it is the body that can reach the feature through these
     /// edges from its tip.
     Predecessor,
-    /// The feature whose result a body exposes as its current tip.
+    /// The final feature of a Body's complete history, including a hidden suffix.
     BodyTip,
     /// The feature result supplying a face or vertex by reference.
     Support,

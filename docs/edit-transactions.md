@@ -56,8 +56,9 @@ and `display_unit`. These are saved facts; they do not declare eligibility.
 
 New objects and curves have caller-supplied UUIDv7 identities. Changes apply in
 order: a feature can use a sketch added earlier in the request. `add_feature`
-sets its predecessor to the Body's current candidate tip and moves that tip;
-dependencies are derived from each final payload. Occupied identities, missing
+uses the Body's shown feature as its predecessor: with a rollback marker it inserts
+after that feature and moves the marker; otherwise it appends and moves the tip.
+Dependencies are derived from each final payload. Occupied identities, missing
 objects and wrong object kinds refuse the whole transaction. Rewriting any saved
 object, including a Body tip, refuses if its payload cannot round-trip losslessly.
 
@@ -107,7 +108,7 @@ See [referenced sweep ends](generic-sweeps.md#referenced-end-conditions) for JSO
 an executable recipe.
 
 Generic sweeps accept `NewBody`, `Add`, `Cut` and `Intersect`. `add_feature` derives
-`previous` from the candidate Body tip. `add_body` supplies `object`, `name`,
+`previous` from the candidate Body's shown feature. `add_body` supplies `object`, `name`,
 `feature_object`, `feature_name` and `feature`; its first feature must use `NewBody`.
 An existing feature's operation changes with `set_operation` (`object`, `operation`),
 its extrusion direction with `set_reversed` (`object`, `reversed`).
@@ -205,4 +206,32 @@ names without invoking the kernel; suppressing the first feature yields an empty
 Use `suppressed: false` to restore the operation. Dependent references still resolve exactly
 or refuse. Reports list `suppressed` separately from failed/skipped objects, and the model tree
 displays that status. JSON omits the `suppressed` list when no object has that status.
-Window commands for these operations are separate work.
+The window exposes these operations through the shared Model command catalogue.
+
+## Rollback and insertion
+
+`set_rollback` takes a Body `object` and a `feature` in its history before the tip.
+`clear_rollback` takes only the Body `object`. Neither spelling accepts null. The
+same marker or clearing an absent marker follows the existing no-change rule.
+All features still build, and newly failed consumers still refuse the whole edit.
+Reaching the tip is expressed by `clear_rollback`, not a marker equal to the tip.
+
+Changes see earlier changes in the same request. To insert a Fillet and then show
+the complete result, use the following batch with explicit identities:
+
+```json
+{"request_version":1,"changes":[
+  {"kind":"set_rollback","object":"<Body UUID>","feature":"<earlier feature UUID>"},
+  {"kind":"add_feature","object":"<new Fillet UUID>","body":"<Body UUID>",
+   "name":"Inserted fillet","feature":{"kind":"fillet","edges":[
+     {"id":"<reference UUID>","producer":"<producer UUID>","kind":"edge",
+      "digest":"<64 hex digits>","selection":"one"}
+   ],"radius":{"value":2,"unit":"mm"}}},
+  {"kind":"clear_rollback","object":"<Body UUID>"}
+]}
+```
+
+The old successor consumes the inserted feature; its saved entity references stay
+unchanged. Lost or split consumed names refuse instead of choosing a neighbour.
+References to later results create cycles and use the ordinary graph refusal.
+The transaction is one Undo step. See [ADR 0012](decisions/0012-history-rollback.md).

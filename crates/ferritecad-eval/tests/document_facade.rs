@@ -95,6 +95,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(plate.extrude),
+                rollback: None,
             }),
         )?;
 

@@ -116,6 +116,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             Some("Plate"),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(plate.extrude),
+                rollback: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -714,6 +715,7 @@ fn a_failed_cut_releases_its_tool_and_keeps_the_last_built_predecessor() {
                 Some("Plate"),
                 &ObjectPayload::Body(Body {
                     tip_feature: Some(dependent),
+                    rollback: None,
                 }),
             )?;
             w.remove_dependency(Dependency {

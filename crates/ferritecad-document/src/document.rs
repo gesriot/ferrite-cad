@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::collections::BTreeMap;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
@@ -356,7 +357,9 @@ impl Document {
                 reason: "it was explicitly opened without write access".to_owned(),
             },
         };
-        crate::parameters::check_rows(&document.objects()?, &document.parameter_rows()?)?;
+        let objects = document.objects()?;
+        crate::parameters::check_rows(&objects, &document.parameter_rows()?)?;
+        crate::history::check_markers(&objects)?;
         Ok(document)
     }
 
@@ -1483,7 +1486,21 @@ fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRec
                 None => &stored_kind,
             };
             CadError::input_because(
-                format!("reading {kind} object {id} of type {stored_kind}"),
+                if stored_kind == "body"
+                    && envelope.type_name == "body"
+                    && envelope.suppressed.is_none()
+                    && envelope
+                        .decode::<BTreeMap<String, ciborium::Value>>()
+                        .is_ok()
+                {
+                    format!(
+                        "body '{}' ({id}) has an unreadable history position; \
+                         tip_feature and rollback must name feature UUIDs.",
+                        name.as_deref().unwrap_or("Unnamed")
+                    )
+                } else {
+                    format!("reading {kind} object {id} of type {stored_kind}")
+                },
                 e,
             )
         })?;
