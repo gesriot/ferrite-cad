@@ -165,7 +165,7 @@ fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
 
     if model.is_empty() {
         return Err(CadError::input(
-            "the sketch has no model geometry, so there is no profile to extrude",
+            "the sketch has no main Line, Arc or Circle, so it gives no profile",
         ));
     }
 

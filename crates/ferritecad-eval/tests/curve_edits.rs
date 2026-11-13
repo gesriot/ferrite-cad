@@ -8,7 +8,7 @@ use ferritecad_kernel::{GeometryKernel, OperationContext, mock::MockKernel};
 use support::*;
 
 const EMPTY: &str =
-    "invalid input: the sketch has no model geometry, so there is no profile to extrude";
+    "invalid input: the sketch has no main Line, Arc or Circle, so it gives no profile";
 fn no_profile(curves: Vec<SketchCurve>, expected: String) {
     let f = Drawing::new(curves.clone(), true);
     let mut k = MockKernel::new();
