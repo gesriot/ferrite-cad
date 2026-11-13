@@ -320,7 +320,7 @@ fn replay(
             return Err("long history has no plane".into());
         };
         let profile = profile_from_sketch(sketch, extrude.profile, plane_from_datum(plane)?)?
-            .profile
+            .profile?
             .select(&extrude.regions)?;
         let start = Instant::now();
         model.select_profile(*id, &profile)?;

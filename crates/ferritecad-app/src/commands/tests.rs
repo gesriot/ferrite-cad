@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #![allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 use super::*;
+mod curve_edits;
 mod native;
 mod rollback;
 mod widgets;

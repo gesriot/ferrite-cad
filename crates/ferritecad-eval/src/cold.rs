@@ -95,6 +95,7 @@ pub struct RebuildResult {
     degraded_bodies: Vec<DegradedBody>,
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
+    profile_failures: BTreeMap<ObjectId, std::sync::Arc<CadError>>,
     planes: BTreeMap<ObjectId, SketchPlane>,
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
     presentations: BTreeMap<ObjectId, SketchPresentation>,
@@ -197,6 +198,13 @@ impl RebuildResult {
     /// The profile a sketch converted to.
     pub fn profile(&self, object: ObjectId) -> Option<&Profile> {
         self.profiles.get(&object)
+    }
+
+    /// Why a built drawing has no profile; absent for a valid profile or a failed sketch.
+    pub fn profile_failure(&self, sketch: ObjectId) -> Option<&CadError> {
+        self.profile_failures
+            .get(&sketch)
+            .map(std::sync::Arc::as_ref)
     }
 
     /// What the solve of one sketch found out, if that sketch was solved.
@@ -515,10 +523,19 @@ fn run<K: GeometryKernel + ?Sized>(
                             sketch.plane
                         ))
                     })?;
-                    // Converted here rather than when the extrude asks for it, so a
-                    // malformed sketch is reported against the sketch.
+                    // One solve supplies the drawing and the strict profile reading.
+                    // A missing profile belongs to its consumer, not to the drawing.
                     let evaluated = profile_from_sketch(sketch, *id, plane)?;
-                    state.profiles.insert(*id, evaluated.profile);
+                    match evaluated.profile {
+                        Ok(profile) => {
+                            state.profiles.insert(*id, profile);
+                        }
+                        Err(error) => {
+                            state
+                                .profile_failures
+                                .insert(*id, std::sync::Arc::new(error));
+                        }
+                    }
                     // Filed for every sketch, however it was arrived at. The
                     // profile above and this were built from one set of
                     // coordinates, so nothing downstream has to choose between
@@ -544,9 +561,16 @@ fn run<K: GeometryKernel + ?Sized>(
                     };
                     let previous = object.payload.previous_feature();
                     let profile = state.profiles.get(&profile_id).ok_or_else(|| {
-                        CadError::input(format!(
-                            "feature {id} reads {profile_id}, which produced no profile"
-                        ))
+                        if let Some(reason) = state.profile_failures.get(&profile_id) {
+                            CadError::input_because(
+                                format!("sketch {profile_id} gives no profile: {reason}"),
+                                std::sync::Arc::clone(reason),
+                            )
+                        } else {
+                            CadError::input(format!(
+                                "feature {id} reads {profile_id}, which produced no profile"
+                            ))
+                        }
                     })?;
                     let selected = match &object.payload {
                         ObjectPayload::Extrude(e) => &e.regions,
@@ -891,6 +915,7 @@ fn run<K: GeometryKernel + ?Sized>(
                 }
                 state.shapes.remove(id);
                 state.profiles.remove(id);
+                state.profile_failures.remove(id);
                 state.keys.remove(id);
                 state.topology.remove_feature(*id);
                 state.statuses.insert(*id, RebuildStatus::Failed { error });

@@ -47,6 +47,9 @@ impl RequestFacts for EditRequest {
                 | EditChange::SetEdges { .. }
                 | EditChange::SetEndCondition { .. }
                 | EditChange::SetExpression { .. }
+                | EditChange::AddCurve { .. }
+                | EditChange::RemoveCurve { .. }
+                | EditChange::SetConstruction { .. }
                 | EditChange::SetCurveGeometry { .. }
                 | EditChange::AddConstraint { .. }
                 | EditChange::RemoveConstraint { .. } => None,
@@ -98,6 +101,9 @@ impl RequestFacts for EditRequest {
                 | EditChange::SetEdges { .. }
                 | EditChange::SetEndCondition { .. }
                 | EditChange::SetExpression { .. }
+                | EditChange::AddCurve { .. }
+                | EditChange::RemoveCurve { .. }
+                | EditChange::SetConstruction { .. }
                 | EditChange::AddConstraint { .. }
                 | EditChange::RemoveConstraint { .. } => None,
             })
@@ -139,6 +145,9 @@ impl RequestFacts for EditRequest {
                 | EditChange::AddSketch { .. }
                 | EditChange::SetEdges { .. }
                 | EditChange::SetExpression { .. }
+                | EditChange::AddCurve { .. }
+                | EditChange::RemoveCurve { .. }
+                | EditChange::SetConstruction { .. }
                 | EditChange::SetCurveGeometry { .. }
                 | EditChange::AddConstraint { .. }
                 | EditChange::RemoveConstraint { .. } => None,
@@ -181,6 +190,9 @@ impl RequestFacts for EditRequest {
                 | EditChange::AddSketch { .. }
                 | EditChange::SetEdges { .. }
                 | EditChange::SetExpression { .. }
+                | EditChange::AddCurve { .. }
+                | EditChange::RemoveCurve { .. }
+                | EditChange::SetConstruction { .. }
                 | EditChange::SetCurveGeometry { .. }
                 | EditChange::AddConstraint { .. }
                 | EditChange::RemoveConstraint { .. } => None,
@@ -213,6 +225,9 @@ impl RequestFacts for EditRequest {
                 | EditChange::SetEdges { .. }
                 | EditChange::SetEndCondition { .. }
                 | EditChange::SetExpression { .. }
+                | EditChange::AddCurve { .. }
+                | EditChange::RemoveCurve { .. }
+                | EditChange::SetConstruction { .. }
                 | EditChange::AddConstraint { .. }
                 | EditChange::RemoveConstraint { .. } => None,
             })

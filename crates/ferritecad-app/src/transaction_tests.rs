@@ -30,7 +30,10 @@ pub fn sketch(request: &EditRequest) -> ObjectId {
         .changes
         .iter()
         .find_map(|change| match change {
-            EditChange::SetCurveGeometry { sketch, .. }
+            EditChange::AddCurve { sketch, .. }
+            | EditChange::RemoveCurve { sketch, .. }
+            | EditChange::SetConstruction { sketch, .. }
+            | EditChange::SetCurveGeometry { sketch, .. }
             | EditChange::AddConstraint { sketch, .. }
             | EditChange::RemoveConstraint { sketch, .. } => Some(*sketch),
             EditChange::AddParameter { .. }
@@ -191,6 +194,9 @@ pub fn constraints(request: &EditRequest) -> SketchConstraintEdits {
             | EditChange::SetEdges { .. }
             | EditChange::SetEndCondition { .. }
             | EditChange::SetExpression { .. }
+            | EditChange::AddCurve { .. }
+            | EditChange::RemoveCurve { .. }
+            | EditChange::SetConstruction { .. }
             | EditChange::SetCurveGeometry { .. } => {}
         }
     }
@@ -300,6 +306,9 @@ pub fn vertices_in(request: &EditRequest, stored: &Sketch) -> Vec<SketchVertex> 
                     | EditChange::SetEdges { .. }
                     | EditChange::SetEndCondition { .. }
                     | EditChange::SetExpression { .. }
+                    | EditChange::AddCurve { .. }
+                    | EditChange::RemoveCurve { .. }
+                    | EditChange::SetConstruction { .. }
                     | EditChange::SetCurveGeometry { .. }
                     | EditChange::AddConstraint { .. }
                     | EditChange::RemoveConstraint { .. } => None,
@@ -372,6 +381,9 @@ fn circles(request: &EditRequest) -> Vec<CircleValues> {
                     | EditChange::SetEdges { .. }
                     | EditChange::SetEndCondition { .. }
                     | EditChange::SetExpression { .. }
+                    | EditChange::AddCurve { .. }
+                    | EditChange::RemoveCurve { .. }
+                    | EditChange::SetConstruction { .. }
                     | EditChange::SetCurveGeometry { .. }
                     | EditChange::AddConstraint { .. }
                     | EditChange::RemoveConstraint { .. } => None,

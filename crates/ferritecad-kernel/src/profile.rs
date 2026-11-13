@@ -177,7 +177,7 @@ pub enum SegmentGeometry {
         start: PlanarPoint,
         end: PlanarPoint,
     },
-    /// Counter-clockwise from `start_angle` to `end_angle`, in radians.
+    /// From `start_angle` to `end_angle` in radians, with the sign of their difference.
     Arc {
         center: PlanarPoint,
         radius: f64,
@@ -310,11 +310,48 @@ fn no_endpoints() -> CadError {
 pub struct ProfileSegment {
     pub label: StableEntityId,
     pub geometry: SegmentGeometry,
+    /// Whether the directed geometry traverses the opposite of the stored curve direction.
+    pub reversed: bool,
 }
 
 impl ProfileSegment {
     pub fn new(label: StableEntityId, geometry: SegmentGeometry) -> Self {
-        Self { label, geometry }
+        Self {
+            label,
+            geometry,
+            reversed: false,
+        }
+    }
+
+    /// Reverse the derived walk without changing the identity of either stored end.
+    pub fn reverse(&mut self) -> Result<()> {
+        match &mut self.geometry {
+            SegmentGeometry::Line { start, end } => std::mem::swap(start, end),
+            SegmentGeometry::Arc {
+                start_angle,
+                end_angle,
+                ..
+            } => {
+                std::mem::swap(start_angle, end_angle);
+            }
+            SegmentGeometry::Circle { .. } => return Err(no_endpoints()),
+        }
+        self.reversed = !self.reversed;
+        Ok(())
+    }
+
+    /// Translate a directed traversal endpoint to the caller's stored start/end identity.
+    pub fn stored_end(&self, end: bool) -> bool {
+        end ^ self.reversed
+    }
+
+    fn feed(&self, hasher: &mut CanonicalHasher) {
+        hasher.bytes(&self.label.to_bytes());
+        self.geometry.feed(hasher);
+        // Existing directed profiles retain their exact key bytes.
+        if self.reversed {
+            hasher.field("stored-direction-reversed");
+        }
     }
 }
 
@@ -332,7 +369,8 @@ enum Shape {
     Closed(ProfileSegment),
 }
 
-/// A closed boundary of a planar region.
+/// A directed closed boundary of a planar region. The caller connects and orients
+/// its segments; each segment retains its stored-end identity for operation history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileLoop {
     shape: Shape,
@@ -437,14 +475,12 @@ impl ProfileLoop {
             Shape::Chain(segments) => {
                 hasher.field("loop").u64(segments.len() as u64);
                 for segment in segments {
-                    hasher.bytes(&segment.label.to_bytes());
-                    segment.geometry.feed(hasher);
+                    segment.feed(hasher);
                 }
             }
             Shape::Closed(segment) => {
                 hasher.field("closed-loop");
-                hasher.bytes(&segment.label.to_bytes());
-                segment.geometry.feed(hasher);
+                segment.feed(hasher);
             }
         }
     }
@@ -584,6 +620,30 @@ mod tests {
             ));
         }
         ProfileLoop::new(segments)
+    }
+
+    #[test]
+    fn directed_loop_keys_retain_the_pre_orientation_byte_layout() {
+        let boundary = square().expect("square");
+        let mut legacy = CanonicalHasher::new("profile-compatibility");
+        legacy.field("loop").u64(boundary.segments().len() as u64);
+        for segment in boundary.segments() {
+            legacy.bytes(&segment.label.to_bytes());
+            segment.geometry.feed(&mut legacy);
+        }
+        let mut current = CanonicalHasher::new("profile-compatibility");
+        boundary.feed(&mut current);
+        assert_eq!(current.finish(), legacy.finish());
+        let mut segments = boundary.segments().to_vec();
+        // Same directed geometry but opposite stored identity must have a distinct key.
+        segments[1].reversed = true;
+        let mut reversed = CanonicalHasher::new("profile-compatibility");
+        ProfileLoop::new(segments)
+            .expect("same geometry")
+            .feed(&mut reversed);
+        let mut original = CanonicalHasher::new("profile-compatibility");
+        boundary.feed(&mut original);
+        assert_ne!(original.finish(), reversed.finish());
     }
 
     #[test]

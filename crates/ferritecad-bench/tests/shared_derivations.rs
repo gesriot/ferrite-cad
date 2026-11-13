@@ -193,6 +193,7 @@ fn archive_bytes_do_not_depend_on_unrelated_body_order() {
                 let profile = ferritecad_eval::profile_from_sketch(sketch, extrude.profile, plane)
                     .expect("profile")
                     .profile
+                    .expect("closed profile")
                     .select(&extrude.regions)
                     .expect("regions");
                 model.select_profile(*owner, &profile).expect("roots");

@@ -61,10 +61,10 @@ pub(crate) fn vertex_extent(
     ExtrudeExtent::blind(distance)
 }
 
-/// Builds a profile from a sketch's curves.
+/// Evaluate a sketch drawing once, retaining its profile or the reason no profile exists.
 ///
 /// Main curves form disjoint closed boundaries with even/odd nesting.
-/// Construction geometry is ignored, as it produces no edges by definition.
+/// Points and construction geometry remain in the drawing but bound no profile.
 ///
 /// A sketch that carries constraints is solved first, and the profile is built
 /// from the answer rather than from the stored coordinates: the stored ones
@@ -109,9 +109,9 @@ pub fn profile_from_sketch(
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct SketchEvaluation {
-    /// What the kernel is asked to sweep. Less than the drawing by design:
-    /// construction geometry bounds no face.
-    pub profile: Profile,
+    /// The strict reading for sweeps, or its complete failure. A failed reading
+    /// does not invalidate the drawing, which can be empty or unfinished.
+    pub profile: Result<Profile>,
     /// The whole drawing, at the coordinates the profile was built from.
     pub presentation: SketchPresentation,
     /// What the solve found out, and `None` when there was nothing to solve.
@@ -130,8 +130,22 @@ fn evaluation_of(
     plane: SketchPlane,
     report: Option<SketchSolveReport>,
 ) -> Result<SketchEvaluation> {
+    for curve in &evaluated.curves {
+        match &curve.geometry {
+            SketchGeometry::Point { .. }
+            | SketchGeometry::Line { .. }
+            | SketchGeometry::Arc { .. }
+            | SketchGeometry::Circle { .. } => {}
+            other => {
+                return Err(CadError::unsupported(format!(
+                    "sketch curve {} has geometry {other:?}, which is not implemented",
+                    curve.id
+                )));
+            }
+        }
+    }
     Ok(SketchEvaluation {
-        profile: profile_from_curves(evaluated, plane)?,
+        profile: profile_from_curves(evaluated, plane),
         presentation: SketchPresentation::of(id, plane, evaluated),
         report,
     })
@@ -143,7 +157,11 @@ fn evaluation_of(
 /// a sketch, and there is one account of what a closed loop of lines and arcs
 /// means rather than one for each way the coordinates were arrived at.
 fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
-    let model: Vec<&SketchCurve> = sketch.curves.iter().filter(|c| !c.construction).collect();
+    let model: Vec<&SketchCurve> = sketch
+        .curves
+        .iter()
+        .filter(|c| c.bounds_profile())
+        .collect();
 
     if model.is_empty() {
         return Err(CadError::input(
@@ -295,8 +313,44 @@ fn planar(x: f64, y: f64) -> Result<PlanarPoint> {
     PlanarPoint::new(x, y)
 }
 
-/// Follow each directed boundary independently; closed curves have no joints.
+/// Connect every boundary through either stored endpoint, retaining an existing directed walk.
 fn chain_loops(mut remaining: Vec<ProfileSegment>) -> Result<Vec<ProfileLoop>> {
+    let mut ends = Vec::new();
+    for segment in &remaining {
+        if !segment.geometry.is_closed() {
+            ends.push((segment.label, false, segment.geometry.start()?));
+            ends.push((segment.label, true, segment.geometry.end()?));
+        }
+    }
+    // Check all joints before walking: a completed loop must not conceal an attached branch.
+    let mut free = None;
+    for &(curve, end, point) in &ends {
+        let neighbours: Vec<_> = ends.iter().filter(|(_, _, p)| joins(point, *p)).collect();
+        if neighbours.len() > 2 {
+            let mut curves: Vec<_> = neighbours.iter().map(|(id, _, _)| *id).collect();
+            curves.sort();
+            curves.dedup();
+            let curves = curves
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CadError::input(format!(
+                "profile curves {curves} have more than two ends at ({}, {})",
+                point.x, point.y
+            )));
+        }
+        if neighbours.len() == 1 && free.is_none() {
+            free = Some((curve, end, point));
+        }
+    }
+    if let Some((curve, end, point)) = free {
+        let end = if end { "end" } else { "start" };
+        return Err(CadError::input(format!(
+            "the profile does not close: curve {curve} has a free {end} at ({}, {})",
+            point.x, point.y
+        )));
+    }
     let mut loops = Vec::new();
     while !remaining.is_empty() {
         let first = remaining.remove(0);
@@ -312,17 +366,26 @@ fn chain_loops(mut remaining: Vec<ProfileSegment>) -> Result<Vec<ProfileLoop>> {
             if joins(tail, start) {
                 break;
             }
-            let next = remaining
-                .iter()
-                .position(|c| c.geometry.start().is_ok_and(|head| joins(tail, head)));
-            let Some(index) = next else {
+            let next = remaining.iter().enumerate().find_map(|(i, segment)| {
+                if segment.geometry.start().is_ok_and(|p| joins(tail, p)) {
+                    Some((i, false))
+                } else if segment.geometry.end().is_ok_and(|p| joins(tail, p)) {
+                    Some((i, true))
+                } else {
+                    None
+                }
+            });
+            let Some((index, reverse)) = next else {
                 return Err(CadError::input(format!(
-                    "the profile does not close: no segment starts at ({}, {}), where segment {} \
-                     ends. Segments must be stored head to tail in one direction.",
-                    tail.x, tail.y, last.label
+                    "the profile does not close: curve {} has a free end at ({}, {})",
+                    last.label, tail.x, tail.y
                 )));
             };
-            ordered.push(remaining.remove(index));
+            let mut segment = remaining.remove(index);
+            if reverse {
+                segment.reverse()?;
+            }
+            ordered.push(segment);
         }
         loops.push(ProfileLoop::new(ordered)?);
     }
@@ -443,6 +506,7 @@ mod tests {
         )
         .expect("converts")
         .profile
+        .expect("closed profile")
     }
 
     #[test]
@@ -471,7 +535,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("a closed square converts")
-        .profile;
+        .profile
+        .expect("closed profile");
         assert_eq!(profile.outer().segments().len(), 4);
         assert!(profile.inner().is_empty());
     }
@@ -486,7 +551,8 @@ mod tests {
         let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
                 .expect("order is recovered by walking the chain")
-                .profile;
+                .profile
+                .expect("closed profile");
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -505,7 +571,8 @@ mod tests {
         let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
                 .expect("a construction circle bounds nothing and is skipped")
-                .profile;
+                .profile
+                .expect("closed profile");
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -530,7 +597,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("a circle is a whole profile")
-        .profile;
+        .profile
+        .expect("closed profile");
         assert!(profile.inner().is_empty());
         let outer = profile.outer();
         assert!(outer.is_closed_curve(), "not approximated by a chain");
@@ -551,7 +619,8 @@ mod tests {
         let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
                 .expect("mixed boundaries")
-                .profile;
+                .profile
+                .expect("closed profile");
         assert_eq!(profile.regions().len(), 1);
         assert_eq!(profile.inner().len(), 1);
     }
@@ -571,7 +640,8 @@ mod tests {
             let profile =
                 profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
                     .expect("a circle inside a circle is a region with a hole")
-                    .profile;
+                    .profile
+                    .expect("closed profile");
 
             let boundary = profile.outer();
             assert!(boundary.is_closed_curve(), "not approximated by a chain");
@@ -615,7 +685,8 @@ mod tests {
                 SketchPlane::world_xy(),
             )
             .expect("general regions")
-            .profile;
+            .profile
+            .expect("closed profile");
             assert_eq!(profile.regions().len(), regions);
         }
     }
@@ -632,7 +703,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("nested contours")
-        .profile;
+        .profile
+        .expect("closed profile");
         assert_eq!(profile.regions().len(), 2);
         assert_eq!(profile.regions()[0].inner.len(), 1);
         assert!(profile.regions()[1].inner.is_empty());
@@ -650,7 +722,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("one model circle")
-        .profile;
+        .profile
+        .expect("closed profile");
         assert!(
             profile.inner().is_empty(),
             "a construction circle is not a hole"
@@ -665,6 +738,8 @@ mod tests {
                 ObjectId::new(),
                 SketchPlane::world_xy(),
             )
+            .expect("drawing")
+            .profile
             .expect_err("a circle needs a positive radius");
             assert_eq!(err.kind(), ErrorKind::Input);
         }
@@ -678,12 +753,14 @@ mod tests {
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
+        .expect("drawing")
+        .profile
         .expect_err("one line closes nothing");
         assert_eq!(err.kind(), ErrorKind::Input);
     }
 
     #[test]
-    fn a_model_point_is_unsupported() {
+    fn a_model_point_does_not_change_the_profile() {
         let mut curves = square_curves();
         curves.push(SketchCurve {
             id: StableEntityId::new(),
@@ -691,9 +768,11 @@ mod tests {
             geometry: SketchGeometry::Point { at: Point2::ORIGIN },
         });
 
-        let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
-            .expect_err("a point bounds no face");
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        let evaluation =
+            profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
+                .expect("drawing");
+        assert_eq!(evaluation.profile.expect("profile").segments().count(), 4);
+        assert_eq!(evaluation.presentation.curves().len(), 5);
     }
 
     #[test]
@@ -707,13 +786,14 @@ mod tests {
         let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
                 .expect("nested loops")
-                .profile;
+                .profile
+                .expect("closed profile");
         assert_eq!(profile.regions().len(), 1);
         assert_eq!(profile.inner().len(), 1);
     }
 
     #[test]
-    fn an_open_chain_is_an_input_error_not_an_unsupported_one() {
+    fn an_open_drawing_retains_an_input_profile_reason() {
         // The distinction matters to the user: one is a sketch to finish, the
         // other is a feature to wait for.
         let curves = vec![
@@ -722,18 +802,22 @@ mod tests {
         ];
 
         let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
+            .expect("drawing")
+            .profile
             .expect_err("an open chain has no face");
         assert_eq!(err.kind(), ErrorKind::Input);
         assert!(err.to_string().contains("does not close"));
     }
 
     #[test]
-    fn an_empty_sketch_is_refused() {
+    fn an_empty_drawing_has_no_profile() {
         let err = profile_from_sketch(
             &sketch(Vec::new()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
+        .expect("drawing")
+        .profile
         .expect_err("nothing to extrude");
         assert_eq!(err.kind(), ErrorKind::Input);
     }
@@ -746,7 +830,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("converts")
-        .profile;
+        .profile
+        .expect("closed profile");
         let request = extrude_request(
             &extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
@@ -768,7 +853,8 @@ mod tests {
             SketchPlane::world_xy(),
         )
         .expect("converts")
-        .profile;
+        .profile
+        .expect("closed profile");
         let request = extrude_request(
             &extrude(EndCondition::Symmetric {
                 distance: Expression::constant(4.0).expect("finite"),

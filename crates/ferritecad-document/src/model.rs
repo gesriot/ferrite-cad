@@ -212,7 +212,7 @@ impl Point2 {
 /// The shape of one sketch element.
 ///
 /// Angles are radians measured counter-clockwise from the sketch plane's local
-/// X axis; an arc runs counter-clockwise from `start_angle` to `end_angle`.
+/// X axis. An arc runs from `start_angle` to `end_angle` with the sign of their difference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -598,7 +598,20 @@ pub struct SketchConstraint {
     pub rule: SketchConstraintRule,
 }
 
-/// Profile geometry on a plane, and the relationships between it.
+impl SketchCurve {
+    /// Whether this curve contributes a boundary to the profile reading.
+    pub fn bounds_profile(&self) -> bool {
+        !self.construction
+            && matches!(
+                self.geometry,
+                SketchGeometry::Line { .. }
+                    | SketchGeometry::Arc { .. }
+                    | SketchGeometry::Circle { .. }
+            )
+    }
+}
+
+/// A drawing on a plane, and the relationships between its elements.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sketch {
     /// The datum plane this sketch lies on.

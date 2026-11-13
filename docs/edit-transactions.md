@@ -37,6 +37,43 @@ moving a side updates both vertices in one transaction. The library helper
 Line once. Repeated changes to the same curve or expression slot take the last
 value. Constraint additions preserve the supplied UUID.
 
+## Drawing curves
+
+`add_curve` appends a caller-identified curve to an existing Sketch; its `curve`
+uses the same strict object as an `add_sketch` curve. `remove_curve` removes exactly
+that curve UUID. `set_construction` changes its construction flag; setting the
+saved value again is a no-op, as for `set_suppressed`.
+
+```json
+{"kind":"remove_curve","sketch":"<Sketch UUID>","curve":"<curve UUID>"}
+{"kind":"set_construction","sketch":"<Sketch UUID>","curve":"<curve UUID>","construction":true}
+```
+
+Changes apply in request order, but the whole Sketch is validated once, after the
+complete request. A constraint referring to a removed curve must be removed in
+that same request, before or after the curve. Constraints are never deleted
+implicitly. Removing and then adding a curve with the same UUID is permitted.
+`set_curve_geometry` still preserves the existing geometry kind.
+
+A Sketch is a drawing, including an empty or open drawing. Only its main Lines,
+Arcs and Circles contribute to a profile; points and construction curves do not.
+Every contributing curve must belong to a closed, non-touching boundary. A sweep
+that reads a drawing without a profile fails with the Sketch UUID and the complete
+profile reason. The ordinary refusal of newly unbuilt features still protects
+consumers; an unconsumed drawing may be opened or emptied.
+
+For example, add four Lines to an existing empty Sketch. Stored directions and
+list order need not follow the boundary (replace the UUID placeholders):
+
+```json
+{"request_version":1,"changes":[
+  {"kind":"add_curve","sketch":"<Sketch UUID>","curve":{"id":"<bottom UUID>","construction":false,"geometry":{"kind":"line","start":{"x":{"value":0,"unit":"mm"},"y":{"value":0,"unit":"mm"}},"end":{"x":{"value":10,"unit":"mm"},"y":{"value":0,"unit":"mm"}}}}},
+  {"kind":"add_curve","sketch":"<Sketch UUID>","curve":{"id":"<top UUID>","construction":false,"geometry":{"kind":"line","start":{"x":{"value":0,"unit":"mm"},"y":{"value":8,"unit":"mm"}},"end":{"x":{"value":10,"unit":"mm"},"y":{"value":8,"unit":"mm"}}}}},
+  {"kind":"add_curve","sketch":"<Sketch UUID>","curve":{"id":"<right UUID>","construction":false,"geometry":{"kind":"line","start":{"x":{"value":10,"unit":"mm"},"y":{"value":8,"unit":"mm"}},"end":{"x":{"value":10,"unit":"mm"},"y":{"value":0,"unit":"mm"}}}}},
+  {"kind":"add_curve","sketch":"<Sketch UUID>","curve":{"id":"<left UUID>","construction":false,"geometry":{"kind":"line","start":{"x":{"value":0,"unit":"mm"},"y":{"value":0,"unit":"mm"}},"end":{"x":{"value":0,"unit":"mm"},"y":{"value":8,"unit":"mm"}}}}}
+]}
+```
+
 The result contains `destination`, `document_id`, `content_version` and `rebuild`.
 Curve, constraint and expression edits can be mixed: for example, shrink a plate's
 side and reduce its Fillet radius together. The kernel decides whether the

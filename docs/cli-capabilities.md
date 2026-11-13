@@ -666,8 +666,12 @@ See [ADR 0008](decisions/0008-multibody-results.md) and the [recipe](keep-solids
 
 The common `edit` request accepts `remove_object` for every object kind and
 `set_suppressed` for history features, plus `set_rollback` and `clear_rollback` for
-Bodies. Removal checks the entire batch, rewrites predecessor links and Body tips,
-and refuses with every remaining dependent.
+Bodies. Sketch drawings also accept `add_curve`, `remove_curve` and
+`set_construction`, with one final Sketch validation after the ordered request.
+These three changes have no new window commands. `rebuild` describes a drawing
+without a profile and its complete reason; profile errors belong to its sweep
+consumer. Removal checks the entire batch, rewrites predecessor links and Body
+tips, and refuses with every remaining dependent.
 Deleting an import also releases source bytes after their last use.
 Suppression passes through the predecessor result without running that feature.
 Both `rebuild --cold` and transaction reports identify suppressed features.

@@ -18,7 +18,7 @@ fn block(
 ) -> Result<ShapeHandle> {
     let plane = SketchPlane::new(Point3::new(0., 0., bottom)?, Vec3::X, Vec3::Z)?;
     let sketch = rectangle(ObjectId::new(), min, max)?;
-    let profile = ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)?.profile;
+    let profile = ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)?.profile?;
     let request = ExtrudeRequest::new(profile, ExtrudeExtent::blind(top - bottom)?, false);
     Ok(kernel
         .extrude(&request, &OperationContext::default())?
@@ -218,7 +218,7 @@ fn the_interior_step_has_five_bindings_for_one_end_name() -> Result<()> {
         ObjectId::new(),
         SketchPlane::world_xy(),
     )?
-    .profile;
+    .profile?;
     let roof = block(&mut kernel, [-2., -2.], [12., 10.], 8., 10.)?;
     let owner = ObjectId::new();
     for (min, max, top, tool_volume, add_volume) in [
@@ -454,11 +454,11 @@ fn certify_the_entire_trimmed_curved_end() -> Result<()> {
         ObjectId::new(),
         SketchPlane::world_xy(),
     )?
-    .profile;
+    .profile?;
     for radius in [8., 3.] {
         let sketch = ferritecad_fixtures::datum_planes::circle(ObjectId::new(), [0., 0.], radius)?;
         let section =
-            ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)?.profile;
+            ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)?.profile?;
         let cylinder = kernel
             .extrude(
                 &ExtrudeRequest::new(section, ExtrudeExtent::blind(12.)?, false),
@@ -504,12 +504,12 @@ fn first_exit_cavity_mixed_side_and_missing_coverage() -> Result<()> {
         )?
         .shape;
     let profile = |min, max, z| -> Result<_> {
-        Ok(ferritecad_eval::profile_from_sketch(
+        ferritecad_eval::profile_from_sketch(
             &rectangle(ObjectId::new(), min, max)?,
             ObjectId::new(),
             SketchPlane::new(Point3::new(0., 0., z)?, Vec3::X, Vec3::Z)?,
         )?
-        .profile)
+        .profile
     };
     for (target, depth, remaining) in [(plate, 10., 840.), (hollow, 5., 812.)] {
         let p = profile([3., 3.], [7., 7.], 10.)?;
@@ -564,7 +564,7 @@ fn a_toroidal_end_refuses_without_changing_its_predecessor() -> Result<()> {
     let context = OperationContext::default();
     let circle = ferritecad_fixtures::datum_planes::circle(ObjectId::new(), [10., 8.], 3.)?;
     let axial = SketchPlane::new(Point3::ORIGIN, Vec3::X, Vec3::new(0., -1., 0.)?)?;
-    let profile = ferritecad_eval::profile_from_sketch(&circle, ObjectId::new(), axial)?.profile;
+    let profile = ferritecad_eval::profile_from_sketch(&circle, ObjectId::new(), axial)?.profile?;
     let torus = kernel
         .revolve(
             &RevolveRequest::new(profile, RevolveAxis::PlaneY, RevolveTurn::Full),
@@ -574,7 +574,7 @@ fn a_toroidal_end_refuses_without_changing_its_predecessor() -> Result<()> {
     let tool = rectangle(ObjectId::new(), [9., -1.], [11., 1.])?;
     let profile =
         ferritecad_eval::profile_from_sketch(&tool, ObjectId::new(), SketchPlane::world_xy())?
-            .profile;
+            .profile?;
     let before = kernel.encode_shape(torus)?;
     let count = kernel.live_shape_count();
     let error = kernel
@@ -614,7 +614,7 @@ fn tilted_step(round: bool, gap: bool, tilt: f64, azimuth: f64) -> Result<()> {
         )
     };
     let profile = |sketch, z| -> Result<_> {
-        Ok(ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane(z)?)?.profile)
+        ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane(z)?)?.profile
     };
     let context = OperationContext::default();
     let mut kernel = OcctKernel::new()?;

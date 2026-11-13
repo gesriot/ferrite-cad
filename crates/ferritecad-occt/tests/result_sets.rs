@@ -621,7 +621,8 @@ fn a_degenerate_prism_tool_is_refused_by_the_boolean_result_checks() {
     let profile =
         ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), SketchPlane::world_xy())
             .expect("profile")
-            .profile;
+            .profile
+            .expect("closed profile");
     // Positive public input below the native geometric tolerance produces a degenerate tool.
     let request = ExtrudeRequest::new(
         profile,
