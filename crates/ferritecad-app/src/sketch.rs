@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! A disposable drawing, separate from the accepted scene and persisted model.
-//! No kernel, filesystem, IDs, or document mutation occurs while editing it.
+//! No kernel, filesystem or document mutation occurs while editing it.
 use crate::sketch_facts::{
     AnnulusChoice, CircleChoice, SketchChoice, SketchProfileUse, Source as ExtrudeEditSource,
 };
@@ -127,6 +127,8 @@ impl Default for AnnulusState {
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
+    /// The viewport drawing form travels with this same tab-owned editor.
+    pub(crate) viewport: crate::sketch_mode::Editor,
     /// Text editing over the current accepted document, following Model selection.
     pub(crate) parameters: crate::parameters::Editor,
     pub(crate) constraints: crate::constraints::Editor,
@@ -416,6 +418,7 @@ impl Editor {
             || self.fillets.active()
             || self.chamfers.active()
             || self.parameters.active()
+            || self.viewport.active()
     }
     pub(crate) fn dismiss(&mut self) {
         // What the window said about the session is not the draft's: it is said
@@ -497,6 +500,7 @@ impl Editor {
             || self.fillets.active()
             || self.chamfers.active()
             || self.parameters.active()
+            || self.viewport.active()
     }
     /// §30P: the drawing window for a new document is open. It is not about the
     /// open document and never goes with a tab.
@@ -1286,6 +1290,10 @@ impl Editor {
         running: bool,
         outcome: &str,
     ) {
+        if self.viewport.active() {
+            self.viewport.draw(ui, running, outcome);
+            return;
+        }
         // §31J: a pan whose canvas is no longer drawn (another profile was chosen while
         // the middle button was held) would hold the window for good.
         let frame = ui.ctx().cumulative_frame_nr();

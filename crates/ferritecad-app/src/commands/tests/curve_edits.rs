@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 use super::*;
-#[path = "../../../../ferritecad-fixtures/tests/support/curve_edits.rs"]
-mod drawing;
-use drawing::*;
+use crate::curve_fixtures::*;
 use ferritecad_kernel::{OperationContext, TessellationParams, mock::MockKernel};
 
 fn opened(f: &Drawing) -> ferritecad_scene::LoadedScene {
@@ -23,7 +21,12 @@ fn check_drawing(curves: Vec<ferritecad_document::SketchCurve>) {
     let f = Drawing::new(curves.clone(), false);
     let loaded = opened(&f);
     assert!(loaded.rebuild.all_built());
-    let source = crate::sketch_facts::Source::from(loaded.edit_source.expect("source"));
+    let mut source = crate::sketch_facts::Source::from(loaded.edit_source.expect("source"));
+    source.built_sketches = loaded
+        .sketch_presentations
+        .iter()
+        .map(|p| p.sketch())
+        .collect();
     let rows: Vec<_> = source
         .model_tree
         .rows
@@ -34,7 +37,10 @@ fn check_drawing(curves: Vec<ferritecad_document::SketchCurve>) {
     for row in rows {
         assert_eq!(row.name, "Drawing");
         assert_eq!(row.note, "Stored object; references do not imply ownership");
-        assert_eq!(actions(&source, row.id), vec![ModelEdit::Constraints]);
+        assert_eq!(
+            actions(&source, row.id),
+            vec![ModelEdit::Sketch, ModelEdit::Constraints]
+        );
         assert_eq!(
             Command::Delete.available(&source, row.id, Ok(Access::Idle)),
             Ok(())
