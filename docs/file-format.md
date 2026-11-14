@@ -63,6 +63,15 @@ See [Expressions and parameters](expressions.md).
 
 Sketch curve coordinates, circle radii and arc angles remain `f64`: they describe
 solver state and the initial approximation, rather than editable dimensions.
+An Arc runs from `start_angle` to `end_angle`; the sign of their difference is its
+direction. A built Sketch means its drawing was built on its plane and its solver,
+if needed, succeeded. Empty drawings, open drawings, points and construction-only
+drawings are valid. A profile reads only main Lines, Arcs and Circles, all in closed
+boundaries; points and construction geometry are ignored. Stored curve direction
+and coordinates remain unchanged when the profile traversal reverses a segment.
+The drawing's profile or complete absence reason is derived, not stored. This
+changes neither the file format nor its version.
+
 Extrude and Revolve name their consumed feature through `previous`. `NewBody`
 requires no predecessor; `Add`, `Cut` and `Intersect` require one. Extrude keeps
 `Blind`, `Symmetric`, `ThroughAll`, `UpToFace` and `UpToVertex` plus `reversed`;

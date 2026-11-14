@@ -46,7 +46,10 @@ fixtures must be regenerated. There are no migrations or compatibility fallbacks
 
 ## Sketch regions
 
-Every main curve belongs to one closed boundary. Construction geometry is excluded.
+Every main Line, Arc and Circle belongs to one closed boundary. Points and
+construction geometry are excluded. Boundaries connect either end of a curve,
+independently of stored list order and direction. The traversal preserves stored
+start/end identities for constraints and generative names.
 Disjoint boundaries use even/odd nesting: an outer boundary and its immediate holes
 form a region; an island inside a hole forms another region. Intersecting, touching,
 self-intersecting and open boundaries fail with the offending curve identities.

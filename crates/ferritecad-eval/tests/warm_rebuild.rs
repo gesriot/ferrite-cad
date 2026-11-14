@@ -243,7 +243,8 @@ fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> C
         SketchPlane::world_xy(),
     )
     .expect("converts")
-    .profile;
+    .profile
+    .expect("closed profile");
     let request = extrude_request(&feature, profile, None).expect("converts");
     let mut names = ferritecad_topology::ModelNaming::new();
     names

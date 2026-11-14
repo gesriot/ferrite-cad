@@ -428,7 +428,10 @@ impl GeometryKernel for MockKernel {
             }
             for end in [false, true] {
                 let j = (i + u64::from(end)) % n;
-                let input = crate::NamingInput::CurveEnd { curve, end };
+                let input = crate::NamingInput::CurveEnd {
+                    curve,
+                    end: profile.outer().segments()[i as usize].stored_end(end),
+                };
                 for output in [
                     sub(SubShapeKind::Edge, n + 4 + 3 * j),
                     sub(SubShapeKind::Vertex, 4 * n + 2 + 2 * j),

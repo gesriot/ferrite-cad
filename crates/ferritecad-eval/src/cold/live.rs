@@ -83,6 +83,10 @@ impl RebuildResult {
         if let Some(profile) = old.profile(id) {
             self.profiles.insert(id, profile.clone());
         }
+        if let Some(reason) = old.profile_failures.get(&id) {
+            self.profile_failures
+                .insert(id, std::sync::Arc::clone(reason));
+        }
         if let Some(presentation) = old.sketch_presentation(id) {
             self.presentations.insert(id, presentation.clone());
         }

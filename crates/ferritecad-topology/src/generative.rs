@@ -185,7 +185,7 @@ impl ModelNaming {
                 };
                 self.planes.insert(object.id, sketch.plane);
                 let mut roots = BTreeSet::new();
-                for curve in sketch.curves.iter().filter(|curve| !curve.construction) {
+                for curve in sketch.curves.iter().filter(|curve| curve.bounds_profile()) {
                     roots.insert(NamingInput::Curve(curve.id));
                     if !matches!(
                         curve.geometry,

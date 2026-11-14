@@ -656,6 +656,9 @@ fn gate(name: &str) {
             | ferritecad_document::EditChange::SetEdges { .. }
             | ferritecad_document::EditChange::SetEndCondition { .. }
             | ferritecad_document::EditChange::SetExpression { .. }
+            | ferritecad_document::EditChange::AddCurve { .. }
+            | ferritecad_document::EditChange::RemoveCurve { .. }
+            | ferritecad_document::EditChange::SetConstruction { .. }
             | ferritecad_document::EditChange::SetCurveGeometry { .. }
             | ferritecad_document::EditChange::AddConstraint { .. }
             | ferritecad_document::EditChange::RemoveConstraint { .. } => None,

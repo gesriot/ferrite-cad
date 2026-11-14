@@ -42,6 +42,9 @@ pub fn added_constraints(changes: &[crate::EditChange]) -> Vec<&crate::SketchCon
             | crate::EditChange::SetEdges { .. }
             | crate::EditChange::SetEndCondition { .. }
             | crate::EditChange::SetExpression { .. }
+            | crate::EditChange::AddCurve { .. }
+            | crate::EditChange::RemoveCurve { .. }
+            | crate::EditChange::SetConstruction { .. }
             | crate::EditChange::SetCurveGeometry { .. }
             | crate::EditChange::RemoveConstraint { .. } => None,
         })

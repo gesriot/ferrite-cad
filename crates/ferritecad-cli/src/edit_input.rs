@@ -108,6 +108,19 @@ pub(super) enum Change {
         #[serde(default, deserialize_with = "present")]
         expression: Option<String>,
     },
+    AddCurve {
+        sketch: ObjectId,
+        curve: Curve,
+    },
+    RemoveCurve {
+        sketch: ObjectId,
+        curve: StableEntityId,
+    },
+    SetConstruction {
+        sketch: ObjectId,
+        curve: StableEntityId,
+        construction: bool,
+    },
     SetCurveGeometry {
         sketch: ObjectId,
         curve: StableEntityId,
@@ -192,13 +205,7 @@ impl Change {
                     plane,
                     curves: curves
                         .into_iter()
-                        .map(|c| {
-                            Ok(ferritecad_document::SketchCurve {
-                                id: c.id,
-                                construction: c.construction,
-                                geometry: c.geometry.into_geometry()?,
-                            })
-                        })
+                        .map(Curve::into_curve)
                         .collect::<Result<_>>()?,
                     constraints: constraints
                         .into_iter()
@@ -273,6 +280,20 @@ impl Change {
                         "supply either expression or both value and unit",
                     ));
                 }
+            },
+            Self::AddCurve { sketch, curve } => EditChange::AddCurve {
+                sketch,
+                curve: curve.into_curve()?,
+            },
+            Self::RemoveCurve { sketch, curve } => EditChange::RemoveCurve { sketch, curve },
+            Self::SetConstruction {
+                sketch,
+                curve,
+                construction,
+            } => EditChange::SetConstruction {
+                sketch,
+                curve,
+                construction,
             },
             Self::SetCurveGeometry {
                 sketch,
@@ -529,6 +550,15 @@ pub(super) struct Curve {
     id: StableEntityId,
     construction: bool,
     geometry: Geometry,
+}
+impl Curve {
+    fn into_curve(self) -> Result<ferritecad_document::SketchCurve> {
+        Ok(ferritecad_document::SketchCurve {
+            id: self.id,
+            construction: self.construction,
+            geometry: self.geometry.into_geometry()?,
+        })
+    }
 }
 impl Constraint {
     fn into_constraint(self) -> Result<SketchConstraint> {

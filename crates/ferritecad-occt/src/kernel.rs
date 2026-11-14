@@ -57,7 +57,7 @@ pub struct OcctKernel {
     identity: KernelIdentity,
     session: ffi::Session,
     session_id: SessionId,
-    naming_curves: BTreeMap<ShapeHandle, Vec<ferritecad_types::StableEntityId>>,
+    naming_curves: BTreeMap<ShapeHandle, Vec<ferritecad_kernel::ProfileSegment>>,
     naming_operations: BTreeMap<ShapeHandle, ferritecad_kernel::NamingOperation>,
 }
 
@@ -370,7 +370,7 @@ impl OcctKernel {
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
-            .insert(shape, profile.segments().map(|s| s.label).collect());
+            .insert(shape, profile.segments().copied().collect());
         if let Err(error) = context.check_cancelled() {
             self.release(shape);
             return Err(error);
@@ -459,7 +459,7 @@ impl GeometryKernel for OcctKernel {
                         .get(&shape)
                         .and_then(|curves| usize::try_from(row[1]).ok().and_then(|i| curves.get(i)))
                         .ok_or_else(|| CadError::kernel("unknown cap boundary curve"))?;
-                    witnesses.insert(*curve);
+                    witnesses.insert(curve.label);
                 }
                 continue;
             }
@@ -479,11 +479,11 @@ impl GeometryKernel for OcctKernel {
                             CadError::kernel("history names an unknown profile curve")
                         })?;
                     if row[2] == 3 {
-                        NamingInput::Curve(curve)
+                        NamingInput::Curve(curve.label)
                     } else {
                         NamingInput::CurveEnd {
-                            curve,
-                            end: row[2] == 5,
+                            curve: curve.label,
+                            end: curve.stored_end(row[2] == 5),
                         }
                     }
                 }
@@ -599,7 +599,7 @@ impl GeometryKernel for OcctKernel {
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Revolve);
         self.naming_curves
-            .insert(shape, profile.segments().map(|s| s.label).collect());
+            .insert(shape, profile.segments().copied().collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
             Ok(OperationResult {
@@ -680,7 +680,7 @@ impl GeometryKernel for OcctKernel {
         self.naming_operations
             .insert(shape, ferritecad_kernel::NamingOperation::Extrude);
         self.naming_curves
-            .insert(shape, profile.segments().map(|s| s.label).collect());
+            .insert(shape, profile.segments().copied().collect());
         let assembled = (|| -> Result<OperationResult> {
             context.check_cancelled()?;
             Ok(OperationResult {

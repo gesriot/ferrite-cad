@@ -136,7 +136,8 @@ fn curved_end_surface_preserves_cap_history_offset_and_full_coverage() {
         .expect("roof section plane");
         let profile = ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)
             .expect("profile")
-            .profile;
+            .profile
+            .expect("closed profile");
         let roof = kernel
             .extrude(
                 &ExtrudeRequest::new(
@@ -332,7 +333,8 @@ fn tilted_untrimmed_plane_and_invalid_surface_families_use_kernel_topology() {
         let plane = SketchPlane::new(origin, Vec3::X, normal).expect("plane");
         let roof = ferritecad_eval::profile_from_sketch(&sketch, ObjectId::new(), plane)
             .expect("roof profile")
-            .profile;
+            .profile
+            .expect("closed profile");
         let roof = kernel
             .extrude(
                 &ExtrudeRequest::new(roof, ExtrudeExtent::blind(2.).expect("thickness"), false),
@@ -394,7 +396,8 @@ fn tilted_untrimmed_plane_and_invalid_surface_families_use_kernel_topology() {
             let circle =
                 ferritecad_eval::profile_from_sketch(&circle_sketch, e.profile, *profile.plane())
                     .expect("boss profile")
-                    .profile;
+                    .profile
+                    .expect("closed profile");
             let mut objects: std::collections::BTreeMap<_, _> = doc
                 .objects()
                 .expect("objects")
@@ -459,7 +462,8 @@ fn tilted_untrimmed_plane_and_invalid_surface_families_use_kernel_topology() {
         SketchPlane::new(Point3::ORIGIN, Vec3::X, Vec3::Z).expect("plane"),
     )
     .expect("annulus")
-    .profile;
+    .profile
+    .expect("closed profile");
     let roof = kernel
         .extrude(
             &ExtrudeRequest::new(annulus, ExtrudeExtent::blind(20.).expect("height"), false),

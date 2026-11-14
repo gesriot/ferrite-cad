@@ -4,8 +4,18 @@ use serde_json::{Value, json};
 
 /// Encode a test's domain changes at the CLI boundary, with explicit units.
 pub fn edit_request_json(changes: &[EditChange]) -> Value {
-    let changes: Vec<_> = changes.iter().map(|change| match change {
-        EditChange::AddParameter { object, name, dimension, expression } => json!({
+    let changes: Vec<_> = changes.iter().map(change_json).collect();
+    json!({"request_version":1, "changes":changes})
+}
+
+fn change_json(change: &EditChange) -> Value {
+    match change {
+        EditChange::AddParameter {
+            object,
+            name,
+            dimension,
+            expression,
+        } => json!({
             "kind":"add_parameter", "object":object, "name":name,
             "dimension":dimension, "expression":expression,
         }),
@@ -18,49 +28,90 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::SetSuppressed { object, suppressed } => {
             json!({"kind":"set_suppressed","object":object,"suppressed":suppressed})
         }
-        EditChange::SetRollback { object, feature: Some(feature) } => {
+        EditChange::SetRollback {
+            object,
+            feature: Some(feature),
+        } => {
             json!({"kind":"set_rollback","object":object,"feature":feature})
         }
-        EditChange::SetRollback { object, feature: None } => {
+        EditChange::SetRollback {
+            object,
+            feature: None,
+        } => {
             json!({"kind":"clear_rollback","object":object})
         }
         EditChange::RemoveObject { object } => {
             json!({"kind":"remove_object","object":object})
         }
-        EditChange::SetExpressionText { object, slot, source } => json!({
+        EditChange::SetExpressionText {
+            object,
+            slot,
+            source,
+        } => json!({
             "kind":"set_expression", "object":object, "slot":slot, "expression":source,
         }),
-        EditChange::AddDatumPlane { object, name, plane } => {
+        EditChange::AddDatumPlane {
+            object,
+            name,
+            plane,
+        } => {
             use ferritecad_document::DatumPlane as D;
             let plane = match plane {
                 D::Fixed { placement } => json!({"kind":"fixed", "placement":placement}),
                 D::Offset { from, distance_mm } => json!({"kind":"offset", "from":from,
                     "distance":{"value":distance_mm.value(),"unit":"mm"}}),
-                D::Face { result, face, offset_mm } => json!({"kind":"face", "result":result,
+                D::Face {
+                    result,
+                    face,
+                    offset_mm,
+                } => json!({"kind":"face", "result":result,
                     "face":edges_json(&[*face])[0],
                     "offset":{"value":offset_mm.value(),"unit":"mm"}}),
             };
             json!({"kind":"add_datum_plane", "object":object, "name":name, "plane":plane})
-        },
+        }
         EditChange::SetDatumFace { object, face } => json!({"kind":"set_datum_face",
             "object":object, "face":edges_json(&[*face])[0]}),
-        EditChange::AddSketch { object, name, sketch } => {
-            let curves: Vec<_> = sketch.curves.iter().map(|c| {
-                let mut geometry = serde_json::to_value(&c.geometry).expect("geometry");
-                geometry_units(&mut geometry, "mm");
-                json!({"id": c.id, "construction": c.construction, "geometry": geometry})
-            }).collect();
-            let constraints: Vec<_> = sketch.constraints.iter().map(|constraint| {
-                let encoded = edit_request_json(&[EditChange::AddConstraint { sketch: *object, constraint: constraint.clone() }]);
-                encoded["changes"][0]["constraint"].clone()
-            }).collect();
-            json!({"kind":"add_sketch", "object":object, "name":name, "plane":sketch.plane, "curves":curves, "constraints":constraints})
-        },
-        EditChange::AddFeature { object, body, name, feature } => {
+        EditChange::AddSketch {
+            object,
+            name,
+            sketch,
+        } => {
+            let curves: Vec<_> = sketch.curves.iter().map(curve_json).collect();
+            let constraints: Vec<_> = sketch
+                .constraints
+                .iter()
+                .map(|constraint| {
+                    let encoded = edit_request_json(&[EditChange::AddConstraint {
+                        sketch: *object,
+                        constraint: constraint.clone(),
+                    }]);
+                    encoded["changes"][0]["constraint"].clone()
+                })
+                .collect();
+            json!({
+                "kind":"add_sketch", "object":object, "name":name, "plane":sketch.plane,
+                "curves":curves, "constraints":constraints
+            })
+        }
+        EditChange::AddFeature {
+            object,
+            body,
+            name,
+            feature,
+        } => {
             let feature = feature_json(feature);
-            json!({"kind":"add_feature", "object":object, "body":body, "name":name, "feature":feature})
-        },
-        EditChange::AddBody { object, name, feature_object, feature_name, feature } => json!({
+            json!({
+                "kind":"add_feature", "object":object, "body":body, "name":name, "feature":feature
+            })
+        }
+        EditChange::AddBody {
+            object,
+            name,
+            feature_object,
+            feature_name,
+            feature,
+        } => json!({
             "kind":"add_body", "object":object, "name":name, "feature_object":feature_object,
             "feature_name":feature_name, "feature":feature_json(feature),
         }),
@@ -85,31 +136,77 @@ pub fn edit_request_json(changes: &[EditChange]) -> Value {
         EditChange::SetEdges { object, edges } => json!({
             "kind":"set_edges", "object":object, "edges":edges_json(edges),
         }),
-        EditChange::SetEndCondition { object, end_condition } => json!({"kind":"set_end_condition", "object":object, "end_condition":end_json(end_condition)}),
-        EditChange::SetExpression { object, slot, expression } => json!({
+        EditChange::SetEndCondition {
+            object,
+            end_condition,
+        } => {
+            json!({
+                "kind":"set_end_condition", "object":object,
+                "end_condition":end_json(end_condition)
+            })
+        }
+        EditChange::SetExpression {
+            object,
+            slot,
+            expression,
+        } => json!({
             "kind": "set_expression", "object": object, "slot": slot,
             "value": expression.value(),
-            "unit": if slot.dimension() == ferritecad_types::Dimension::Angle { "rad" } else { "mm" },
+            "unit": if slot.dimension() == ferritecad_types::Dimension::Angle {
+                "rad"
+            } else {
+                "mm"
+            },
         }),
-        EditChange::SetCurveGeometry { sketch, curve, geometry } => {
+        EditChange::AddCurve { sketch, curve } => json!({
+            "kind":"add_curve", "sketch":sketch, "curve":curve_json(curve),
+        }),
+        EditChange::RemoveCurve { sketch, curve } => json!({
+            "kind":"remove_curve", "sketch":sketch, "curve":curve,
+        }),
+        EditChange::SetConstruction {
+            sketch,
+            curve,
+            construction,
+        } => json!({
+            "kind":"set_construction", "sketch":sketch, "curve":curve, "construction":construction,
+        }),
+        EditChange::SetCurveGeometry {
+            sketch,
+            curve,
+            geometry,
+        } => {
             let mut geometry = serde_json::to_value(geometry).expect("fixture geometry");
             geometry_units(&mut geometry, "mm");
-            json!({"kind":"set_curve_geometry", "sketch":sketch, "curve":curve, "geometry":geometry})
+            json!({
+                "kind":"set_curve_geometry", "sketch":sketch, "curve":curve, "geometry":geometry
+            })
         }
         EditChange::AddConstraint { sketch, constraint } => {
             let mut rule = serde_json::to_value(&constraint.rule).expect("fixture rule");
             for key in ["x", "y", "distance", "radius", "angle"] {
                 if let Some(expression) = rule.get_mut(key) {
-                    *expression = json!({"value": expression["value"], "unit": if key == "angle" {"rad"} else {"mm"}});
+                    *expression = json!({
+                        "value": expression["value"],
+                        "unit": if key == "angle" {"rad"} else {"mm"}
+                    });
                 }
             }
-            json!({"kind":"add_constraint", "sketch":sketch, "constraint":{"id":constraint.id,"rule":rule}})
+            json!({
+                "kind":"add_constraint", "sketch":sketch,
+                "constraint":{"id":constraint.id,"rule":rule}
+            })
         }
         EditChange::RemoveConstraint { sketch, constraint } => json!({
             "kind":"remove_constraint", "sketch":sketch, "constraint":constraint,
         }),
-    }).collect();
-    json!({"request_version":1, "changes":changes})
+    }
+}
+
+fn curve_json(curve: &ferritecad_document::SketchCurve) -> Value {
+    let mut geometry = serde_json::to_value(&curve.geometry).expect("fixture geometry");
+    geometry_units(&mut geometry, "mm");
+    json!({"id":curve.id, "construction":curve.construction, "geometry":geometry})
 }
 
 fn geometry_units(value: &mut Value, unit: &str) {

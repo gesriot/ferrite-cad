@@ -152,6 +152,8 @@ fn report(
                     if holes > 0 {
                         write!(line, ", {holes} hole(s)").expect("writing to a String cannot fail");
                     }
+                } else if let Some(reason) = built.profile_failure(*id) {
+                    write!(line, "no profile: {reason}").expect("String write");
                 }
             }
             ObjectPayload::Extrude(extrude) => {

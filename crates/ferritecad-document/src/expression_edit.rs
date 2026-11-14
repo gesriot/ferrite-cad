@@ -158,6 +158,29 @@ pub enum EditChange {
         slot: ExpressionSlot,
         expression: Expression,
     },
+    /// Append a caller-identified curve to the drawing.
+    AddCurve {
+        /// Sketch receiving the curve.
+        sketch: ObjectId,
+        /// Saved geometry and identity to append.
+        curve: crate::SketchCurve,
+    },
+    /// Remove exactly one curve; final sketch validation protects its constraints.
+    RemoveCurve {
+        /// Sketch containing the curve.
+        sketch: ObjectId,
+        /// Identity to remove.
+        curve: StableEntityId,
+    },
+    /// Set whether a curve guides the drawing instead of bounding a profile.
+    SetConstruction {
+        /// Sketch containing the curve.
+        sketch: ObjectId,
+        /// Identity whose flag changes.
+        curve: StableEntityId,
+        /// New construction flag.
+        construction: bool,
+    },
     SetCurveGeometry {
         sketch: ObjectId,
         curve: StableEntityId,
@@ -279,6 +302,9 @@ impl EditChange {
             | Self::AddFeature { .. }
             | Self::SetEdges { .. }
             | Self::SetEndCondition { .. }
+            | Self::AddCurve { .. }
+            | Self::RemoveCurve { .. }
+            | Self::SetConstruction { .. }
             | Self::SetCurveGeometry { .. }
             | Self::AddConstraint { .. }
             | Self::RemoveConstraint { .. } => None,
@@ -315,7 +341,10 @@ impl EditChange {
             | Self::SetEndCondition { object, .. }
             | Self::AddSketch { object, .. }
             | Self::AddFeature { object, .. } => *object,
-            Self::SetCurveGeometry { sketch, .. }
+            Self::AddCurve { sketch, .. }
+            | Self::RemoveCurve { sketch, .. }
+            | Self::SetConstruction { sketch, .. }
+            | Self::SetCurveGeometry { sketch, .. }
             | Self::AddConstraint { sketch, .. }
             | Self::RemoveConstraint { sketch, .. } => *sketch,
         }
@@ -429,6 +458,9 @@ impl EditChange {
             | Self::AddFeature { .. }
             | Self::SetEndCondition { .. }
             | Self::SetExpression { .. }
+            | Self::AddCurve { .. }
+            | Self::RemoveCurve { .. }
+            | Self::SetConstruction { .. }
             | Self::SetCurveGeometry { .. }
             | Self::AddConstraint { .. }
             | Self::RemoveConstraint { .. } => {}
@@ -440,6 +472,35 @@ impl EditChange {
             )));
         };
         match self {
+            Self::AddCurve { curve, .. } => {
+                if sketch.curves.iter().any(|saved| saved.id == curve.id) {
+                    return Err(CadError::input(format!(
+                        "curve {} already exists",
+                        curve.id
+                    )));
+                }
+                sketch.curves.push(curve.clone());
+            }
+            Self::RemoveCurve { curve, .. } => {
+                let index = sketch
+                    .curves
+                    .iter()
+                    .position(|saved| saved.id == *curve)
+                    .ok_or_else(|| CadError::input(format!("sketch has no curve {curve}")))?;
+                sketch.curves.remove(index);
+            }
+            Self::SetConstruction {
+                curve,
+                construction,
+                ..
+            } => {
+                let saved = sketch
+                    .curves
+                    .iter_mut()
+                    .find(|saved| saved.id == *curve)
+                    .ok_or_else(|| CadError::input(format!("sketch has no curve {curve}")))?;
+                saved.construction = *construction;
+            }
             Self::SetCurveGeometry {
                 curve, geometry, ..
             } => {
@@ -660,6 +721,11 @@ impl Document {
             let mut candidate = Candidate::read(document)?;
             for change in changes {
                 let id = change.object();
+                let cannot_edit = |source: CadError| CadError::Context {
+                    kind: source.kind(),
+                    message: format!("cannot edit object {id}: {source}"),
+                    source: Box::new(source),
+                };
                 match change {
                     EditChange::AddParameter {
                         name,
@@ -725,6 +791,18 @@ impl Document {
                     } => {
                         candidate.add_feature(id, *body, name, feature)?;
                     }
+                    EditChange::AddCurve { .. }
+                    | EditChange::RemoveCurve { .. }
+                    | EditChange::SetConstruction { .. } => {
+                        let object = candidate.edit(id)?;
+                        if !matches!(object.payload, ObjectPayload::Sketch(_)) {
+                            return Err(CadError::input(format!(
+                                "{} is not a Sketch; only a Sketch has editable curves.",
+                                object.payload.label(object.name.as_deref(), id)
+                            )));
+                        }
+                        change.apply(&mut object.payload).map_err(cannot_edit)?;
+                    }
                     EditChange::SetExpressionText { .. }
                     | EditChange::SetKeepSelection { .. }
                     | EditChange::SetDatumFace { .. }
@@ -740,13 +818,7 @@ impl Document {
                     | EditChange::AddConstraint { .. }
                     | EditChange::RemoveConstraint { .. } => {
                         let object = candidate.edit(id)?;
-                        change
-                            .apply(&mut object.payload)
-                            .map_err(|source| CadError::Context {
-                                kind: source.kind(),
-                                message: format!("cannot edit object {id}: {source}"),
-                                source: Box::new(source),
-                            })?;
+                        change.apply(&mut object.payload).map_err(cannot_edit)?;
                     }
                 }
             }

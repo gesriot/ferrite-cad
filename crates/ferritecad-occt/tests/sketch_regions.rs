@@ -314,7 +314,8 @@ fn compound_sweeps_keep_curve_history_and_distinct_cap_names() {
         ferritecad_kernel::SketchPlane::world_xy(),
     )
     .expect("profile")
-    .profile;
+    .profile
+    .expect("closed profile");
     let mut kernel = OcctKernel::new().expect("kernel");
     for revolve in [false, true] {
         let result = if revolve {
@@ -443,7 +444,8 @@ fn unrelated_hole_changes_preserve_every_name_of_the_other_region() {
             ferritecad_kernel::SketchPlane::world_xy(),
         )
         .expect("profile")
-        .profile;
+        .profile
+        .expect("closed profile");
         let result = kernel
             .extrude(
                 &ferritecad_kernel::ExtrudeRequest::new(

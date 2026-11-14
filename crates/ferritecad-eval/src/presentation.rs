@@ -3,10 +3,10 @@
 //!
 //! A [`Profile`][ferritecad_kernel::Profile] is what the kernel extrudes, and
 //! it is deliberately less than the drawing: construction geometry bounds no
-//! face and is dropped, a circle and a point are refused rather than swept,
-//! and what survives is reordered head to tail into one loop. None of that is
-//! wrong — it is what an extrusion needs — but it means a profile cannot be
-//! turned back into the sketch it came from.
+//! face and points are omitted. Main Lines, Arcs and Circles must form closed
+//! boundaries; derived segments may traverse against their stored direction.
+//! An unfinished drawing has no profile, but still has its complete presentation.
+//! A profile therefore cannot be turned back into the sketch it came from.
 //!
 //! So the drawing travels separately, and it travels out of the same
 //! evaluation: the coordinates here are the ones the profile was built from,

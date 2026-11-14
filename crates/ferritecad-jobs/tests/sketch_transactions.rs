@@ -442,6 +442,12 @@ fn solved_circle_regions_exchange_roles_but_coincident_boundaries_refuse_atomica
         .id;
     document.close().expect("close");
     let before = std::fs::read(&source).expect("bytes");
+    let profile_reason = format!(
+        "invalid input: profile curves {} and {} intersect or touch; \
+         check for self-intersections",
+        sketch.curves[0].id, sketch.curves[1].id
+    );
+    let consumer_reason = format!("invalid input: sketch {id} gives no profile: {profile_reason}");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     for coincident in [false, true] {
         let changes: Vec<_> = sketch
@@ -487,17 +493,22 @@ fn solved_circle_regions_exchange_roles_but_coincident_boundaries_refuse_atomica
             let error = result.expect_err("coincident boundaries are not a region");
             let refusal =
                 ferritecad_eval::RebuildRefusal::from_error(&error).expect("rebuild refusal");
+            assert_eq!(refusal.report.failed.len(), 1);
             let failure = refusal
                 .report
                 .failed
                 .iter()
-                .find(|f| f.id == id)
-                .expect("sketch");
-            assert!(failure.message.contains("intersect or touch"), "{error}");
-            for curve in &sketch.curves {
-                assert!(failure.message.contains(&curve.id.to_string()), "{error}");
-            }
+                .find(|f| f.id == feature)
+                .expect("profile consumer");
+            assert_eq!(failure.message, consumer_reason);
             assert!(!refusal.report.skipped.is_empty());
+            assert!(
+                refusal
+                    .report
+                    .skipped
+                    .iter()
+                    .all(|skipped| skipped.id != id)
+            );
             assert!(!output.exists());
         } else {
             result.expect("nesting determines the boundary and hole after solving");
@@ -525,16 +536,27 @@ fn solved_circle_regions_exchange_roles_but_coincident_boundaries_refuse_atomica
         let built =
             ferritecad_eval::rebuild_cold(&document, &mut kernel, &context).expect("report");
         if coincident {
+            assert!(matches!(
+                built.status(id),
+                Some(ferritecad_eval::RebuildStatus::Built)
+            ));
+            assert!(built.sketch_presentation(id).is_some());
+            assert!(built.solve_report(id).is_some());
+            assert_eq!(
+                built
+                    .profile_failure(id)
+                    .expect("profile reason")
+                    .to_string(),
+                profile_reason
+            );
+            assert_eq!(built.report().failed.len(), 1);
             let failure = built
                 .report()
                 .failed
                 .into_iter()
-                .find(|f| f.id == id)
-                .expect("sketch");
-            assert!(failure.message.contains("intersect or touch"));
-            for curve in &sketch.curves {
-                assert!(failure.message.contains(&curve.id.to_string()));
-            }
+                .find(|f| f.id == feature)
+                .expect("profile consumer");
+            assert_eq!(failure.message, consumer_reason);
             assert!(!built.report().skipped.is_empty());
         } else {
             assert!(built.all_built());
