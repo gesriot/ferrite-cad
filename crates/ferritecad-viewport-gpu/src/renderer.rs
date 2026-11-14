@@ -94,6 +94,11 @@ pub const SKETCH_COLOUR: [f32; 3] = [1.0, 0.78, 0.25];
 /// at a glance uses colour, and a person measuring one uses the width.
 pub const SKETCH_CONSTRUCTION_COLOUR: [f32; 3] = [0.45, 0.56, 0.86];
 
+/// Selected draft curves, distinct from main and construction geometry.
+pub const SKETCH_SELECTED_COLOUR: [f32; 3] = [0.35, 0.75, 1.0];
+/// A hovered draft curve or an exact endpoint snap target.
+pub const SKETCH_HOVER_COLOUR: [f32; 3] = [0.7, 1.0, 0.55];
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// One vertex of the expanded edge stream.
@@ -1493,13 +1498,25 @@ impl Renderer {
     /// which is what [`Self::sketch_uploads`] is there to show.
     pub fn prepare_sketches(
         &mut self,
-        prepared: PreparedSnapshot,
+        mut prepared: PreparedSnapshot,
         drawings: &[SketchDrawing],
     ) -> Result<PreparedSnapshot> {
-        self.require_own(&prepared)?;
+        self.replace_sketches(&mut prepared, drawings)?;
+        Ok(prepared)
+    }
+
+    /// Replaces resident drawings on a tool transition, keeping the prepared solids.
+    /// A failed upload leaves the old drawings intact. Frames never call this method.
+    pub fn replace_sketches(
+        &mut self,
+        prepared: &mut PreparedSnapshot,
+        drawings: &[SketchDrawing],
+    ) -> Result<()> {
+        self.require_own(prepared)?;
         let sketch = self.upload_sketches(drawings)?;
+        prepared.sketch = sketch;
         self.sketch_uploads += 1;
-        Ok(PreparedSnapshot { sketch, ..prepared })
+        Ok(())
     }
 
     /// Uploads a snapshot's geometry and keeps it on the device.

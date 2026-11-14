@@ -15,6 +15,10 @@ pub struct ModelNavigation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelEdit {
+    /// Edit any built sketch drawing in the viewport.
+    Sketch,
+    /// Start a drawing on the selected datum plane.
+    NewSketch,
     Height,
     Vertices,
     Circle,
@@ -31,6 +35,8 @@ pub enum ModelEdit {
 impl ModelEdit {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Sketch => "Edit sketch…",
+            Self::NewSketch => "New sketch…",
             Self::Height => "Edit height…",
             Self::Vertices => "Edit vertices…",
             Self::Circle => "Edit circle…",

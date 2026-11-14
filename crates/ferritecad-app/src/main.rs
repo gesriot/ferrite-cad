@@ -52,11 +52,15 @@ mod numeric;
 mod parameters;
 use numeric::mm;
 use workspace::form_window;
+#[cfg(test)]
+#[path = "../../ferritecad-fixtures/tests/support/curve_edits.rs"]
+mod curve_fixtures;
 mod recoveries;
 mod restores;
 mod sessions;
 mod sketch;
 mod sketch_facts;
+mod sketch_mode;
 mod sketch_transactions;
 mod tabs;
 mod workspace;
@@ -1632,6 +1636,8 @@ fn prepare_arrival<P>(
         edit_source: loaded.edit_source.map(|facts| {
             let mut source = crate::sketch_facts::Source::from(facts);
             sketch_conflicts::attach(&mut source, &loaded.sketch_conflicts);
+            source.built_sketches = sketches.identities();
+            source.datum_planes = loaded.datum_planes;
             source
         }),
         document: document.to_path_buf(),
@@ -2212,6 +2218,10 @@ fn retarget_scene<P>(
     crate::sketch_conflicts::follow(scene.edit_source.as_mut(), &mut edit_source);
     scene.document = Some(document);
     scene.sketches.follow(edit_source.version);
+    edit_source.built_sketches = scene.sketches.identities();
+    if let Some(old) = &mut scene.edit_source {
+        edit_source.datum_planes = std::mem::take(&mut old.datum_planes);
+    }
     scene.edit_source = Some(edit_source);
 }
 
@@ -3708,6 +3718,9 @@ impl ApplicationHandler<AppEvent> for App {
                     sketch_apply,
                     self.sessions.dirty(),
                 );
+                self.creates.sketch.viewport.set_apply(
+                    session_idle && self.sessions.takes_form_apply() && !self.edits.running(),
+                );
                 self.creates.sketch.set_analytic_apply(analytic_apply);
                 self.creates.sketch.set_angle_apply(angle_apply);
                 self.creates.sketch.cuts.set_session(
@@ -3991,6 +4004,9 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some(request) = chosen.parameter.take() {
                             self.apply_parameter(request);
                         }
+                        if chosen.new_sketch {
+                            self.new_sketch();
+                        }
                         if let Some(asked) = chosen.model {
                             self.run_model_command(asked);
                         }
@@ -4042,6 +4058,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_apply_request()
                         {
+                            self.apply_expressions(request.expected, request.changes);
+                        }
+                        if let Some(request) = self.creates.sketch.viewport.take_request() {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_apply_request() {
@@ -4253,7 +4272,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // means drawing the model again offscreen to read one
                         // pixel of it.
                         if let Some((x, y)) = self.input.take_pick() {
-                            self.choose_at(x, y);
+                            self.draw_or_pick(x, y);
                         }
                         if let Some((x, y)) = self.input.take_context_pick()
                             && let Some(row) = self.choose_at(x, y)
@@ -5366,6 +5385,9 @@ impl App {
     /// One accepted change back or forward. The version becomes current only when
     /// its picture has been built and shown.
     fn move_document(&mut self, undo: bool) {
+        if self.sketch_history(undo) {
+            return;
+        }
         if !self.document_idle() {
             return;
         }
@@ -5859,6 +5881,9 @@ impl App {
     /// about it, and a viewer that chose whatever the pointer crossed would
     /// make the choice worthless.
     fn point_at(&mut self, row: Option<usize>, interface_has_pointer: bool) {
+        if self.sketch_hover() {
+            return;
+        }
         let question = self.input.take_hover();
         let Some(live) = self.live.as_mut() else {
             return;
@@ -6168,6 +6193,17 @@ impl Live {
             viewport_ready,
         } = self;
 
+        sketch_mode::sync(
+            renderer,
+            &mut scene.prepared,
+            &mut scene.sketches,
+            &sections.sketch.viewport,
+        )?;
+        sections.sketch.viewport.look(input);
+        if sections.sketch.viewport.active() {
+            scene.hovered = Hovered::Nothing;
+        }
+
         // What each definition is, and what the document calls the chosen
         // face if one is chosen, in the words a panel is allowed to use. Owned
         // because `Selected` borrows them and they must outlive the frame.
@@ -6240,12 +6276,27 @@ impl Live {
             },
         };
         let mut answers = workspace::Answers::default();
+        let mut placement = Ok(());
         let mut output = egui.run_ui(raw_input, |ui| {
             // The panels return what was asked for and apply nothing. What a
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
             // apart.
             answers = workspace::compose(ui, &mut view);
+            let region =
+                workspace::region_of(answers.central, ui.ctx().pixels_per_point(), surface_size);
+            placement = workspace::place_view(
+                input,
+                region,
+                scene.visibility.bounds(scene.prepared.snapshot()),
+                viewport_ready,
+            );
+            if placement.is_ok() {
+                view.sections
+                    .sketch
+                    .viewport
+                    .paint(ui.ctx(), input.camera(), region);
+            }
         });
 
         // The one rectangle of the window the model is drawn into and pointed
@@ -6253,13 +6304,8 @@ impl Live {
         // forgets whatever was asked about the old one, and then to the
         // renderer, so that the camera, the viewport and the pick frame all
         // have the size the layout left.
-        let region = workspace::region_of(answers.central, egui.pixels_per_point(), surface_size);
-        workspace::place_view(
-            input,
-            region,
-            scene.visibility.bounds(scene.prepared.snapshot()),
-            viewport_ready,
-        )?;
+        placement?;
+        let region = input.region();
         let frame = frame.draw_scene(
             &scene.prepared,
             input.camera(),
@@ -6717,6 +6763,7 @@ mod tests {
             sketch_solves: Vec::new(),
             sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
+            datum_planes: Vec::new(),
         }
     }
 

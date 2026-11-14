@@ -58,6 +58,8 @@ const LABEL_FONT: f32 = 11.;
 pub(crate) struct Accepted {
     version: Option<DocumentVersion>,
     presentations: Vec<SketchPresentation>,
+    /// The last drawing filter uploaded for this scene, not a per-frame upload.
+    pub(crate) mode_filter: Option<Option<ferritecad_types::ObjectId>>,
 }
 
 impl Accepted {
@@ -68,7 +70,35 @@ impl Accepted {
         Self {
             version,
             presentations,
+            mode_filter: None,
         }
+    }
+
+    pub(crate) fn presentation(
+        &self,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> Option<&SketchPresentation> {
+        (self.version == Some(source.version)).then_some(())?;
+        self.presentations.iter().find(|p| p.sketch() == id)
+    }
+
+    pub(crate) fn identities(&self) -> Vec<ferritecad_types::ObjectId> {
+        self.presentations
+            .iter()
+            .map(SketchPresentation::sketch)
+            .collect()
+    }
+
+    pub(crate) fn drawings_except(
+        &self,
+        hidden: Option<ferritecad_types::ObjectId>,
+    ) -> ferritecad_types::Result<Vec<ferritecad_viewport::SketchDrawing>> {
+        self.presentations
+            .iter()
+            .filter(|p| Some(p.sketch()) != hidden)
+            .map(ferritecad_scene::sketch_drawing)
+            .collect()
     }
 
     /// The picture is kept for a version that draws the same model (§30N); the drawings are

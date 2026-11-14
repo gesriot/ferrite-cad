@@ -18,6 +18,8 @@
 
 use ferritecad_types::{CadError, Result};
 
+mod sketch_view;
+
 /// Which way is up, everywhere except a plan view.
 ///
 /// The document's own convention: lengths are millimetres and Z is up. A
@@ -656,20 +658,8 @@ impl Camera {
     /// along the world's up axis, where that axis is no use as an up vector, so
     /// they carry their own – north is up, which is what a plan view means.
     pub fn look_from(&mut self, view: StandardView) {
-        let distance = self.distance();
-        let distance = if distance.is_finite() && distance > f32::EPSILON {
-            distance
-        } else {
-            self.radius.max(f32::EPSILON)
-        };
-
         let (direction, up) = view.direction_and_up();
-        let eye = [
-            self.target[0] + direction[0] * distance,
-            self.target[1] + direction[1] * distance,
-            self.target[2] + direction[2] * distance,
-        ];
-        self.accept_pose(eye, self.target, up);
+        self.look_from_frame(direction, up);
     }
 
     /// The camera's own right and up, as unit vectors in world space.
