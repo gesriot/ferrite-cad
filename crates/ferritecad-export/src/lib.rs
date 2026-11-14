@@ -98,7 +98,7 @@ pub fn binary_stl(mesh: &Mesh) -> Result<Vec<u8>> {
     out.extend_from_slice(HEADER);
     out.extend_from_slice(&count.to_le_bytes());
 
-    for (index, triangle) in mesh.indices.chunks_exact(3).enumerate() {
+    for (index, triangle) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         let corners = [
             vertex(mesh, triangle[0]),
             vertex(mesh, triangle[1]),

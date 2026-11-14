@@ -319,12 +319,16 @@ fn analytic_with_cache(
     let center = std::array::from_fn(|axis| {
         let lo = mesh
             .positions
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| f64::from(p[axis]))
             .fold(f64::INFINITY, f64::min);
         let hi = mesh
             .positions
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| f64::from(p[axis]))
             .fold(f64::NEG_INFINITY, f64::max);
         (lo + hi) / 2.
@@ -373,7 +377,7 @@ fn mesh(path: &Path, out: &Path) -> Mesh {
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     let mut base: Vec<[f64; 2]> = Vec::new();
-    for t in b[84..].chunks_exact(50) {
+    for t in b[84..].as_chunks::<50>().0 {
         for i in 0..3 {
             let mut p = [0.; 3];
             for (j, value) in p.iter_mut().enumerate() {

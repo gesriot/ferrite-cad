@@ -804,7 +804,7 @@ pub(super) fn verify_published(
                 bytes[at..at + 4].try_into().expect("f32"),
             ))
         });
-        for p in v.chunks_exact(3) {
+        for p in v.as_chunks::<3>().0 {
             for j in 0..3 {
                 lo[j] = lo[j].min(p[j]);
                 hi[j] = hi[j].max(p[j]);

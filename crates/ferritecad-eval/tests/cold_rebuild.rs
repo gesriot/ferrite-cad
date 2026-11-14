@@ -597,7 +597,13 @@ fn a_symmetric_extrusion_straddles_the_sketch_plane() {
         )
         .expect("tessellates");
 
-    let heights: Vec<f32> = mesh.positions.chunks_exact(3).map(|p| p[2]).collect();
+    let heights: Vec<f32> = mesh
+        .positions
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| p[2])
+        .collect();
     let lowest = heights.iter().copied().fold(f32::INFINITY, f32::min);
     let highest = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 

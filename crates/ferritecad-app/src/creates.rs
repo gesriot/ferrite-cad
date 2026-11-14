@@ -1397,12 +1397,16 @@ pub(crate) mod tests {
 
     /// The `ferritecad` this test was built alongside.
     pub(crate) fn ferritecad() -> PathBuf {
-        // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
-        let mut path = std::env::current_exe().expect("the test knows where it is");
-        path.pop();
-        path.pop();
-        path.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-        path
+        // The test runs from somewhere under target/<profile>/ (since Cargo
+        // 1.100, build/<package>/<hash>/out/), and the binaries sit directly
+        // in target/<profile>/, so the nearest ancestor holding one is it.
+        let name = format!("ferritecad{}", std::env::consts::EXE_SUFFIX);
+        let test = std::env::current_exe().expect("the test knows where it is");
+        test.ancestors()
+            .skip(1)
+            .map(|directory| directory.join(&name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from(name))
     }
 
     /// One plate, made by the real command-line process.

@@ -537,7 +537,7 @@ jobs:
           # `.profile.test`, not `.target.test`. The second is a property of the
           # target definition: a bin has unit tests, so cargo reports it as
           # testable, and under `--no-run` it emits two artifacts for that bin
-          # - the test harness under deps/, and the ordinary executable. Asking
+          # - the test harness and the ordinary executable. Asking
           # the wrong one puts `target/release/ferritecad-viewer` in this list
           # and makes the comparison below reject the application for being
           # itself. `.profile.test` is a property of the compilation and names

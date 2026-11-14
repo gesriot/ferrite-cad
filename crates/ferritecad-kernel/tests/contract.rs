@@ -475,7 +475,9 @@ fn the_whole_slice_runs_without_naming_a_kernel_type() {
 
         let highest = mesh
             .positions
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| p[2])
             .fold(f32::NEG_INFINITY, f32::max);
 
@@ -525,7 +527,13 @@ fn a_symmetric_extrusion_straddles_its_plane() {
         .tessellate(result.shape, &TessellationParams::default(), &context)
         .expect("tessellates");
 
-    let heights: Vec<f32> = mesh.positions.chunks_exact(3).map(|p| p[2]).collect();
+    let heights: Vec<f32> = mesh
+        .positions
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| p[2])
+        .collect();
     let lowest = heights.iter().copied().fold(f32::INFINITY, f32::min);
     let highest = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 

@@ -485,7 +485,7 @@ impl<K> Drop for Counting<K> {
 }
 
 macro_rules! forward {
-    ($count:ident, $name:ident($($arg:ident: $ty:ty),*) -> $out:ty) => {
+    ($count:ident, $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $out:ty) => {
         fn $name(&mut self,$($arg:$ty),*) -> $out {
             self.count(|c| c.$count += 1);
             self.fault(stringify!($count), self.calls.get().$count)?;
@@ -562,24 +562,63 @@ impl<K: GeometryKernel + Occupancy> GeometryKernel for Counting<K> {
         self.published();
         result
     }
-    forward!(queries, support_plane(faces: &[SubShapeHandle], context: &OperationContext)
-        -> Result<FacePlane>);
-    forward!(queries, projected_bounds(shape: ShapeHandle, direction: ferritecad_types::Vec3)
-        -> Result<[f64; 2]>);
-    forward!(fillet, fillet_edges(request: &FilletRequest, context: &OperationContext)
-        -> Result<OperationResult>);
-    forward!(chamfer, chamfer_edges(request: &ChamferRequest, context: &OperationContext)
-        -> Result<OperationResult>);
-    forward!(queries, shape_topology(shape: ShapeHandle) -> Result<ShapeTopology>);
+    forward!(
+        queries,
+        support_plane(faces: &[SubShapeHandle], context: &OperationContext) -> Result<FacePlane>
+    );
+    forward!(
+        queries,
+        projected_bounds(shape: ShapeHandle, direction: ferritecad_types::Vec3) -> Result<[f64; 2]>
+    );
+    forward!(
+        fillet,
+        fillet_edges(
+            request: &FilletRequest,
+            context: &OperationContext,
+        ) -> Result<OperationResult>
+    );
+    forward!(
+        chamfer,
+        chamfer_edges(
+            request: &ChamferRequest,
+            context: &OperationContext,
+        ) -> Result<OperationResult>
+    );
+    forward!(
+        queries,
+        shape_topology(shape: ShapeHandle) -> Result<ShapeTopology>
+    );
     forward!(queries, solid_count(shape: ShapeHandle) -> Result<usize>);
-    forward!(queries, transform(shape: ShapeHandle, placement: &Transform, ctx: &OperationContext)
-        -> Result<OperationResult>);
-    forward!(queries, encode_shape_with(shape: ShapeHandle, entities: &[SubShapeHandle])
-        -> Result<(BrepBlob, Vec<ArchiveSlot>)>);
-    forward!(restore, decode_shape_with(blob: &BrepBlob, slots: &[ArchiveSlot])
-        -> Result<(ShapeHandle, Vec<SubShapeHandle>)>);
-    forward!(queries, encode_shape(shape: ShapeHandle) -> Result<BrepBlob>);
-    forward!(restore, decode_shape(blob: &BrepBlob) -> Result<ShapeHandle>);
+    forward!(
+        queries,
+        transform(
+            shape: ShapeHandle,
+            placement: &Transform,
+            ctx: &OperationContext,
+        ) -> Result<OperationResult>
+    );
+    forward!(
+        queries,
+        encode_shape_with(
+            shape: ShapeHandle,
+            entities: &[SubShapeHandle],
+        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)>
+    );
+    forward!(
+        restore,
+        decode_shape_with(
+            blob: &BrepBlob,
+            slots: &[ArchiveSlot],
+        ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)>
+    );
+    forward!(
+        queries,
+        encode_shape(shape: ShapeHandle) -> Result<BrepBlob>
+    );
+    forward!(
+        restore,
+        decode_shape(blob: &BrepBlob) -> Result<ShapeHandle>
+    );
     fn release(&mut self, shape: ShapeHandle) {
         self.count(|c| c.released += 1);
         self.inner.release(shape);

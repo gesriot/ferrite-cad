@@ -469,7 +469,7 @@ restore_mutation
 # 18. Normals recomputed rather than carried.
 begin_mutation "$builder"
 replace_once "$builder" \
-  $'            normals: mesh\n                .normals\n                .chunks_exact(3)\n                .map(|value| [value[0], value[1], value[2]])\n                .collect(),' \
+  $'            normals: mesh\n                .normals\n                .as_chunks::<3>()\n                .0\n                .iter()\n                .map(|value| [value[0], value[1], value[2]])\n                .collect(),' \
   '            normals: vec![[0.0, 0.0, 1.0]; mesh.positions.len() / 3],'
 expect_kill authored_normals_discarded scene \
   authored_normals_and_a_material_colour_survive

@@ -36,7 +36,7 @@ fn one_body_mesh_contains_both_pieces_and_named_selection_removes_only_one() {
         let mesh = &loaded.snapshot.meshes()[0];
         let mut left = 0;
         let mut right = 0;
-        for triangle in mesh.indices().chunks_exact(3) {
+        for triangle in mesh.indices().as_chunks::<3>().0 {
             let xs: Vec<_> = triangle
                 .iter()
                 .map(|i| mesh.vertices()[*i as usize * 6])

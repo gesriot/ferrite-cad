@@ -421,7 +421,7 @@ impl GeometryKernel for OcctKernel {
             return Err(CadError::kernel("invalid topology record length"));
         }
         let mut topology = ferritecad_kernel::ShapeTopology::default();
-        for row in words.chunks_exact(3) {
+        for row in words.as_chunks::<3>().0 {
             let entity = SubShapeHandle::new(shape, naming_kind(row[1])?, row[0]);
             let faces = topology.adjacent_faces.entry(entity).or_default();
             if row[2] != u64::MAX {
@@ -446,7 +446,7 @@ impl GeometryKernel for OcctKernel {
             operation: Some(operation),
             ..NamingHistory::default()
         };
-        for row in words.chunks_exact(6) {
+        for row in words.as_chunks::<6>().0 {
             if row[2] == 7 {
                 if row[0] != 0 || row[3] != 2 || row[5] != 0 {
                     return Err(CadError::kernel("invalid cap boundary history"));

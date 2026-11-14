@@ -223,7 +223,7 @@ pub(super) fn mesh(stl: &[u8], fillets: &[EdgeObservation], bounds: [f64; 4], he
     let mut volume = 0.;
     let mut edges = std::collections::BTreeMap::new();
     let key = |p: [f64; 3]| p.map(|v| (v * 1e4).round() as i64);
-    for t in stl[84..].chunks_exact(50) {
+    for t in stl[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, v) in p.iter_mut().enumerate() {
             for (j, x) in v.iter_mut().enumerate() {

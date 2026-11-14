@@ -31,7 +31,7 @@ impl Observed {
 }
 
 macro_rules! forward {
-    ($name:ident($($argument:ident: $type:ty),*) -> $result:ty) => {
+    ($name:ident($($argument:ident: $type:ty),* $(,)?) -> $result:ty) => {
         fn $name(&mut self, $($argument: $type),*) -> $result {
             self.kernel.$name($($argument),*)
         }
@@ -80,12 +80,26 @@ impl GeometryKernel for Observed {
     forward!(solid_count(shape: ShapeHandle) -> Result<usize>);
     forward!(validate_solids(shape: ShapeHandle) -> Result<()>);
     forward!(validate_solid_structure(shape: ShapeHandle) -> Result<()>);
-    forward!(transform(shape: ShapeHandle, transform: &Transform, context: &OperationContext)
-        -> Result<OperationResult>);
-    forward!(tessellate(shape: ShapeHandle, params: &TessellationParams, context: &OperationContext)
-        -> Result<Mesh>);
-    forward!(encode_shape_with(shape: ShapeHandle, sub_shapes: &[SubShapeHandle])
-        -> Result<(BrepBlob, Vec<ArchiveSlot>)>);
+    forward!(
+        transform(
+            shape: ShapeHandle,
+            transform: &Transform,
+            context: &OperationContext,
+        ) -> Result<OperationResult>
+    );
+    forward!(
+        tessellate(
+            shape: ShapeHandle,
+            params: &TessellationParams,
+            context: &OperationContext,
+        ) -> Result<Mesh>
+    );
+    forward!(
+        encode_shape_with(
+            shape: ShapeHandle,
+            sub_shapes: &[SubShapeHandle],
+        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)>
+    );
     forward!(encode_shape(shape: ShapeHandle) -> Result<BrepBlob>);
     forward!(decode_shape(blob: &BrepBlob) -> Result<ShapeHandle>);
     forward!(release(shape: ShapeHandle) -> ());

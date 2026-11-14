@@ -399,7 +399,10 @@ fn measure(mesh: &Mesh, face: SubShapeHandle) -> Option<(f64, [f64; 3])> {
     let mut area = 0.0;
     let mut middle = [0.0f64; 3];
     let first = range.first_index as usize;
-    for triangle in mesh.indices[first..first + range.index_count as usize].chunks_exact(3) {
+    for triangle in mesh.indices[first..first + range.index_count as usize]
+        .as_chunks::<3>()
+        .0
+    {
         let (a, b, c) = (point(triangle[0]), point(triangle[1]), point(triangle[2]));
         let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];

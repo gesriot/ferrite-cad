@@ -100,17 +100,23 @@ impl Triangles {
         Ok(Self {
             positions: mesh
                 .positions
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|value| [value[0], value[1], value[2]])
                 .collect(),
             normals: mesh
                 .normals
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|value| [value[0], value[1], value[2]])
                 .collect(),
             triangles: mesh
                 .indices
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|value| [value[0], value[1], value[2]])
                 .collect(),
         })

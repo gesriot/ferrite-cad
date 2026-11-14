@@ -260,7 +260,7 @@ fn native_edit_sketch_process_identity_geometry_and_delivery() {
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     let mut volume6 = 0.;
-    for t in bytes[84..].chunks_exact(50) {
+    for t in bytes[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, v) in p.iter_mut().enumerate() {
             for j in 0..3 {

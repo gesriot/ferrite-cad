@@ -45,12 +45,7 @@ const DEADLINE: Duration = Duration::from_secs(30);
 
 /// The viewer this test was built alongside.
 fn viewer() -> PathBuf {
-    // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
-    let mut path = std::env::current_exe().expect("the test knows where it is");
-    path.pop();
-    path.pop();
-    path.push(format!("ferritecad-viewer{}", std::env::consts::EXE_SUFFIX));
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_ferritecad-viewer"))
 }
 
 /// What the process said and what it exited with.

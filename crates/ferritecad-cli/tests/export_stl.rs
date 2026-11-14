@@ -16,12 +16,7 @@ use ferritecad_fixtures::plate_source;
 
 /// The binary this test was built alongside.
 fn ferritecad() -> PathBuf {
-    // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
-    let mut path = std::env::current_exe().expect("the test knows where it is");
-    path.pop();
-    path.pop();
-    path.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_ferritecad"))
 }
 
 fn run(args: &[&str]) -> Output {

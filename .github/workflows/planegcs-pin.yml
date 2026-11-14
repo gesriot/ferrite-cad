@@ -358,7 +358,7 @@ jobs:
           # bridge, which tools/check-solver-ownership.sh is what keeps true;
           # a bridge-build under any other crate is not the shim under test.
           find target/release/build \
-            -path '*/ferritecad-sketch-solver-*/out/bridge-build/CMakeCache.txt' > caches.txt
+            -path '*/ferritecad-sketch-solver/*/out/bridge-build/CMakeCache.txt' > caches.txt
           [ -s caches.txt ] || { echo "::error::the shim left no cmake cache to read"; exit 1; }
           while IFS= read -r cache; do
             echo "== $cache"

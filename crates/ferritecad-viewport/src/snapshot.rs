@@ -325,7 +325,7 @@ fn face_boundaries(mesh: &Mesh) -> Result<Vec<u32>> {
         order.clear();
         let first = range.first_index as usize;
         let end = first + range.index_count as usize;
-        for triangle in mesh.indices[first..end].chunks_exact(3) {
+        for triangle in mesh.indices[first..end].as_chunks::<3>().0 {
             for corner in 0..3 {
                 let (a, b) = (triangle[corner], triangle[(corner + 1) % 3]);
                 if a == b {

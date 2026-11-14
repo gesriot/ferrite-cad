@@ -1475,7 +1475,7 @@ fn a_representable_placement_is_kept_exactly() {
     ];
     let scene = export_with_placement(placement).expect("a rotation is representable");
     let kept = scene.nodes()[0].local_transform.rows();
-    for (row, expected) in kept.iter().zip(placement.chunks_exact(4)) {
+    for (row, expected) in kept.iter().zip(placement.as_chunks::<4>().0) {
         assert_eq!(
             row.as_slice(),
             expected,

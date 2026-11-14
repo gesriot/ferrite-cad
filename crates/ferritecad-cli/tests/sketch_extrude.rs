@@ -202,7 +202,7 @@ fn native_sketch_extrude_process_cold_geometry_and_delivery() {
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     let mut six_volume = 0.;
-    for t in b[84..].chunks_exact(50) {
+    for t in b[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, point) in p.iter_mut().enumerate() {
             for j in 0..3 {

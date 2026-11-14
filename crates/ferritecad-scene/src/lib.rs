@@ -5092,6 +5092,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "the ordinal walks the picture; the kernel mesh is indexed by it to compare"
+    )]
     fn every_named_face_of_the_plate_carries_the_reference_that_resolves_to_it() {
         let (_directory, path) = plate();
         let (by_hand, mesh) = plate_by_hand(&path, &mut MockKernel::new());

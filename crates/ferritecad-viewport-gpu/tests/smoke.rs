@@ -1514,8 +1514,10 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
         assert!(
             frame
                 .colour()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255]),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255]),
             "an empty snapshot left something other than the clear colour"
         );
         assert_eq!(frame.pick_at(8, 8), PickId::NOTHING);
