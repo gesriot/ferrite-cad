@@ -721,6 +721,11 @@ impl Document {
             let mut candidate = Candidate::read(document)?;
             for change in changes {
                 let id = change.object();
+                let cannot_edit = |source: CadError| CadError::Context {
+                    kind: source.kind(),
+                    message: format!("cannot edit object {id}: {source}"),
+                    source: Box::new(source),
+                };
                 match change {
                     EditChange::AddParameter {
                         name,
@@ -796,7 +801,7 @@ impl Document {
                                 object.payload.label(object.name.as_deref(), id)
                             )));
                         }
-                        change.apply(&mut object.payload)?;
+                        change.apply(&mut object.payload).map_err(cannot_edit)?;
                     }
                     EditChange::SetExpressionText { .. }
                     | EditChange::SetKeepSelection { .. }
@@ -813,13 +818,7 @@ impl Document {
                     | EditChange::AddConstraint { .. }
                     | EditChange::RemoveConstraint { .. } => {
                         let object = candidate.edit(id)?;
-                        change
-                            .apply(&mut object.payload)
-                            .map_err(|source| CadError::Context {
-                                kind: source.kind(),
-                                message: format!("cannot edit object {id}: {source}"),
-                                source: Box::new(source),
-                            })?;
+                        change.apply(&mut object.payload).map_err(cannot_edit)?;
                     }
                 }
             }

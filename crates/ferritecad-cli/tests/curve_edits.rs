@@ -218,14 +218,20 @@ fn cli_curve_refusals_have_complete_text_and_leave_the_source_unchanged() -> Tes
                 sketch: f.sketch,
                 curve: duplicate.clone(),
             },
-            format!("invalid input: curve {} already exists", duplicate.id),
+            format!(
+                "cannot edit object {}: invalid input: curve {} already exists",
+                f.sketch, duplicate.id
+            ),
         ),
         (
             EditChange::RemoveCurve {
                 sketch: f.sketch,
                 curve: absent,
             },
-            format!("invalid input: sketch has no curve {absent}"),
+            format!(
+                "cannot edit object {}: invalid input: sketch has no curve {absent}",
+                f.sketch
+            ),
         ),
         (
             EditChange::SetConstruction {
@@ -233,7 +239,10 @@ fn cli_curve_refusals_have_complete_text_and_leave_the_source_unchanged() -> Tes
                 curve: absent,
                 construction: true,
             },
-            format!("invalid input: sketch has no curve {absent}"),
+            format!(
+                "cannot edit object {}: invalid input: sketch has no curve {absent}",
+                f.sketch
+            ),
         ),
     ] {
         let out = response(

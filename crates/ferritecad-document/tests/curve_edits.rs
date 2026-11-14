@@ -54,14 +54,20 @@ fn curve_edits_refuse_occupied_missing_and_wrong_kind_without_writes() -> TestRe
                 sketch: f.sketch,
                 curve: saved.curves[0].clone(),
             },
-            format!("invalid input: curve {} already exists", saved.curves[0].id),
+            format!(
+                "cannot edit object {}: invalid input: curve {} already exists",
+                f.sketch, saved.curves[0].id
+            ),
         ),
         (
             EditChange::RemoveCurve {
                 sketch: f.sketch,
                 curve: absent,
             },
-            format!("invalid input: sketch has no curve {absent}"),
+            format!(
+                "cannot edit object {}: invalid input: sketch has no curve {absent}",
+                f.sketch
+            ),
         ),
         (
             EditChange::SetConstruction {
@@ -69,7 +75,10 @@ fn curve_edits_refuse_occupied_missing_and_wrong_kind_without_writes() -> TestRe
                 curve: absent,
                 construction: true,
             },
-            format!("invalid input: sketch has no curve {absent}"),
+            format!(
+                "cannot edit object {}: invalid input: sketch has no curve {absent}",
+                f.sketch
+            ),
         ),
     ];
     let bytes = std::fs::read(&f.path)?;
