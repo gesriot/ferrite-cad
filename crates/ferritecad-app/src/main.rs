@@ -52,9 +52,6 @@ mod numeric;
 mod parameters;
 use numeric::mm;
 use workspace::form_window;
-#[cfg(test)]
-#[path = "../../ferritecad-fixtures/tests/support/curve_edits.rs"]
-mod curve_fixtures;
 mod recoveries;
 mod restores;
 mod sessions;
@@ -19497,3 +19494,7 @@ mod accepted_scene_tests;
 #[cfg(test)]
 #[path = "tests/names.rs"]
 mod test_names;
+
+#[cfg(test)]
+#[path = "../../ferritecad-fixtures/tests/support/curve_edits.rs"]
+mod curve_fixtures;
