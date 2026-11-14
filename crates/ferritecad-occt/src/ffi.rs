@@ -1768,7 +1768,9 @@ mod tests {
         session
             .naming_data(shape, true)
             .expect("complete provenance")
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .filter(|r| {
                 r[0] == source
                     && r[1] == input
@@ -1791,7 +1793,9 @@ mod tests {
         for r in session
             .naming_data(shape, false)
             .expect("complete inventory")
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter(|r| r[1] == kind && r[2] != u64::MAX)
         {
             incidence.entry(r[0]).or_default().insert(r[2]);
@@ -2933,7 +2937,9 @@ mod tests {
                 session
                     .naming_data(rounded, true)
                     .expect("history")
-                    .chunks_exact(6)
+                    .as_chunks::<6>()
+                    .0
+                    .iter()
                     .any(|r| r[0] == shape && r[1] == edge && r[2] == 1 && r[3] == 3)
             );
             session.release(rounded);

@@ -497,7 +497,7 @@ pub(crate) fn read_stl(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
     assert_eq!(bytes.len(), 84 + 50 * count);
     let mut faces = Vec::new();
     let mut six = 0.;
-    for t in bytes[84..].chunks_exact(50) {
+    for t in bytes[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, point) in p.iter_mut().enumerate() {
             for (j, coordinate) in point.iter_mut().enumerate() {

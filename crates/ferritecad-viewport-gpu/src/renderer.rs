@@ -2560,7 +2560,7 @@ fn edge_stream(mesh: &ferritecad_viewport::PackedMesh) -> Result<Vec<EdgeVertex>
         let segments = mesh
             .segments_of_edge(ordinal)
             .ok_or_else(|| CadError::rendering("an edge of this picture draws nothing"))?;
-        for pair in segments.chunks_exact(2) {
+        for pair in segments.as_chunks::<2>().0 {
             for index in pair {
                 let at = *index as usize * VERTEX_FLOATS;
                 let position = mesh.vertices().get(at..at + 3).ok_or_else(|| {
@@ -3484,7 +3484,9 @@ impl Frame {
 /// Little-endian `u32` per pixel, as an `R32Uint` target lands.
 fn unpack(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect()
 }
@@ -3820,7 +3822,9 @@ mod tests {
         // below are comparisons of a picture with lines in it rather than of
         // one that happens to have none.
         let ink = offscreen_all
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| {
                 let luminance = 0.2126 * f32::from(pixel[0])
                     + 0.7152 * f32::from(pixel[1])
@@ -4329,7 +4333,9 @@ mod tests {
         let ink = SKETCH_COLOUR.map(|channel| (channel * 255.0).round() as u8);
         let drawn = offscreen
             .colour()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| {
                 pixel[0].abs_diff(ink[0]) <= 2
                     && pixel[1].abs_diff(ink[1]) <= 2

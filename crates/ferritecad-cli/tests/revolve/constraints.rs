@@ -377,7 +377,9 @@ pub(super) fn measure_solved(
     let triangles = |face| -> Vec<[[f64; 3]; 3]> {
         let range = mesh.faces.iter().find(|r| r.face == face).expect("drawn");
         mesh.indices[range.first_index as usize..(range.first_index + range.index_count) as usize]
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| {
                 std::array::from_fn(|k| {
                     std::array::from_fn(|j| f64::from(mesh.positions[t[k] as usize * 3 + j]))

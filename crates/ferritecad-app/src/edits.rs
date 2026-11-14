@@ -401,11 +401,7 @@ pub(crate) mod tests {
         false
     }
     fn cli(args: &[&OsStr]) -> std::process::Output {
-        let mut binary = std::env::current_exe().expect("test binary");
-        binary.pop();
-        binary.pop();
-        binary.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-        std::process::Command::new(binary)
+        std::process::Command::new(crate::creates::tests::ferritecad())
             .args(args)
             .output()
             .expect("real CLI process")
@@ -540,7 +536,7 @@ pub(crate) mod tests {
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
         let mut volume = 0.0;
-        for triangle in bytes[84..].chunks_exact(50) {
+        for triangle in bytes[84..].as_chunks::<50>().0 {
             let mut points = [[0.0; 3]; 3];
             for (v, point) in points.iter_mut().enumerate() {
                 for (axis, coordinate) in point.iter_mut().enumerate() {

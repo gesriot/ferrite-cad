@@ -3712,7 +3712,9 @@ fn square_face(shape: u64, first_index: u32) -> (Vec<f32>, Vec<f32>, Vec<u32>, M
 /// The undirected segments a packed mesh draws, as a set.
 fn boundary_set(mesh: &ferritecad_viewport::PackedMesh) -> std::collections::BTreeSet<(u32, u32)> {
     mesh.line_indices()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0].min(pair[1]), pair[0].max(pair[1])))
         .collect()
 }

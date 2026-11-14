@@ -361,7 +361,7 @@ fn exports(path: &Path, solved: &Solved, tag: &str) {
     assert_eq!(bytes.len(), 84 + 50 * n);
     assert_eq!(v["result"]["triangles"], n);
     let mut six = 0.;
-    for t in bytes[84..].chunks_exact(50) {
+    for t in bytes[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, vertex) in p.iter_mut().enumerate() {
             for (j, c) in vertex.iter_mut().enumerate() {

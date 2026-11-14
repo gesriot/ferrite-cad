@@ -551,7 +551,7 @@ fn read_stl(bytes: &[u8]) -> Mesh {
     let mut hi = [f64::NEG_INFINITY; 3];
     let mut six = 0.;
     let mut faces = Vec::new();
-    for t in bytes[84..].chunks_exact(50) {
+    for t in bytes[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, point) in p.iter_mut().enumerate() {
             for j in 0..3 {

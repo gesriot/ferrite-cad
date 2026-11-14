@@ -46,11 +46,7 @@ const CHILD_DOCUMENT: &str = "FCAD_OCCURRENCE_CHILD_DOCUMENT";
 const LINE: &str = "FCAD_OCCURRENCE ";
 
 fn ferritecad() -> PathBuf {
-    let mut path = std::env::current_exe().expect("the test knows where it is");
-    path.pop();
-    path.pop();
-    path.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_ferritecad"))
 }
 
 fn fixture() -> PathBuf {

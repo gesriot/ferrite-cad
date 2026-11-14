@@ -5010,7 +5010,7 @@ pub(crate) mod tests {
                 let at = 84 + 50 * i + 12 + 4 * j;
                 f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
             });
-            for p in v.chunks_exact(3) {
+            for p in v.as_chunks::<3>().0 {
                 for j in 0..3 {
                     lo[j] = lo[j].min(p[j]);
                     hi[j] = hi[j].max(p[j]);
@@ -5343,7 +5343,7 @@ pub(crate) mod tests {
                 let at = 84 + 50 * i + 12 + 4 * j;
                 f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
             });
-            for p in v.chunks_exact(3) {
+            for p in v.as_chunks::<3>().0 {
                 for j in 0..3 {
                     lo[j] = lo[j].min(p[j]);
                     hi[j] = hi[j].max(p[j]);
@@ -5663,7 +5663,7 @@ pub(crate) mod tests {
                 let at = 84 + 50 * i + 12 + 4 * j;
                 f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
             });
-            for p in v.chunks_exact(3) {
+            for p in v.as_chunks::<3>().0 {
                 for j in 0..3 {
                     lo[j] = lo[j].min(p[j]);
                     hi[j] = hi[j].max(p[j]);
@@ -6213,7 +6213,7 @@ pub(crate) mod tests {
                 let at = 84 + 50 * i + 12 + 4 * j;
                 f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
             });
-            for p in v.chunks_exact(3) {
+            for p in v.as_chunks::<3>().0 {
                 for j in 0..3 {
                     lo[j] = lo[j].min(p[j]);
                     hi[j] = hi[j].max(p[j]);

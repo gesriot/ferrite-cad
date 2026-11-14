@@ -25,11 +25,7 @@ fn native() -> bool {
     true
 }
 fn cli() -> Command {
-    let mut path = std::env::current_exe().expect("binary");
-    path.pop();
-    path.pop();
-    path.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-    Command::new(path)
+    Command::new(crate::creates::tests::ferritecad())
 }
 fn success(command: &mut Command) -> Output {
     let output = command.output().expect("real CLI");
@@ -148,7 +144,7 @@ fn dimensions(bytes: &[u8]) -> [f32; 3] {
     );
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for triangle in bytes[84..].chunks_exact(50) {
+    for triangle in bytes[84..].as_chunks::<50>().0 {
         for v in 0..3 {
             for axis in 0..3 {
                 let start = 12 + v * 12 + axis * 4;

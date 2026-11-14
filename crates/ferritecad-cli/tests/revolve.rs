@@ -543,7 +543,7 @@ fn mesh(path: &Path, out: &Path) -> Mesh {
     assert_eq!(b.len(), 84 + 50 * count);
     let mut six = 0.;
     let mut faces = Vec::new();
-    for t in b[84..].chunks_exact(50) {
+    for t in b[84..].as_chunks::<50>().0 {
         let mut p = [[0.; 3]; 3];
         for (i, point) in p.iter_mut().enumerate() {
             for (j, value) in point.iter_mut().enumerate() {

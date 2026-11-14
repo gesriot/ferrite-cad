@@ -448,7 +448,8 @@ fn face_normal_and_area(
     let (mut sum, mut area, mut points) = ([0.; 3], 0., Vec::new());
     for t in mesh.indices
         [range.first_index as usize..(range.first_index + range.index_count) as usize]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
     {
         let [a, b, c] = [at(t[0]), at(t[1]), at(t[2])];
         let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];

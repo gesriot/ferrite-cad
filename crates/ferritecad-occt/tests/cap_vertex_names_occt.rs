@@ -770,7 +770,7 @@ fn walking_the_profile_from_another_segment_leaves_each_corner_owning_its_vertic
 
     let first = meanings(0);
     assert_eq!(first.len(), 8);
-    for (_, touching) in first.iter() {
+    for touching in first.values() {
         assert_eq!(touching.len(), 2, "a corner of a plate touches two sides");
     }
     for start in 1..labels.len() {

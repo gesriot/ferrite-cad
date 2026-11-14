@@ -50,11 +50,7 @@ const REAL_GEOMETRY: &str = "step.product_definition#2428";
 const OMITTED: &str = "step.product_definition#2583";
 
 fn ferritecad() -> PathBuf {
-    let mut path = std::env::current_exe().expect("the test knows where it is");
-    path.pop();
-    path.pop();
-    path.push(format!("ferritecad{}", std::env::consts::EXE_SUFFIX));
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_ferritecad"))
 }
 
 fn fixture() -> PathBuf {

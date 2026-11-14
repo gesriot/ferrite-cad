@@ -63,11 +63,12 @@ fn one_body_exports_every_component_once_with_its_body_identity() {
         let mut measured = 0.;
         let mut left = 0;
         let mut right = 0;
-        for triangle in bytes[84..].chunks_exact(50) {
+        for triangle in bytes[84..].as_chunks::<50>().0 {
             let mut points = [[0_f64; 3]; 3];
-            for (point, coordinates) in points.iter_mut().zip(triangle[12..48].chunks_exact(12)) {
-                for (value, field) in point.iter_mut().zip(coordinates.chunks_exact(4)) {
-                    *value = f64::from(f32::from_le_bytes(field.try_into().expect("float")));
+            for (point, coordinates) in points.iter_mut().zip(triangle[12..48].as_chunks::<12>().0)
+            {
+                for (value, field) in point.iter_mut().zip(coordinates.as_chunks::<4>().0) {
+                    *value = f64::from(f32::from_le_bytes(*field));
                 }
             }
             let [a, b, c] = points;

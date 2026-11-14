@@ -985,7 +985,7 @@ fn stl_bounds(bytes: &[u8]) -> ([f64; 3], f64) {
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
     let mut volume = 0.0;
-    for triangle in bytes[84..].chunks_exact(50) {
+    for triangle in bytes[84..].as_chunks::<50>().0 {
         let mut points = [[0.0; 3]; 3];
         for (v, point) in points.iter_mut().enumerate() {
             for (axis, value) in point.iter_mut().enumerate() {
