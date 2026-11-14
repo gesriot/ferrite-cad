@@ -115,6 +115,24 @@ fn edge_on_and_empty_viewports_have_no_plane_point() {
         geometry::point_on_plane(&Camera::new(), [0., 0.], plane),
         None
     );
+    let front = self::camera(plane, Projection::Orthographic);
+    let nearly_parallel = SketchPlane::new(
+        Point3::ORIGIN,
+        Vec3::X,
+        Vec3::new(0., 1., 1e-9).expect("normal"),
+    )
+    .expect("near edge-on plane");
+    assert_eq!(
+        geometry::point_on_plane(&front, [400., 300.], nearly_parallel),
+        None
+    );
+    let behind = SketchPlane::new(
+        Point3::new(0., 0., 1000.).expect("origin"),
+        Vec3::X,
+        Vec3::Z,
+    )
+    .expect("plane behind the camera");
+    assert_eq!(geometry::point_on_plane(&front, [400., 300.], behind), None);
 }
 
 #[test]
@@ -440,3 +458,40 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
 mod gpu;
 mod widgets;
 mod window;
+
+#[test]
+fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 3.,
+    });
+    let id = circle.id;
+    let mut d = existing(vec![circle]);
+    let constraint = StableEntityId::new();
+    d.original
+        .as_mut()
+        .expect("stored")
+        .constraints
+        .push(SketchConstraint {
+            id: constraint,
+            rule: SketchConstraintRule::Radius {
+                curve: id,
+                radius: ferritecad_document::Expression::constant(3.).expect("radius"),
+            },
+        });
+    d.select(Some(id), false);
+    d.delete();
+    assert_eq!(
+        d.changes(),
+        vec![
+            EditChange::RemoveConstraint {
+                sketch: d.sketch,
+                constraint
+            },
+            EditChange::RemoveCurve {
+                sketch: d.sketch,
+                curve: id
+            },
+        ]
+    );
+}

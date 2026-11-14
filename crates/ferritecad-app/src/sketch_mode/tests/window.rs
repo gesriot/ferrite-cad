@@ -798,6 +798,15 @@ fn entry_refuses_absent_objects_planes_and_mismatched_accepted_versions() {
     let source = w.scene.edit_source.as_ref().expect("source");
     let mut editor = Editor::default();
     assert!(!editor.begin_with(&a.path, source, &foreign.scene.sketches, a.sketch));
+    // Keep the accepted sketch identity while changing only its source version.
+    let mut stale = source.clone();
+    stale.version = foreign
+        .scene
+        .edit_source
+        .as_ref()
+        .expect("other version")
+        .version;
+    assert!(!editor.begin_with(&a.path, &stale, &w.scene.sketches, a.sketch));
     assert!(!editor.begin_with(&a.path, source, &w.scene.sketches, a.plane));
     assert!(!editor.begin_new(&a.path, source, Some(ObjectId::new())));
     let mut refused = source.clone();
@@ -825,4 +834,46 @@ fn native_finish_of_new_empty_sketch_reuses_selected_plane_without_an_extra_datu
     );
     assert!(apply(&mut w, request));
     assert!(!w.creates.sketch.active());
+}
+
+#[test]
+fn native_failed_sketch_does_not_offer_or_open_the_viewport_editor() {
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_sketch_solver::is_available(), "PlaneGCS"),
+    ]) {
+        return;
+    }
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 3.,
+    });
+    let id = circle.id;
+    let mut f = fixtures::Drawing::new(vec![circle], false);
+    let changes: Vec<_> = [3., 4.]
+        .into_iter()
+        .map(|radius| EditChange::AddConstraint {
+            sketch: f.sketch,
+            constraint: SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Radius {
+                    curve: id,
+                    radius: ferritecad_document::Expression::constant(radius).expect("radius"),
+                },
+            },
+        })
+        .collect();
+    f.doc
+        .write_changes(&changes)
+        .expect("stored conflicting constraints");
+    let w = open(&f.path, Drawn::Native);
+    let source = w.scene.edit_source.as_ref().expect("source");
+    assert!(!source.built_sketches.contains(&f.sketch));
+    assert!(w.scene.sketches.presentation(source, f.sketch).is_none());
+    assert!(
+        !commands::actions(source, (f.sketch, None, None))
+            .contains(&ferritecad_ui::ModelEdit::Sketch)
+    );
+    let mut editor = Editor::default();
+    assert!(!editor.begin_with(&f.path, source, &w.scene.sketches, f.sketch));
 }
