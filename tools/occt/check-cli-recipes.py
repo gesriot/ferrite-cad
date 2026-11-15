@@ -9,7 +9,10 @@ import subprocess
 import sys
 import tempfile
 
-RECIPES = [('docs/expressions.md',
+RECIPES = [
+ ('README.md', 'README_PLATE_RECIPE',
+  {'no-solver': 'README_PLATE_OK ', 'solver': 'README_PLATE_OK '}),
+ ('docs/expressions.md',
   'EXPRESSIONS_RECIPE',
   {'no-solver': 'EXPRESSIONS_NO_SOLVER ', 'solver': 'EXPRESSIONS_SOLVER ',
    'stub': 'EXPRESSIONS_STUB '}),
