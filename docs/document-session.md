@@ -255,3 +255,29 @@ fillet**). Save fillet copy, Add Chamfer and the other copies remain clean-only.
 §30K adds the plate's one Chamfer through this same session, including while dirty
 (**Add chamfer**), on a free or closure-only plate only. Save chamfer copy and the
 other copies remain clean-only. See [Add Chamfer session contract](fillets-and-chamfers.md).
+
+## Exporting the accepted model
+
+The window's STL and FBX exports hold the accepted working version, including
+unsaved edits. An unsuccessful or cancelled Open never replaces that source.
+Camera, selection and visibility do not change export contents or get changed by
+export. The result matches the CLI exporting the same accepted document version;
+it is not a screenshot or a fresh read of an externally changed logical file.
+
+FBX exports every definition and placement. STL exports one native Body, selected
+by UUID when more than one exists; its default deflections are 0.01 mm and 0.5
+radians. Duplicate or absent names do not prevent explicit UUID selection.
+Imported-only documents have no native Body to select, and one STL does not
+combine several Bodies or selected faces.
+
+An occupied destination prompts `Replace existing file?`; Cancel leaves it
+unchanged. The source document and its aliases are never valid destinations.
+The worker has its own kernel session. Cancel export, leaving its document, or
+closing the window requests cancellation; closing waits for workers. Cancellation
+observed before publication leaves the destination untouched. Once publication
+succeeds, a late cancellation does not remove the file.
+
+The Export section reports its outcome separately from Open. STL reports the
+Body, triangles and bytes. FBX reports bytes, nodes, geometries and materials;
+`Exported with missing geometry` lists every omitted definition, source, stored
+finding, refusal and affected placement while retaining the published file.

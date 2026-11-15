@@ -1534,3 +1534,27 @@ from the native rebuild. It is empty when the native kernel is unavailable; fail
 features have no count row. Counts do not identify or order individual solids.
 The shared `edit` request accepts `keep_solids` additions and `set_keep_selection`;
 see [KeepSolids](keep-solids.md) for complete JSON and refusal categories.
+
+## FBX identity and file properties
+
+FBX 7.4 ASCII retains every definition and placement, the assembly hierarchy and
+recorded local transforms. Geometry is shared: four placements of one part use
+one mesh and four nodes. Imported geometry is read from the STEP bytes embedded
+in the document, so the original STEP file need not remain beside it. Repeated
+exports of the same document are byte-identical; the writer introduces no clock,
+host name, source path or random identity.
+
+`FerriteCADDefinitionId` names a native Body or an imported source and its
+source-local definition key. `FerriteCADOccurrenceId` names one placement. The
+namespaces are distinct: one part placed four times has one definition identity
+and four occurrence identities. Values are escaped, not truncated or hashed.
+Documents that never recorded these identities omit the properties rather than
+inventing placeholders. These properties identify the source model; they do not
+promise how another program will retain references when it reimports an FBX.
+
+An omitted definition retains its hierarchy node without geometry and carries
+machine-readable omission properties. Text export reports its source, stored
+finding, typed refusal and every affected local node key on stderr. It exits 6
+after publication; a complete export exits 0 with no omission diagnostic. JSON
+export reports the same omissions in its result instead. The publication and
+lost-report rules above apply to both complete and partial files.

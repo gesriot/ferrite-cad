@@ -163,3 +163,28 @@ TopologyRef {
 ## Явно отложено
 
 До завершения MVP не входят: сборки, mates, полноценные чертежи, ЕСКД, листовой металл, плагины, Python API, облачная синхронизация, DWG/JT и собственное B-Rep-ядро.
+
+## Repository layout
+
+The main library and client boundaries are:
+
+```
+crates/
+  ferritecad-types/     identifiers, units, tolerances, errors, canonical hashing
+  ferritecad-document/  SQLite container, CBOR envelopes, graph, cache sidecar
+  ferritecad-cli/       create, inspect, validate, dump-graph, clear-cache, export
+  ferritecad-kernel/    the geometry contract, and a mock that satisfies it
+  ferritecad-occt/      Open CASCADE behind that contract, over a C ABI shim
+  ferritecad-exchange/  STEP scenes: definitions, placements, diagnostics
+  ferritecad-eval/      cold and cached rebuilds of a whole document
+  ferritecad-scene/     a document read into a picture, and what its parts are
+  ferritecad-jobs/      the work an interface asks for: a document in, a file out
+  ferritecad-viewport/  camera and immutable render snapshots, no GPU
+  ferritecad-viewport-gpu/  wgpu renderer, offscreen and windowed
+  ferritecad-ui/        panels and the input reducer, no window
+  ferritecad-app/       the window, the event loop and the wiring
+docs/
+```
+
+Dependencies only point downwards. The document layer knows nothing about
+geometry kernels or user interfaces, and it never will.

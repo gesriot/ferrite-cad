@@ -1,1005 +1,147 @@
 # FerriteCAD
 
-A local, parametric mechanical CAD for Windows, Linux and macOS (Apple Silicon only). See [platform support](docs/platform-support.md). No cloud, no
-account, no proprietary container you cannot read back.
+FerriteCAD is a local parametric mechanical CAD application, with no cloud or
+account. This early application provides sketch and solid modelling, a command
+line with STEP import, and STL/FBX export. The `.fcad` format is not stable; a
+document from another build may not open.
 
-**Status: early.** There is a document format with its tooling, geometry
-through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
-file, draws what it describes – solids and the sketches they were raised from –
-and lets a definition be selected and inspected.
+Platforms: Windows, Linux and Apple Silicon macOS; see [platform support](docs/platform-support.md).
 
-FerriteCAD is moving from narrow feature slices to a generic modelling core
-([ADR 0006](docs/decisions/0006-generic-modelling-core.md)); the limitations
-described below are temporary.
+## Build for use
 
-## Model edits
+Use a **release** build to work with models. Debug builds are for tests and
+debugging: Open CASCADE is built separately in Release, but Rust rebuilding,
+scene preparation, meshing and the window run much more slowly in debug.
 
-`inspect --json` lists every stored `expression_slots` entry: object UUID, slot,
-expression source and internal value, dimension, display value/unit, and refusal.
-Length values use millimetres internally; angles use radians and display degrees.
-Slots include Extrude distance (Blind or Symmetric), Fillet radius, Chamfer distance,
-partial Revolve angle, and Sketch constraint Distance, Radius, DirectedAngle, FixedX
-and FixedY (addressed by constraint UUID). Named parameters can drive any of these slots.
-The window's **Parameters…** form creates, edits and renames parameters; **Values** edits
-expression text for the object selected in Model. Numeric forms keep accepting literals.
-See the [expression reference and CLI recipe](docs/expressions.md).
-
-Use the returned `content_version` with one ordered transaction:
-
-```json
-{"request_version":1,"changes":[{"kind":"set_expression","object":"<object UUID>","slot":{"kind":"revolve_angle"},"value":90,"unit":"deg"}]}
-```
+Install the pinned Rust toolchain and build the shared native libraries first:
+[Open CASCADE](docs/build-occt.md) and [PlaneGCS](docs/build-planegcs.md).
+The commands below run from the repository root and use the macOS checkout
+locations `vendor/install` and `vendor/planegcs`; the build guides describe the
+other platforms' compiler and library paths.
 
 ```sh
-ferritecad edit source.fcad --expect-version HASH --request changes.json --output edited.fcad --json
-```
-
-The result contains `destination`, `document_id`, `content_version` and `rebuild`.
-All changes are validated together and rebuilt before publication. An edit refuses
-all newly failed or skipped features and every previously resolved topology reference
-that would be lost; existing failures do not prevent repair. Numeric forms, Edit Sketch, circle and annulus forms, and constraints
-use this same transaction for Apply and Undo/Redo, including features in other bodies.
-Their local checks validate payload values; geometric fit is decided by Apply.
-The ordered changes may also set same-kind curve geometry, add a full constraint
-with its UUID, or remove one by UUID. See [the request format](docs/edit-transactions.md).
-
-Create your own XY Line polygon with **Create sketch + Extrude…**, or run
-`ferritecad create-sketch-extrude request.json -o new.fcad --json`.
-Both clients save a real Sketch/Extrude/Body and cold-check it before publication.
-See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
-The same window and the same command line also make a cylinder from a centre, a
-radius and a height – **Profile: Circle** in that editor, or
-`ferritecad create-circle-extrude request.json -o new.fcad --json`. The circle
-stays a circle: the document stores a centre and a radius, and the solid has one
-cylindrical face rather than a ring of flat ones, whatever the exported mesh
-approximates it with. [Contract and recipe](docs/circle-sketch-extrude.md).
-A saved circle's centre and radius can then be changed in a new copy through
-**Edit circle …** or `edit`: the circle keeps its identity, the extrusion
-keeps its height, and everything else in the document is carried over unchanged.
-[Contract and recipe](docs/edit-transactions.md).
-A hollow circular part uses **Profile: Circle with hole** or
-`create-annular-extrude`; [creation contract](docs/annular-sketch-extrude.md).
-Its shared centre and both radii can be changed through **Edit annulus …** or
-`edit`, preserving both circle identities and the height in a new copy.
-[Editing contract and recipe](docs/edit-transactions.md).
-Cut, Fillet and Chamfer additions and edits use the same ordered `edit` request
-as numbers, curves and constraints. The window's **Add cut**, **Apply cut**,
-**Add fillet** and **Add chamfer** use that transaction inside the open document,
-including after unsaved edits. Undo/Redo and exports use the accepted model;
-the user's file changes on Save. CLI `edit` publishes a new copy.
-
-A Cut request adds its tool Sketch and then the Cut to a Body. It can also change
-the tool's circle, depth or end condition together with the plate. **Through all**
-stays through after the plate height changes; Blind depth stays absolute. Open
-slots, overlapping tools and constrained tool sketches can be edited and extended
-when the rebuild succeeds. Tangent rims are refused by the evaluator. Turning a
-through hole into a pocket adds floor names; removing a named floor is refused.
-There is no Cut-count limit in the edit path.
-
-`inspect --json` exposes each Body's ordered history, the saved sketches and their
-planes, Cut profiles and end conditions, and Fillet/Chamfer edges and values.
-The forms display saved geometry; Apply decides whether the candidate builds
-without newly failing features or lost names.
-[Request format and publication rules](docs/edit-transactions.md).
-A simple Line polygon drawn entirely at X > 0 can instead be turned one full
-turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
-window, or `create-sketch-revolve`. The new Body is a real revolution and each
-Line names its own face. Crossing the axis is not supported.
-[Contract and recipe](docs/generic-sweeps.md).
-Such a part's profile coordinates can be changed later in the ordinary
-**Edit Sketch** window or with `edit`, saving a new copy that keeps
-every Line, face name and UUID; the axis and the full turn stay as saved.
-[Profile edit contract and recipe](docs/generic-sweeps.md).
-A solid cylinder, cone or stepped shaft is made the same way by putting exactly
-one whole edge of the profile on X = 0. That Line lies on the axis and raises
-no face, so it gets no name. Its coordinates are edited like any other
-Revolve's, but the axis edge stays on the axis: a part cannot change between
-solid and bored. [Solid Revolve contract and recipe](docs/generic-sweeps.md).
-Both profile classes also support **Feature: Revolve angle**, from 0.01° to
-359.99° about the same +Y axis. CLI request v2 states the angle explicitly;
-the sector has two separately named end faces.
-[Partial Revolve contract and recipe](docs/generic-sweeps.md).
-A saved sector's angle is changed with **Edit Revolve angle** or
-`edit` into a new copy. The copy keeps every object, Line and
-cap UUID, and the angle is the only thing that changes. A full turn does
-not become a sector. See [numeric edits](#model-edits) for the `revolve_angle` slot.
-A saved sector's profile is edited like a full turn's, in the same **Edit
-Sketch** editor (drag or exact X/Y) or with `edit`. The saved
-angle, axis and every Line and cap UUID are kept; a part with a bore stays
-one and the axis Line stays on the axis.
-[Sector profile edit contract and recipe](docs/generic-sweeps.md).
-The Line profile of a full turn or a sector with a bore also takes the
-existing **Edit constraints** dimensions — H/V, Line length, one Fixed
-endpoint, equal length, Parallel, Perpendicular — through the same editor or
-`edit`. The Body turns the solved profile, keeps its
-angle, axis and every face and cap UUID, and a solution that reaches the
-axis is refused. [Revolve constraint contract and recipe](docs/revolve-profile-constraints.md).
-A solid cylinder, cone, stepped shaft or solid sector takes the same
-dimensions. Its axis Line stays the saved one and still raises no face; the
-request keeps it on the axis by pinning one of its ends at X = 0 and making it
-vertical, and nothing is snapped. A solution that leaves the axis is refused.
-[Solid Revolve constraint contract and recipe](docs/axis-closed-revolve-constraints.md).
-Fillet and Chamfer consume named edges of any body's current result, including
-edges after Cut, Revolve and earlier edge features. Select an edge in the viewport
-and use **Add selected edge** in the form, or supply one or more references through
-`edit`. The kernel decides whether the requested radius or distance can produce one
-valid solid. The existing numeric editors, Undo/Redo, exports and Save/Save As use
-the shared transaction. A deleted or split exact reference refuses with its identity;
-it never chooses another edge. [Fillet and Chamfer](docs/fillets-and-chamfers.md).
-A sketch plane can lie on a named planar face of any feature result or at a signed
-offset from another plane; sketches and bodies on it move with their support.
-A deleted, split or curved support refuses with its identity instead of choosing
-another face. Planes are added through `edit`; the window draws and edits documents
-that contain them. [Datum planes](docs/datum-planes.md).
-Extrude can terminate at a named face's untrimmed surface, at a signed outward
-surface offset, or at the plane through a named vertex perpendicular to its direction.
-CLI `set_end_condition` and `extrude_end_offset` edit these definitions. The window
-draws the resulting bodies; its Cut depth form directs referenced ends to `edit`.
-[Referenced sweep ends](docs/generic-sweeps.md).
-Add, Cut and Intersect can end [up to next](docs/generic-sweeps.md#up-to-next) on their predecessor.
-
-Existing vertices can be selected and dragged in either sketch editor;
-[gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
-An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to
-exact document millimetres; [step rules](docs/sketch-snap-step.md). X/Y fields
-and Snap Off keep full precision.
-Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
-`edit`; [the identity-preserving contract](docs/edit-transactions.md)
-keeps segment IDs and order. **Edit H/V …** and
-`edit` persist Horizontal/Vertical constraints in a new
-copy; [constraint contract and agent recipe](docs/sketch-constraints-copy.md).
-The same operation persists one [length per Line](docs/line-length-constraints.md),
-[one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md)
-and [equal length between two named Lines](docs/equal-line-lengths.md), which is
-one relationship rather than a copied number: changing the leading length moves
-both sides. The same pair of named Lines can also be held
-[parallel or perpendicular](docs/line-pair-orientation.md) — a relative
-orientation, so it holds on a profile at any angle and leaves it free to turn,
-which is what makes it different from Horizontal/Vertical.
-The same editor also constrains a saved analytic circle: a radius in mm and its
-centre pinned at explicit X/Y mm, addressed by the circle's own identifier rather
-than by a point of it. The published copy takes its cylinder from the solved
-radius and centre; [contract, solver architecture and recipe](docs/circle-radius-constraints.md),
-[local measurements and limits](docs/circle-radius-constraints-verification.md).
-The solver keeps joints closed through named Coincident constraints; stored
-coordinates remain inputs, and arbitrary constraint families are still unsupported.
-
-The window can create an empty native document or a sample plate from a template;
-it can also change a supported constant Blind extrusion height in a new copy.
-Arbitrary modelling and in-place Save are still unavailable. See
-[`docs/implementation-plan.md`](docs/implementation-plan.md) for what comes when,
-and please read the honest scope note at the end of this file before forming
-expectations.
-
-## Building
-
-```sh
-cargo build
-cargo test
-```
-
-A Rust toolchain alone is enough to build and test the workspace: without Open
-CASCADE the kernel adapter compiles to a stub that refuses, and the tests that
-need real geometry skip themselves and say so. Building geometry for real needs
-the pinned kernel, whose build recipe is
-[`docs/build-occt.md`](docs/build-occt.md).
-
-## Trying it
-
-```sh
-cargo run -p ferritecad-cli -- create part.fcad --sample
-cargo run -p ferritecad-cli -- inspect part.fcad
-cargo run -p ferritecad-cli -- validate part.fcad
-cargo run -p ferritecad-cli -- dump-graph part.fcad --format dot | dot -Tsvg > graph.svg
-```
-
-`create --sample` builds a plate: a datum plane, a rectangular profile, an
-extrusion and the topology references naming that extrusion's faces. With Open
-CASCADE present, `rebuild --cold` evaluates it into geometry and `export-stl`
-writes it out; without one, the document still round-trips on its own.
-
-Both clients use `ferritecad_jobs::create_document`. It writes the native feature
-graph without a geometry kernel, in a SQLite transaction under a private scratch
-directory beside the destination, closes SQLite, then publishes once with atomic
-no-clobber. Errors and cancellation observed before that publication leave no
-new destination or scratch, and preserve an existing destination even if it
-appeared during the operation. Successful publication completes the operation.
-This fixes the former `create --sample --size NaN 50 12` failure that returned
-exit 2 but left an empty `.fcad`; the process regression test first fails on the
-old implementation specifically because the file remains.
-
-What the window can do, what the command line can do, and which library actually
-owns the work — including recipes with expected exit codes — is documented in
-[`docs/cli-capabilities.md`](docs/cli-capabilities.md).
-
-The same `Edit Sketch` / `edit` can also resize or shift the original
-rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
-and depths stay fixed; every disk must clear the new boundaries.
-[Contract and runnable recipe](docs/generic-sweeps.md).
-
-`Edit extrusion` / `edit` can change that history's base thickness while
-keeping Blind depths fixed and Through all Cuts open. A thicker plate names every
-new Blind pocket floor;
-removing a saved floor or exceeding the new thickness is refused with UUIDs.
-[Height policy and executable recipe](docs/generic-sweeps.md).
-
-
-The opt-in `create --json`, `inspect --json`, `edit --json`,
-`export-stl --json`, `export-fbx --json`, `import-step --json` and
-`validate --json` commands expose a versioned contract
-for publishing a document,
-discovering Extrude and native Body UUIDs, editing a height in a new copy,
-importing STEP, checking stored consistency without writes or a kernel, and
-exporting one Body to binary STL or the whole scene to FBX. See the exact
-[JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those seven commands plus polygon creation and saved Sketch coordinate editing;
-the other commands retain their existing text output.
-
-`validate` opens read-only in both text and JSON modes. A WAL journal or an
-object this build cannot read is refused. JSON `ok:true`
-means the check ran; `valid:false` exits 1, while warnings may accompany exit 0.
-A valid document does not guarantee a successful rebuild or complete FBX.
-
-## Exporting to FBX
-
-```sh
-cargo run -p ferritecad-cli -- export-fbx part.fcad --output part.fbx
-```
-
-Writes the whole document as FBX 7.4 ASCII: every definition, every placement,
-and the assembly hierarchy with the local transforms the sources recorded.
-Geometry is shared rather than copied — one part placed four times is one mesh
-and four nodes — and the file is a model another program opens as a model,
-which is what makes it different from `export-stl`, whose format has no notion
-of a part at all.
-
-An imported part is read from the bytes the document stores, so the STEP file
-it came from need not exist any more:
-
-```sh
-work="$(mktemp -d)"
-cp assembly.step "$work/private.step"
-cargo run -p ferritecad-cli -- import-step "$work/private.step" --output "$work/assembly.fcad"
-# After import exits 0 or 4, remove only the private copy made above.
-rm "$work/private.step"
-cargo run -p ferritecad-cli -- export-fbx "$work/assembly.fcad" --output "$work/assembly.fbx"
-```
-
-STEP import now uses the shared jobs operation: one source read, owned geometry,
-closed SQLite scratch and atomic publication. Exit 0 publishes without diagnostics;
-4 publishes with diagnostics; 5 is reader rejection with no document; 2 is an
-execution error. [The API contract and headless recipe](docs/shared-step-import.md)
-describe ownership and cancellation at native call boundaries. UI import is
-not available yet. `import-step --json` reports published identities and diagnostics
-(0/4), typed reader rejection (5), operational refusal (2), or report delivery
-failure (7) through [JSON v1](docs/cli-json-v1.md#результат-import-step-24i).
-A lost report keeps any published document, including a confirmed replacement.
-
-The same document always produces the same bytes. Nothing in the file is a
-clock, a host name, a path or a random number, so two exports can be compared,
-diffed and checksummed.
-
-`export-fbx --json` reports the published destination, byte/object counts and
-source-qualified typed omissions through JSON v1. Complete publication exits 0;
-partial publication still has `ok:true`, with `complete:false` and exit 6.
-Execution refusal exits 2. Report delivery failure exits 7 and keeps the published
-file, including an authorised replacement. Inspect and export read separate
-saved snapshots; FBX has no `--expect-version` guard. The
-[headless Python recipe](docs/cli-json-v1.md#рецепт-fbx-полнота-и-отдельная-проверка-файла)
-handles partial output explicitly without parsing the human CLI report.
-
-### What the file carries about which part is which
-
-Every node of the file carries two invisible properties beside the ones a
-person sees. `FerriteCADDefinitionId` names the definition — the identity of
-the bytes it was imported from together with the key those bytes gave it, or
-the object of a native body — and `FerriteCADOccurrenceId` names *this*
-placement of it. One part placed four times is one definition identity and four
-placement identities, and the two live in separate namespaces so a reader
-cannot mistake a part for a place.
-
-Nothing else about the file changed: the names, the hierarchy, the transforms,
-the geometry, the materials and the properties an earlier release already wrote
-are exactly what they were. Values are escaped so a definition key can hold any
-text at all, including a colon or a percent sign, and nothing is truncated or
-hashed.
-
-A document saved by a build that did not record these identities carries
-neither property. That is the only way the file says so: there is no
-placeholder value, because a value that said "none" would be a value invented
-for a document that never recorded one.
-
-These properties say what a part *is*. They are not a promise about how any
-particular importing program will renumber its own references when a file is
-imported again; what such a program keys its references on is its own business,
-and FerriteCAD does not claim to change it.
-
-The output file appears in one step or not at all. It is built under a private
-scratch name beside the destination and published once, when the writer has
-finished and every byte is on the disk; a run that fails leaves the destination
-exactly as it found it and nothing beside it. An existing file is never
-replaced without `--force`, and no flag makes the `.fcad` an acceptable output
-for itself. The document is opened read-only and is not changed by being
-exported.
-
-### When some of it could not be exported
-
-A definition this build cannot turn into triangles is not dropped and is not
-invented. It keeps its place in the hierarchy as a node with no geometry, says
-so in properties an importer can read, and is described on standard error:
-
-```
-partial export: 1 definition could not be given triangles; each kept its place in the file
-
-  omission 1 of 1
-    definition  imported source 4e57…  key step.product_definition#2583
-    finding     problem while validating step.product_definition#2583: …
-    refusal     IncompleteFace
-    placements  2 in the file: node/57, node/58
-```
-
-Such an export **exits 6**. That is deliberately neither `0` nor a failure
-code: the file is real and was published, and it is not the whole model, so a
-script can tell the difference without reading prose. A clean export exits `0`
-and says nothing on standard error.
-
-### From the window
-
-The viewer offers the same export. With a document on screen, `Export FBX…`
-asks where to write it — beside the document, under the document's own name
-with an `.fbx` extension — and writes the same file the command above writes,
-byte for byte, because it is the same export: one route, shared by both, rather
-than two that agree until the day they do not.
-
-What is exported is the document on screen, always. That is not the same as the
-last file you asked for: opening another document replaces what the viewer will
-open next long before that document has been read, and an Open that failed or
-that you stopped waiting for never replaces the picture at all. So a viewer
-showing A while an attempt at B has just failed exports A.
-
-The export is a fresh read of the saved `.fcad`, not a copy of what is drawn.
-Nothing about the picture takes part in it, and nothing about the picture
-changes because of it: what is chosen, what is hidden, where the camera is
-pointing and what the last Open said are all left exactly as they were, whether
-the export finishes, fails or is given up on. The viewer has no unsaved model
-state: its limited extrusion edit publishes a new copy. This means that an
-export reads whatever is at that path when it runs, and a document replaced on
-disk behind the viewer's back is exported as it now is rather than as it is
-drawn.
-
-If something is already where you chose to write, the viewer asks
-`Replace existing file?` and writes nothing until you answer. That question is
-this application's own: whether the system's save panel asked as well depends
-on the platform, and "it probably asked" is not a reason to replace somebody's
-file. Answering `Cancel` leaves the file exactly as it is. The document itself
-is never an acceptable destination, whatever is confirmed.
-
-A large assembly takes minutes to export, and the window stays usable while it
-does: the work runs on a thread of its own with its own kernel session, the
-toolbar offers `Cancel export` while it runs, opening another document stops
-it, and closing the window stops and waits for it. Cancellation observed before
-publication leaves the destination untouched. Once publication succeeds, late
-cancellation or an answer the window no longer needs leaves the file in place.
-
-An `Export` section in the Actions panel says what happened: `Exporting…`, and
-then the file with the bytes, nodes, geometry objects and materials the writer
-counted. If some of the document could not be given triangles it says
-`Exported with missing geometry` and lists every one of them — the definition
-with the source it came from, what the document recorded about it when it was
-imported, the typed refusal, and every place it sits in the file — while the
-file itself is published all the same. Exporting and opening are reported
-separately: an export that failed is not a document that failed to open, and
-the model in front of you is still the model.
-
-### Binary STL of one native body
-
-```sh
-ferritecad export-stl plate.fcad -o plate.stl
-```
-
-`Export STL…` offers the same operation in the viewer. Open a native `.fcad`,
-choose a body, check the linear deflection in **mm** (default `0.01`) and angular
-deflection in **radians** (default `0.5`), then choose `Save STL…`. The system Save
-dialog chooses the destination; an occupied path requires `Replace` confirmation.
-The result reports the published path, body UUID, triangles and bytes.
-
-One body is selected automatically. Several bodies require an explicit choice;
-every row includes its UUID so duplicate or missing names remain distinguishable.
-The CLI accepts `--solid <name-or-id>`; a UUID takes priority over an identical
-name, and an ambiguous name is refused. Both clients call the shared jobs
-operation, which reads one read-only snapshot, cold rebuilds it, tessellates the
-chosen body and atomically publishes binary STL in millimetres.
-
-The form captures the accepted scene's source path and the chosen UUID together
-before Save. The worker reads the saved file at that path when it starts: changes
-since Open are included, and a missing chosen UUID is refused without selecting
-another body. Camera and temporary visibility do not affect the whole-body export.
-Cancel, source protection (including aliases), late publication and owned worker
-shutdown follow the export rules above. Cancel in the Save dialog starts no work.
-
-An empty document or one containing only imported STEP has no supported native
-Body to export. STL does not combine bodies, export assembly occurrences or
-selected faces. Agents can discover `result.bodies` with `inspect --json`, select
-one `body_id`, then call `export-stl --solid <uuid> --json`. Its result reports the
-published destination, body UUID/name, triangles, bytes and `length_unit: "mm"`.
-Body UUIDs differ from Extrude UUIDs used for editing. Inspect and export read
-separate snapshots: export uses the current saved file, with no `--expect-version`
-guard; a missing selected Body is refused. See the [JSON recipe](docs/cli-json-v1.md)
-and the [STL verification recipe and local
-results](docs/stl-export-verification.md).
-
-## Looking at a document
-
-```sh
-cargo run -p ferritecad-app --bin ferritecad-viewer
-```
-
-Opens an empty window. The model has the middle of it and the controls have panels
-around it (§31B): file and view actions and the tabs along the top, the Model tree on
-the left, **Actions** and **Details** on the right (questions and outcomes, recovery
-and checkpoints, the Create/Add/Edit routes, the definitions with their visibility, the
-topology inspector and the sketch solve status), and a status strip below. All panels
-are bounded and scroll: a long message or list never widens one or covers the model.
-What no panel covers is the viewport, and the camera's aspect ratio, framing, orbit,
-pan, zoom, hover and picking all use that one rectangle; a press on a panel never
-starts a 3D gesture. [Contract](docs/workspace-viewport-layout.md).
-`New…` offers an empty document or a sample plate template.
-Plate dimensions are in **millimetres**, initially 60 × 40 × 10, just like
-`ferritecad create --sample`. **Create document** makes it at once, with no file
-dialog (§30L): the window shows it as `*Untitled`, and editing, Undo/Redo and
-STL/FBX export work before it has a file. The drawing forms (**Create new
-document**, **Create circle document**, **Create annular document**) do the same.
-The first **Save** asks where the file goes and never replaces an existing one;
-after that Save writes in place. [Contract](docs/unnamed-document-session.md).
-Several documents can be open at once, each in its own tab (§30O): **Open…**, **New**
-and **Recover** add a tab and leave the open documents as they are; pressing a tab
-shows its document with its own Undo/Redo, checkpoints and file; **×** closes a tab and
-asks Save / Discard / Cancel when it has unsaved changes, and Quit asks about every
-unsaved tab in turn. Opening a file that is already open shows its tab. At most eight
-tabs. [Contract](docs/document-tabs.md).
-While a document has unsaved changes, a recovery copy of the model on screen is kept
-in a per-user folder (§30M; `FERRITECAD_RECOVERY_DIR` names another). If the window
-ends without a decision, the next start lists it under **Recover unsaved work**:
-**Recover** opens it in a new tab as an unsaved `<name> (recovered)` document to check and
-**Save As**; the original file is never written. `ferritecad list-recovery` and
-`ferritecad extract-recovery` read the same copies.
-[Contract](docs/document-crash-recovery.md).
-The **Checkpoints** section keeps named versions of the model inside the document
-(§30N): **Create checkpoint** names the model on screen, **Restore** makes a checkpoint's
-model the working model as one Undo step, **Delete…** asks first; like any change they
-reach the file with Save. `ferritecad list-checkpoints`, `extract-checkpoint`,
-`create-checkpoint` and `delete-checkpoint` work on the same table without a kernel.
-[Contract](docs/named-document-checkpoints.md).
-`Open…` chooses an existing `.fcad`. Export is offered once a document is accepted,
-including an empty one (which has no bodies to export as STL).
-
-Create is available when no Open, Export or document operation is pending; camera
-and visibility controls remain usable. Cancelling the form writes nothing.
-`Cancel creation` stops the worker; a creation that fails, is cancelled or whose
-picture cannot be shown keeps the previous document, its scene and what was typed in
-the form. On macOS
-the same window opens by double-clicking a built `FerriteCAD.app`, with no terminal
-involved; [An application you can open without a terminal](#an-application-you-can-open-without-a-terminal)
-is how one is built.
-
-```sh
-cargo run -p ferritecad-app --bin ferritecad-viewer -- part.fcad
-```
-
-The viewer opens that document read-only, rebuilds it, and draws it: orbit, pan
-and zoom, the standard views, and a click selects what is under it and describes
-it in portable terms. Clicking a face of a native body the document has a
-durable name for selects that face, and the inspector says what the document
-calls it: which feature made it, what it is – the end cap of that extrusion, the
-side raised from that sketch segment – and how the reference selects it.
-Clicking geometry for which the document has neither an exact corner name, nor
-an exact edge name, nor an exact face name selects its definition, which is the
-honest answer: imported corners, edges and faces have no durable names, so none
-of them has a subshape identity this document could store. Selecting a part
-selects every placement of it, and selecting a named face, edge or corner marks
-that subshape in every placement, because a click names what a thing is and
-never the place it happened to land on.
-Moving the pointer over the model asks what is under it, and the answer is as
-particular as the picture can be. The most particular thing is a corner: where
-the faces and edges of a native body meet at one point, that one topological
-vertex is marked, in every placement of the part. A corner is a point and
-covers no pixel of its own, so it answers within a small square around where it
-is drawn; that square is a hit area, and the dot you see is deliberately a
-little smaller than it. Pointing at a corner is a question and nothing more.
-The question lasts only as long as the picture on screen and is forgotten when
-a new one arrives. Where two corners are drawn close enough that their squares
-overlap, one answer is kept for that pixel, decided the same way every time by
-drawing order; nothing here resolves between several candidates.
-Clicking a marked corner selects that corner, but only when the document has an
-exact durable name for it. On a native body that means the point where two
-adjacent sketch segments reach one end of an extrusion; the inspector then says
-what the document calls it, in the same portable terms it uses for a face and
-an edge, and shows every stored name rather than picking one. It names the cap
-and both segments of the joint – "Start cap vertex at the joint of profile
-segments A and B" – because either half alone would name four corners of a
-plate instead of one. A chosen corner is marked in every placement of its part
-and is drawn differently from a mere question about the same point, so a
-decision cannot be mistaken for one; a question about the edge that merely ends
-there is still answered along the whole of that edge. A corner nobody named is
-not a lesser corner, it is not a choice: clicking one chooses the most
-particular thing the document can name instead – the edge if it is named,
-otherwise the face, otherwise the part – and a corner of an imported definition
-always selects the definition, because an imported corner is a corner of
-nothing this document could store.
-`Frame selected` brings the chosen corner itself into view rather than the edge,
-the face or the part it belongs to, and `Hide selected` and `Isolate selected`
-act on the part that owns it.
-Off a corner, over a line where two faces of a native body
-meet, that one topological edge is marked, in every placement of the part and
-along the whole of it, including the part of it each of the two faces drew for
-itself. Off the line, the face under the pointer is marked instead, and where
-the picture cannot say which face, the part. What is marked is the edge and
-nothing around it: the faces it separates and the part they belong to keep
-exactly the colour they had, so it reads as a line rather than as a change of
-material. A choice already made stays stronger than a question: an edge of a
-selected part, or one bounding a selected face, is left alone rather than
-painted over, while an edge elsewhere on the same part is still marked.
-Pointing is only ever a question: it never selects anything.
-Clicking a marked edge selects that edge, but only when the document has an
-exact durable name for it. On a native body that means the edge where one end
-of an extrusion meets a face raised from a sketch segment; the inspector then
-says what the document calls it, in the same portable terms it uses for a
-face, and shows every stored name rather than picking one. A chosen edge is
-marked along the whole of itself, in every placement of its part and on both
-of the faces that meet at it, and it is drawn differently from a mere
-question about the same line so a decision cannot be mistaken for one. An
-edge nobody named is not a lesser edge, it is not a choice: clicking one
-selects the named face beneath it if there is one and otherwise the part, and
-an edge of an imported definition always selects the definition, because an
-imported edge is an edge of nothing this document could store.
-`Frame selected` brings the chosen edge itself into view rather than the face
-or the part it belongs to, and `Hide selected` and `Isolate selected` act on
-the part that owns it, because what can be hidden is a definition. A
-list beside the model offers the same definitions by name and identity, which
-is how one that is hidden, tiny or out of shot can still be chosen, and
-`Frame selected` (or `F`) brings what is selected into view without changing
-the direction you were looking from – the chosen face in every placement of its
-part, or the whole part when a part is chosen – and `Frame all` (or `A`) does
-the same for the whole model, which is the way back when panning has left it
-off screen. A reference grid on the world's XY plane gives the model a floor
-to sit on, with heavier lines every ten squares and coloured axes through the
-origin; its spacing steps through 1, 2 and 5 millimetres and their decades as
-you zoom. It is a viewing aid only: it is not in the document, not in the
-model's extent, and clicking it is clicking the background.
-`Hide selected` (or `H`) stops drawing what is chosen, which is how you reach a
-part standing behind another one: a hidden definition leaves no pixels, cannot
-be clicked or pointed at, and is not part of what `Frame all` shows. It is
-hidden in every place it appears, because what is hidden is the definition and
-not the spot it was drawn in, and choosing a face hides the part that face is
-on. `Isolate selected` (or `I`) does the opposite: it keeps what is chosen and
-stops drawing everything else, which is the way to look at one part without
-picking its neighbours off one at a time. What is chosen stays chosen, down to
-the face, and what was already hidden stays hidden: isolating removes
-distractions and never reveals anything. `Show all` (or `U`) brings everything
-back without changing what is chosen, and is the way back from either action.
-Each row whose definition actually draws geometry carries one control for
-whether it is drawn: `Hide` while it is on screen, `Show` once it is not, and
-never both. Either acts on that row alone, in every place its definition appears,
-leaving the rest of the view as you arranged it. Your selection survives
-untouched, so a neighbour can be taken out of the way without giving up what
-you were looking at; hiding the very thing that is chosen unchooses it, because
-geometry nobody can see cannot stay chosen. Any of these drops a click or
-pointer question recorded against the old picture, so geometry that has just
-arrived or just left cannot answer an interaction from a frame it was not in.
-`Undo visibility` takes back the last of these changes, whichever it was, and
-puts the exact arrangement that preceded it back on screen. One level and no
-redo: it is a way out of one accidental press, not a history of the session,
-and it is deliberately not bound to a general undo key because it takes back
-nothing but what is drawn. The list keeps a row for what is hidden, marked as
-hidden. That is where you look when you wonder where something went. None of
-this touches the document, and none of it survives opening one: a file always
-opens with all of it on screen.
-
-An imported definition whose topology was deliberately retained but whose
-faces cannot all be tessellated keeps its one row and every placement, marked
-`geometry unavailable`. Choosing that row makes the inspector show the
-source-local definition, the validation finding stored with the import and the
-current tessellation reason. It contributes no bounds or pixels and offers no
-Hide or Show action, because there is no drawn geometry for those actions to
-change. A genuinely empty native body has no such marker: absence of triangles
-alone is not treated as an import failure.
-
-The sketches themselves are drawn too, on the datum planes they were actually
-placed on, at the coordinates their constraints put them rather than the ones
-the file happens to store. Every sketch the document holds is drawn, including
-one nothing was raised from: a drawing exists because somebody drew it, and
-what read it afterwards is not a fact about whether it is there. Points, lines,
-circles and arcs all appear; an arc keeps the direction its angles give it and a
-circle stays a circle. Construction geometry is drawn as well, thinner and in a
-different colour from geometry that bounds a face, because it guides the drawing
-rather than shaping the solid. A circle or a point can only reach a document as
-construction geometry today: a sketch whose profile cannot be built refuses the
-whole rebuild, so it makes no picture and no drawing either, and that is a limit
-of what a sketch may contain rather than of what is drawn.
-
-A drawing is in the world, not on the glass: it moves with the model when you
-orbit, pan, zoom and roll, and it foreshortens with everything else. What stays
-fixed is how thick it looks – a line and a point are a set number of screen
-pixels wherever the camera is and under either projection – because a drawing is
-something to read. The model hides a drawing behind it, a drawing in front of
-the model is seen, and a sketch lying exactly on the face raised from it is
-drawn whole rather than fighting with it. Where a marked edge or corner and a
-drawing meet, the mark wins.
-
-Sketches are drawn and not yet pointed at. Clicking one clicks whatever is
-behind it, hovering over one reports whatever is behind it, and nothing about a
-sketch appears in the list of definitions or in the inspector. `Hide selected`,
-`Isolate selected` and `Show all` act on definitions and leave every drawing on
-screen: the document records no link saying which sketch belongs to which
-definition, and guessing one from what happens to read a sketch would be an
-invention. There is no control for turning drawings off, and `Frame all` and
-`Frame selected` still frame the model alone, so a document that holds only a
-sketch shows it when the camera already happens to be pointing that way rather
-than because the framing went looking for it.
-
-The button beside the views says which projection the model is drawn through
-and swaps it when pressed, or `O`. `Perspective` is what an eye sees and is
-where a document opens: things further away are drawn smaller, which is how a
-shape is understood while it is being built. `Orthographic` is what a drawing
-shows: equal things are drawn equally wherever they are and parallel edges stay
-parallel, so a plan or an elevation can be measured off the screen. Swapping
-keeps what you are looking at, the viewing direction, which way is up and how
-big it is. Zooming in an orthographic view changes the scale rather than moving
-the eye; swapping back respects that zoom, so it may move the eye to the
-distance that gives the new scale in perspective.
-
-The wheel zooms towards the pointer rather than towards the middle of the
-window. Put the pointer on the feature you want a closer look at and wind: that
-feature stays where it is while everything else spreads out around it, so
-getting from a whole model to one corner of it takes no compensating drag. What
-is held exactly is the place where the pointer meets the plane through what you
-are looking at; a surface much nearer or further than that plane drifts a
-little, which is the honest cost of not reading the depth of every pixel back
-from the graphics card. When the window has no current pointer position because
-the pointer left or a gesture was cancelled, the wheel falls back to the middle
-of the view. A wheel over an interface panel belongs to that panel and does not
-move the camera. In an orthographic view the wheel changes the scale without
-moving the eye, exactly as swapping projections describes.
-
-A two-finger pinch on a trackpad does the same thing, towards the same place,
-and is the same operation underneath rather than a second kind of zoom: spread
-to come closer, close to go away. It is anchored on the pointer exactly as the
-wheel is, holds the same target-plane point with the same limitation about
-surfaces nearer or further than it, obeys the same limits, and belongs to a
-panel when it happens over one. The one difference is the unit: a pinch carries
-a magnification delta, where a wheel counts notches. A phase event carrying no
-magnification does nothing at all, including to a mouse drag that happens to be
-in progress. Winit documents its dedicated pinch event on macOS and iOS;
-FerriteCAD claims the desktop behaviour only on macOS. No particular mapping of
-pinch gestures is claimed for Windows or Linux input stacks.
-
-Two fingers turning against each other tilt the horizon: the view rolls about
-the direction it is already looking in, the way the fingers went, so a part can
-be brought square with the screen before it is read off. Nothing changes except
-which way is up. The eye stays where it is, so does what you are looking at, and
-so do the distance between them, the apparent scale and the projection. That is
-what makes this different from dragging to orbit, which swings the eye around
-the model about the world's up axis and deliberately levels the horizon again.
-Framing keeps whatever tilt you have set. To put the horizon back, ask for a
-named view or simply orbit. Like the pinch, this is a gesture winit documents
-for macOS and iOS, and the desktop behaviour is claimed only on macOS.
-
-A two-finger double tap magnifies, and a second one puts the view back exactly
-where it was. What it magnifies is stated rather than guessed at: whatever is
-selected, if anything selected is drawn, and otherwise everything currently
-visible in the picture, which is not the same as everything in the file because
-hidden parts are not on screen to be looked at. It is deliberately not the thing
-under the pointer: the gesture carries no position and no geometry, and nothing
-here reads the depth of a pixel to find out what is behind it. With nothing
-selected and nothing visible there is nothing to look at, and the gesture does
-nothing at all.
-
-One level and no more. The tap that goes back uses up the way back, so the next
-one magnifies afresh. Moving the view yourself in between, by any means at all,
-gives up the way back rather than surprising you with it later: an orbit, a
-drag, a wheel, a pinch, a turn, a named view, a change of projection, either
-kind of framing and resizing the window all count. Opening a document gives it
-up too, because a view of the document you just closed is not a view of this
-one. There is no button and no shortcut, and nothing about it is remembered
-after the application closes. Like the other trackpad gestures, this one is
-delivered by macOS.
-
-The model is drawn with the boundary of every face on it: a one-pixel line
-wherever a face stops, whether against the empty background or against the next
-face along. Without them a shaded body is a silhouette with shading inside it,
-and two faces that meet at a shallow angle, or that lie in the same plane and
-share a colour, are impossible to tell apart. The lines are drawn in whatever
-contrasts with the surface beside them, so they are visible on a black part and
-on a white one, they are hidden by anything nearer, and they follow the model
-through every camera and both projections because they are drawn from the same
-vertices through the same matrix as the surface itself.
-
-What is drawn as ordinary linework is the boundary of the tessellation, and
-that is worth stating plainly: it is where the triangles of one face end, not
-a curve read from the original geometry. The seams inside a face, where one
-triangle meets the next, are deliberately not drawn. That linework does not
-invent a selectable object of its own. A separate topological-edge identity can
-answer where the rendered samples agree, and a click selects it only when the
-document has an exact durable name for it; otherwise the click falls through to
-the named face or the part beneath it. Hiding a part takes both its surface and
-its linework with it.
-
-Moving the pointer over the model marks the most particular answer the picture
-has: a coherent topological edge first, otherwise the face under it, otherwise
-the whole definition. The same edge, face or definition is marked wherever
-that definition appears. Moving over a row of the list marks that whole
-definition everywhere. Neither route chooses anything, so geometry can be
-found before anything is selected, and what is already selected keeps its
-appearance while you look around it. A click chooses the most particular
-durable answer the document has: an exact named native edge first, otherwise a
-named native face, otherwise its definition. Opening another document is the
-only editing operation there is.
-
-Below the inspector, `Sketch solves` says what the rebuild behind the picture
-found out about the drawings it was built from. One entry per constrained
-sketch of the document, in the order the document stores them, whether or not
-anything raised from that sketch is on screen: the drawing itself is in the
-viewport rather than here, neither can be clicked, and this is not part of what
-is selected. Each entry gives
-the sketch's name – or `Unnamed sketch`, because a drawing nobody named is
-still a drawing that was solved – the whole identifier the document stores for
-it, whether it came out `Fully constrained` or `Under-constrained`, exactly how
-many degrees of freedom it has left, and every constraint the solve found to
-repeat what the rest already said, in the order the document stores them.
-
-Each repeated constraint is given twice over: the whole identifier the document
-stores it under, so it can be found, and a sentence saying what it is, so it
-need not be. The sentence names the kind of relationship – coincident, fixed,
-distance, horizontal, vertical, equal length, perpendicular or parallel – the
-parts of the drawing it holds together, each as the identifier of a curve and
-which point of that curve it is, and the size it asks for in millimetres where
-it asks for one, exactly as the document stores it. Nothing is normalised on
-the way: two constraints that say the same thing under two identifiers stay two
-constraints, and the two ends of a relationship are read out in the order they
-are written down. A sketch that repeats nothing says `None`
-rather than leaving the line blank, and a document with no constrained sketch
-in it says `No solved constrained sketches` rather than showing an empty strip.
-Nothing here can be pressed and nothing here asks a solver anything: every
-value was found out by the one rebuild that drew the picture, and there is no
-second solve behind any of it. Opening another document replaces this account
-and the picture together, so what you read always belongs to the model you are
-looking at; a document that could not be read, or that you stopped waiting for,
-leaves both exactly as they were.
-
-A document with conflicting sketch constraints opens with that sketch marked failed.
-Its tree note and the `Sketch solves` panel name the conflicting rules, curves and
-stored UUIDs. Dependent features remain marked as not built. These are facts from
-the accepted rebuild; drawing the panel performs no additional solve. A file that
-cannot be read still reports its loading error and preserves the accepted picture.
-
-## An application you can open without a terminal
-
-On macOS the delivered layout is a real application bundle: double-clicking
-`FerriteCAD.app` opens the empty window, and `Open` chooses a `.fcad` from
-there. Everything below was run on an Apple silicon machine with the pinned
-Open CASCADE installed under `vendor/install` and the pinned planegcs built
-into `vendor/planegcs`, which are what [`docs/build-occt.md`](docs/build-occt.md)
-and [`docs/build-planegcs.md`](docs/build-planegcs.md) produce.
-
-The packaging checks use Python 3, jq and GNU tar (`gtar` on macOS). These are
-build tools; the finished application needs none of them to start.
-
-```sh
-# The two product binaries, against the pinned kernel and the pinned solver.
 FERRITECAD_REQUIRE_OCCT=1 FERRITECAD_REQUIRE_PLANEGCS=1 \
 FCAD_PLANEGCS_DIR="$PWD/vendor/planegcs" \
 OpenCASCADE_DIR="$PWD/vendor/install/lib/cmake/opencascade" \
 cargo build --release --features planegcs \
   -p ferritecad-app --bin ferritecad-viewer \
   -p ferritecad-cli --bin ferritecad
-
-# What each of them loads.
-staging="${TMPDIR:-/tmp}/ferritecad-layout"
-for half in viewer:ferritecad-viewer cli:ferritecad; do
-  tools/runtime-closure.sh --platform macos --label "${half%%:*}" \
-    --binary "$PWD/target/release/${half#*:}" \
-    --search "$PWD/vendor/install/lib" --search "$PWD/vendor/planegcs" \
-    --output "closure-${half%%:*}.txt"
-done
-
-# Laid out as a bundle: the executables, the libraries they need, the
-# Info.plist that says which of the two the desktop starts, and an ad-hoc
-# signature over the result.
-tools/stage-runtime-layout.sh --platform macos --staging "$staging" \
-  --occt-lib-dir "$PWD/vendor/install/lib" --planegcs-dir "$PWD/vendor/planegcs" \
-  --product-version "$(jq -r .productVersion sbom/native/native-assets-inventory.json)" \
-  --gui-executable ferritecad-viewer \
-  --closure closure-viewer.txt --closure closure-cli.txt \
-  --executable "$PWD/target/release/ferritecad-viewer" \
-  --executable "$PWD/target/release/ferritecad"
-
-# One versioned archive, and then the archive checked where it landed: the
-# staging directory has to be gone first, or a package that cannot stand on
-# its own passes.
-out="$HOME/Desktop/FerriteCAD Local Build"
-tools/package-release.sh --platform macos --staging "$staging" \
-  --output-dir "$out" --source-revision "$(git rev-parse HEAD)"
-rm -rf "$staging"
-tools/check-release-package.sh --platform macos --no-execute \
-  --archive "$out/ferritecad-0.0.1-aarch64-apple-darwin.tar.gz" \
-  --extract-to "$out/extracted" \
-  --document crates/ferritecad-fixtures/plate/plate.fcad \
-  --forbidden "$staging" --output "$out/package-facts.txt"
 ```
 
-This local check verifies the extracted files without starting deliberately broken
-processes. The full CI gate also removes libraries and requires loader failures.
-On macOS that experiment can display “cannot be opened because of a problem”;
-running it locally requires removing `--no-execute` and explicitly setting
-`FCAD_ALLOW_LOADER_FAILURE_PROBES=1`. It is not needed to stage or open the app.
+Without Open CASCADE, the program builds with a **stub kernel**: operations that
+build bodies refuse. `FERRITECAD_REQUIRE_OCCT=1` makes that fallback a build error,
+so it is always set for a build intended for use. PlaneGCS is off by default
+because it is LGPL; without it constrained sketches refuse to solve. See its
+[build and replacement instructions](docs/build-planegcs.md).
 
-What that leaves is
-`~/Desktop/FerriteCAD Local Build/extracted/ferritecad-0.0.1-aarch64-apple-darwin/FerriteCAD.app`.
-Open it from the Finder. The directory it sits in may be moved or renamed and
-may have spaces in its name; the bundle finds its own libraries and needs no
-environment variable, no `PATH` entry and no working directory of yours. The
-archive beside it is the thing to copy to another machine.
-
-The command line tool travels in the same bundle, at
-`FerriteCAD.app/Contents/MacOS/ferritecad`, and works from anywhere:
+Unpackaged binaries need the native libraries on the loader's search path. On
+macOS, set this in the same shell that launches the binaries:
 
 ```sh
-"$out/extracted/ferritecad-0.0.1-aarch64-apple-darwin/FerriteCAD.app/Contents/MacOS/ferritecad" \
-  export-fbx part.fcad --output part.fbx
+export DYLD_LIBRARY_PATH="$PWD/vendor/install/lib:$PWD/vendor/planegcs"
+target/release/ferritecad-viewer
+target/release/ferritecad --help
 ```
 
-What this is not. There is no installer and no update mechanism. The signature
-is ad hoc: it is what lets a bundle whose load commands were rewritten start at
-all, and it is not a Developer ID signature and not notarised, so a copy that
-arrives with a quarantine attribute — downloaded rather than built or copied
-locally — is Gatekeeper's to refuse. Double-clicking a `.fcad` does not open it
-in FerriteCAD: the bundle deliberately declares no document type, because
-handing the application a file that way is an event it does not yet handle.
-Open the application and use `Open`.
+Close the window to return to the shell. Linux uses `LD_LIBRARY_PATH`; Windows
+needs the native DLL directories on `PATH`, as described in the build guides.
+For a movable application with its own libraries, follow the
+[application bundle and archive recipe](docs/runtime-layout.md#build-a-local-application-package).
 
-Linux and Windows have no launcher in this slice. Their layouts are the same
-`bin/` and `lib/` directories the runtime-layout workflow measures, and the
-viewer there is started by naming it.
+## Build for development
 
-## Which sketch solver this build has
+The default Cargo profile is debug:
 
 ```sh
-cargo run -p ferritecad-app --bin ferritecad-viewer -- --solver-info
+cargo build
+cargo test
 ```
 
-Answers and exits. It opens no window, reads no document and starts neither
-Open CASCADE nor a graphics device, so it can be asked on a machine that has
-neither a display nor a GPU.
+CI exercises three configurations: the stub kernel, OCCT without PlaneGCS, and
+OCCT with PlaneGCS. The stub is only for testing paths without a geometry kernel;
+native tests may skip there. Set the native paths and required-dependency flags
+for the configuration being tested; see [contributing](CONTRIBUTING.md#build-and-run)
+and the two native build guides above. On a developer Mac, GUI and GPU runs,
+including tests that exercise them, use the memory watchdog described in
+[CONTRIBUTING.md](CONTRIBUTING.md#tests).
 
-An ordinary build has no sketch solver in it. planegcs is LGPL-2.0-or-later,
-is built separately and is off by default, so the answer is a typed refusal
-and the exit code is `3`. A build that linked it exits `0` and prints what the
-loaded library says it is, which is the library's own answer and not a string
-this program carries. A command line this viewer cannot act on still exits
-`2`, as it always did.
+## First steps in the window
 
-This says which component is loaded. A document stores the meaning of a
-constrained sketch, and a build that linked planegcs solves those constraints
-when it rebuilds: the profile it extrudes is the solved one, not the
-coordinates the curves were last left at. The viewer can create an unconstrained
-Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
-explicit Coincident closure; the same editor persists one length per Line (§25F),
-one pinned endpoint per profile (§25G), one equal length per pair of Lines
-(§25H) and one relative orientation — parallel or perpendicular — per pair of
-Lines (§25I). The same pair slot also takes a directed angle in degrees between
-two explicit Line directions, counter-clockwise from the first to the second
-(`-180 < θ ≤ 180`, §31F, [docs/directed-sketch-angle.md](docs/directed-sketch-angle.md)), or puts
-the two Lines on one infinite line (`Add Collinear`, §31G,
-[docs/collinear-sketch-lines.md](docs/collinear-sketch-lines.md)). The same editor gives one saved analytic circle a radius (or a diameter,
-stored as the same radius `D/2`, §31E) and a
-pinned centre (§25N). A saved annulus supports a radius per circle, explicit
-concentricity and one pinned centre through the same UI/CLI operation
-([§25O](docs/annular-circle-constraints.md)). Other constraint families are
-outside that editor. A build with no solver refuses such a sketch rather than
-building from the stored coordinates. What that solve found out – how much
-freedom each sketch has left, and which of its constraints repeat what the rest
-already said, each one explained in the document's own words rather than named
-by identifier alone – is on screen under `Sketch solves`, described above. The repository can assemble checked
-archives containing planegcs, but no published release is offered. Building
-and replacing the library is
-[docs/build-planegcs.md](docs/build-planegcs.md).
+1. Choose **Open…** for an existing `.fcad`, or **New…**, **Empty document**, then
+   **Create document** for a new one.
+2. Choose **New sketch…** above the **Model** tree and choose the XY plane.
+3. With **Line**, click four corners of a rectangle, then click its snapped start
+   to close it. Choose **Finish** to accept the sketch.
+4. Select the sketch in **Model**, choose **Extrude…**, keep **New body**, enter a
+   distance in millimetres and choose **Apply**. **Save** writes the accepted model
+   and asks for a path when the document has none.
 
-## How a document is put together
+See [sketch tools and draft history](docs/sketch-mode.md) and
+[Extrude and Revolve](docs/extrude-and-revolve.md) for the controls and refusals.
 
-A document is one SQLite file, `part.fcad`. It holds only what cannot be
-recomputed:
+## First steps on the command line
 
-| Table | Holds |
-| --- | --- |
-| `meta` | document UUID, display units, timestamps |
-| `objects` | sketches, features, bodies, parameters, as CBOR envelopes |
-| `deps` | the dependency graph edges, with the role of each |
+Run this Python 3 block from the repository root, with the release build and
+loader environment above. It calls `create --sample`, `inspect --json`,
+`validate`, `rebuild --cold` and `export-stl`, then reads the binary STL to check
+its size and dimensions. Results remain in the printed temporary directory.
+Set `FERRITECAD` to an absolute binary path to use another build.
 
-Output topology names are derived from feature provenance and incidence. The
-window shows the selected entity's feature, kind, digest and full derivation;
-ambiguous names have no selection binding. `print-topology`, `inspect` and
-`rebuild --cold` report each feature's names in stable order, with kind,
-digest and entity count; `print-topology` and `inspect` add each name's full
-derivation. Files containing the removed output-name
-table are refused; there is no format migration.
+```python
+# README_PLATE_RECIPE
+import json
+import os
+from pathlib import Path
+import struct
+import subprocess
+import tempfile
 
-Everything derived – B-Rep, tessellation, entity mappings, previews – lives in
-a separate `part.fcad-cache` sidecar. **Deleting the sidecar can cost you time
-and nothing else.** That is a tested invariant, not an aspiration.
+cli = Path(os.environ.get("FERRITECAD", "target/release/ferritecad")).resolve()
+root = Path(tempfile.mkdtemp(prefix="ferritecad-first-steps-"))
+source, output = root / "plate.fcad", root / "plate.stl"
 
-Three properties the format commits to:
+def run(*args):
+    result = subprocess.run([str(cli), *map(str, args)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError((args, result.returncode, result.stdout, result.stderr))
+    return result.stdout
 
-- **Nothing is referenced by index.** A face is named by what produced it and
-  why – "the cap of this extrusion", "every face raised from this profile
-  segment" – never by position in a traversal. An index-based reference is the
-  thing that makes a parametric model silently point at the wrong face after an
-  upstream edit.
-- **What is not understood is refused, not guessed at.** An object of an
-  unknown type or with an unreadable payload fails the whole open, naming the
-  object. The format is not yet stable: there are no migrations, and a
-  document written by another build may not open. See
-  [docs/file-format.md](docs/file-format.md).
-- **A refusal beats a wrong answer.** An unresolvable reference stops the
-  rebuild and says so. It never picks a neighbouring face that happens to look
-  plausible.
-
-## Layout
-
-```
-crates/
-  ferritecad-types/     identifiers, units, tolerances, errors, canonical hashing
-  ferritecad-document/  SQLite container, CBOR envelopes, graph, cache sidecar
-  ferritecad-cli/       create, inspect, validate, dump-graph, clear-cache, export
-  ferritecad-kernel/    the geometry contract, and a mock that satisfies it
-  ferritecad-occt/      Open CASCADE behind that contract, over a C ABI shim
-  ferritecad-exchange/  STEP scenes: definitions, placements, diagnostics
-  ferritecad-eval/      cold and cached rebuilds of a whole document
-  ferritecad-scene/     a document read into a picture, and what its parts are
-  ferritecad-jobs/      the work an interface asks for: a document in, a file out
-  ferritecad-viewport/  camera and immutable render snapshots, no GPU
-  ferritecad-viewport-gpu/  wgpu renderer, offscreen and windowed
-  ferritecad-ui/        panels and the input reducer, no window
-  ferritecad-app/       the window, the event loop and the wiring
-docs/
+run("create", source, "--sample", "--size", 60, 40, 10)
+before = source.read_bytes()
+reading = json.loads(run("inspect", source, "--json"))
+assert reading["schema_version"] == 1 and reading["operation"] == "inspect"
+assert reading["ok"] and len(reading["result"]["bodies"]) == 1
+body = reading["result"]["bodies"][0]["body_id"]
+print(run("validate", source), end="")
+print(run("rebuild", source, "--cold"), end="")
+print(run("export-stl", source, "--solid", body, "--output", output), end="")
+data = output.read_bytes()
+triangles, = struct.unpack_from("<I", data, 80)
+assert triangles == 12 and len(data) == 84 + 50 * triangles == 684
+vertices = [struct.unpack_from("<3f", data, 84 + 50*t + 12 + 12*v)
+            for t in range(triangles) for v in range(3)]
+assert [max(p[a] for p in vertices) - min(p[a] for p in vertices)
+        for a in range(3)] == [60, 40, 10]
+assert source.read_bytes() == before
+print("README_PLATE_OK 12 triangles; 60 x 40 x 10 mm; files:", root)
 ```
 
-Dependencies only point downwards. The document layer knows nothing about
-geometry kernels or user interfaces, and it never will.
+The same result is checked with and without PlaneGCS: this sample has no sketch
+constraints. A stub build cannot complete the rebuild or export. Validation
+checks stored consistency; it does not replace rebuilding geometry.
 
-## Scope, honestly
+## Read further
 
-FerriteCAD is not a SolidWorks or KOMPAS-3D replacement and calling it one
-would be dishonest. The target for the first beta is narrower and worth
-stating plainly: **a fast local parametric part modeller** – sketch, extrude,
-revolve, cut, fillet, chamfer, shell, pattern; save, reopen and rebuild
-without cache; STEP in and out; STL and FBX out.
-
-Assemblies, drawings, ESKD, sheet metal, scripting and plugins are all out of
-scope until that works.
+- [CLI capabilities](docs/cli-capabilities.md) and [JSON v1](docs/cli-json-v1.md)
+- [Model edit transactions](docs/edit-transactions.md) and [expressions](docs/expressions.md)
+- [Document format](docs/file-format.md)
+- [Window navigation](docs/workspace-viewport-layout.md#viewing-a-document)
+- [Runtime layout and packaging](docs/runtime-layout.md)
+- [OCCT build](docs/build-occt.md) and [PlaneGCS build](docs/build-planegcs.md)
+- [Architecture decisions](docs/decisions/) and [contributing](CONTRIBUTING.md)
 
 ## Licence
 
-MIT, see [`LICENSE`](LICENSE). Open CASCADE is LGPL-2.1 with the Open CASCADE
-exception and, by project policy, will be linked dynamically only; see
-[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
-
-Saved Line sketches from this route or the sample plate can also be edited in a
-new copy: choose **Edit Sketch …** or use `edit` with the Sketch UUID,
-content version and ordered curve coordinates discovered by `inspect --json`.
-Object, curve and reference identities remain unchanged. See the
-[bounded editing contract and runnable recipe](docs/edit-transactions.md).
-
-## Complete solid results
-
-Sweeps and booleans retain their complete nonempty set of valid solids, including
-splitting Cuts and disconnected additions. [KeepSolids](docs/keep-solids.md) selects
-pieces explicitly through named face witnesses in the shared `edit` transaction.
-`All` retains the whole result; the existing scene renders all components of one Body.
-No piece is chosen by size, position or enumeration order. Fillet/Chamfer can edit either or
-several members atomically; Face datums and referenced sweep ends use the complete support
-result. ThroughAll bounds include every predecessor member in the chosen direction.
-In the window, select a face and use **Keep solid pieces → Keep selected piece** or **All**.
-The tree reports the solid count; selection, repair, Undo/Redo and Save use the shared session.
-FBX and STL keep all components under one Body identity; native STEP test writing verifies
-one product and placement with multiple solids. See
-[ADR 0008](docs/decisions/0008-multibody-results.md).
+FerriteCAD is MIT licensed; see [LICENSE](LICENSE). Open CASCADE is LGPL-2.1 with
+the Open CASCADE exception, and PlaneGCS is LGPL-2.0-or-later. Both native libraries
+stay dynamically linked and replaceable; see [third-party licences](THIRD_PARTY_LICENSES.md).

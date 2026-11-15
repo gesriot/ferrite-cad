@@ -463,3 +463,93 @@ with a locked compiler metadata file (`os error 32`); rerunning that failed job
 passed, including the three-platform comparison. The runtime workflow checks the
 new GPU marker on Linux, macOS and Windows; a later documentation-only commit
 must not be mistaken for execution of that native matrix.
+
+## Viewing a document
+
+The controls below change the view, not the saved model or its exports. The
+[document session](document-session.md), [tabs](document-tabs.md),
+[unnamed documents](unnamed-document-session.md), [recovery](document-crash-recovery.md)
+and [checkpoints](named-document-checkpoints.md) describe model ownership and saving.
+
+### Selection and visibility
+
+Outside sketch mode, pointing asks what is under the pointer without selecting.
+The picture answers with a corner, then a coherent topological edge, then a face,
+then a definition. A corner has a small square hit area around its drawn dot;
+overlapping hit areas have one deterministic drawing-order answer, not a ranked
+list of candidates. A new picture discards pending questions about the old one.
+Clicking chooses the most particular exact durable name available, falling back
+to its face or definition when a corner or edge has no name. Imported subshapes
+have no durable topology names, so their clicks select the definition. The
+inspector shows the entity's feature, kind, digest and complete derivation;
+ambiguous names have no selection binding.
+
+Hover and selection mark the same entity in every placement of its definition.
+Selection remains visually stronger than hover. Edges are marked along their
+whole length, including both adjacent faces' samples, without recolouring the
+surrounding faces. The definitions list reaches hidden, tiny and offscreen parts;
+pointing at a row marks its definition without choosing it.
+
+Frame selected (F) frames the selected vertex, edge or face in every placement,
+or the whole definition when a definition is selected. Frame all (A) frames all
+visible model geometry. Both keep the viewing direction. Hide selected (H) and
+Isolate selected (I) act on the owning definition, in every placement. Isolation
+retains the selection and never reveals something already hidden. Show all (U)
+restores visibility without changing the selection. Each drawn definition's row
+has Hide or Show, which affects that definition alone; hiding the selection
+clears it. Hidden geometry contributes no pixels, hits or framing bounds, but
+keeps its list row. A visibility change discards pending old-picture picks.
+
+Undo visibility restores the immediately preceding arrangement, one level with
+no redo or document-Undo shortcut. Opening a document starts with everything
+visible. An imported definition whose retained topology cannot be tessellated
+instead says `geometry unavailable`: its row exposes the source-local identity,
+stored finding and current refusal, but has no bounds, pixels or Hide/Show action.
+An empty native Body is not labelled as an import failure.
+
+### Camera and drawing
+
+Perspective is the initial projection. The projection button, or O, switches to
+Orthographic while retaining the target, viewing direction, up direction and
+apparent size. Orthographic zoom changes scale; switching back sets the matching
+eye distance. The wheel zooms about the pointer's intersection with the target
+plane, not about an independently read surface depth. Nearer or farther surfaces
+can drift. Without a current pointer it uses the viewport centre; over a panel
+the wheel belongs to that panel.
+
+On macOS, trackpad pinch uses the same anchored zoom, limits and ownership rules;
+a phase event with no magnification changes nothing. A two-finger rotation rolls
+the up direction without moving the eye or target. Framing keeps the roll; a named
+view or orbit levels it. A two-finger double tap frames the visible selection, or
+all visible geometry when nothing is selected. A second tap restores the previous
+camera, once. Moving the camera, changing projection, framing, resizing or opening
+a document forgets that return point. No such gesture delivery is claimed for
+Windows or Linux, and no gesture state is persisted.
+
+The XY reference grid uses 1, 2 and 5 mm spacings and their decades, with heavier
+ten-square lines and coloured axes. It supplies neither model bounds nor picking
+geometry. Ordinary face outlines follow tessellation boundaries, hiding internal
+triangle seams; they contrast with the surface and obey depth. They do not create
+selectable topology. Topological picking uses its separate identities.
+
+Every built sketch has a drawing on its evaluated datum, including unconsumed,
+empty and open sketches. Constraints supply solved coordinates without rewriting
+stored ones. Points, Lines, Circles and signed Arcs are drawn; construction curves
+are thinner and differently coloured. Their thickness stays constant in screen
+pixels through camera changes. Depth hides drawings behind solids and keeps a
+coplanar drawing readable; entity marks take precedence where they meet.
+Outside [sketch mode](sketch-mode.md), drawings do not take definition picks or
+visibility commands. Sketch mode supplies its own curve selection, camera
+orientation and draft controls.
+
+### Sketch solve details
+
+Sketch solves displays the accepted rebuild's reports, not a second solve. Each
+constrained sketch is identified by name (or Unnamed sketch) and full UUID, with
+Fully constrained or Under-constrained, remaining degrees of freedom and every
+redundant constraint in stored order. Each redundancy has its UUID and the full
+relationship, curves, point selectors and dimensions; duplicate relationships
+retain their separate identities. None means no redundancies; No solved
+constrained sketches means no such reports. Failed sketches use the same typed
+conflict facts in the panel and tree. A failed or cancelled document load leaves
+both the picture and its reports intact.
