@@ -471,12 +471,15 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
     assert_eq!(d.changes().len(), 1);
     source.objects[0].name = Some("Sketch 1".into());
     source.objects[1].name = Some("Sketch 3".into());
-    assert_eq!(draft::sketch_name(&source.objects), "Sketch 2");
+    assert_eq!(
+        crate::object_names::next(&source.objects, "Sketch"),
+        "Sketch 2"
+    );
 }
 
 mod gpu;
-mod widgets;
-mod window;
+pub(crate) mod widgets;
+pub(crate) mod window;
 
 #[test]
 fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {

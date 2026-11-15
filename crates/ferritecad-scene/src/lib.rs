@@ -114,6 +114,8 @@ pub struct LoadedScene {
     pub sketch_presentations: Vec<SketchPresentation>,
     /// Built datum placements from this same accepted rebuild, including unused planes.
     pub datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
+    /// Complete display reasons for built drawings without a profile, from this rebuild.
+    pub profile_failures: Vec<(ObjectId, String)>,
 }
 
 /// What one solved sketch of this document turned out to be, in the
@@ -854,6 +856,7 @@ struct Picture<'a> {
     sketch_conflicts: Vec<SketchConflict>,
     sketch_presentations: Vec<SketchPresentation>,
     datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
+    profile_failures: Vec<(ObjectId, String)>,
 }
 
 impl Picture<'_> {
@@ -877,6 +880,7 @@ impl Picture<'_> {
             sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
             datum_planes: Vec::new(),
+            profile_failures: Vec::new(),
         }
     }
 
@@ -1064,6 +1068,9 @@ impl prepare::LoadSink for Picture<'_> {
         // two extrudes read is one sketch, and from the rebuild because it is
         // the only thing that knows where a solve left the curves.
         for object in objects {
+            if let Some(reason) = built.profile_failure(object.id) {
+                self.profile_failures.push((object.id, reason.to_string()));
+            }
             if let Some(plane) = built.plane(object.id) {
                 self.datum_planes.push((object.id, plane));
             }
@@ -1254,6 +1261,7 @@ impl prepare::LoadSink for Picture<'_> {
             sketch_conflicts: self.sketch_conflicts,
             sketch_presentations: self.sketch_presentations,
             datum_planes: self.datum_planes,
+            profile_failures: self.profile_failures,
         })
     }
 }

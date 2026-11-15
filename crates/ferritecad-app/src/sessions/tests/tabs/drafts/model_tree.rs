@@ -67,6 +67,7 @@ pub(in crate::sessions::tests::tabs) fn facts_scene(path: &Path) -> Result<Loade
         sketch_conflicts: vec![],
         sketch_presentations: vec![],
         datum_planes: vec![],
+        profile_failures: vec![],
     })
 }
 pub(in crate::sessions::tests::tabs) fn open_facts(w: &mut Window, path: &Path) {

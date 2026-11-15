@@ -62,13 +62,6 @@ pub(super) fn planes(objects: &[ObjectRecord], built: &[(ObjectId, SketchPlane)]
     choices
 }
 
-pub(super) fn sketch_name(objects: &[ObjectRecord]) -> String {
-    (1..)
-        .map(|n| format!("Sketch {n}"))
-        .find(|name| !objects.iter().any(|o| o.name.as_ref() == Some(name)))
-        .expect("a finite document has an unused name")
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum Tool {
     #[default]

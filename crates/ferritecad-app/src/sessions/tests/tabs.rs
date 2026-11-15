@@ -28,7 +28,7 @@ pub(crate) enum Drawn {
     Native,
 }
 
-fn mock_scene(path: &Path) -> Result<LoadedScene> {
+pub(crate) fn mock_scene(path: &Path) -> Result<LoadedScene> {
     ferritecad_scene::snapshot_of(
         path,
         &mut MockKernel::new(),

@@ -39,7 +39,12 @@ fn check_drawing(curves: Vec<ferritecad_document::SketchCurve>) {
         assert_eq!(row.note, "Stored object; references do not imply ownership");
         assert_eq!(
             actions(&source, row.id),
-            vec![ModelEdit::Sketch, ModelEdit::Constraints]
+            vec![
+                ModelEdit::Sketch,
+                ModelEdit::Extrude,
+                ModelEdit::Revolve,
+                ModelEdit::Constraints,
+            ]
         );
         assert_eq!(
             Command::Delete.available(&source, row.id, Ok(Access::Idle)),
