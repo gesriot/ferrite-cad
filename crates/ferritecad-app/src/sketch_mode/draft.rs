@@ -106,8 +106,6 @@ pub(super) struct Draft {
     pub sketch: ObjectId,
     pub name: String,
     pub original: Option<Sketch>,
-    /// Solved facts retained for snapping, including curves deleted in this draft.
-    pub accepted: Vec<SketchCurve>,
     pub planes: Vec<Plane>,
     pub plane: usize,
     pub state: State,
@@ -127,7 +125,6 @@ impl Draft {
             sketch: ObjectId::new(),
             name,
             original: None,
-            accepted: Vec::new(),
             planes,
             plane,
             state: State::default(),

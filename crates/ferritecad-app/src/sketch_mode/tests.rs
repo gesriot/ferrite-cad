@@ -27,7 +27,6 @@ fn existing(curves: Vec<SketchCurve>) -> Draft {
         curves: curves.clone(),
         constraints: Vec::new(),
     });
-    draft.accepted = curves.clone();
     draft.state.curves = curves;
     draft
 }
@@ -191,6 +190,26 @@ fn snapping_chooses_the_nearest_exact_coordinate_without_rounding() {
         geometry::snap([a, b].into_iter(), &camera, plane, [799., 599.]),
         None
     );
+}
+
+#[test]
+fn a_curve_deleted_from_the_draft_is_no_longer_a_snap_target() {
+    let plane = SketchPlane::world_xy();
+    let camera = camera(plane, Projection::Orthographic);
+    let kept = line([-10., 0.], [-5., 0.]);
+    let gone = line([5., 0.], [10., 0.]);
+    let mut editor = Editor {
+        draft: Some(existing(vec![kept.clone(), gone.clone()])),
+        ..Editor::default()
+    };
+    let draft = editor.draft.as_mut().expect("draft");
+    draft.select(Some(gone.id), false);
+    draft.delete();
+    let pixel = |at| geometry::screen(&camera, plane, at).expect("screen");
+    editor.pointer(&camera, pixel(point(10., 0.)), false, false);
+    assert_eq!(editor.snapped, None, "nothing is drawn there any more");
+    editor.pointer(&camera, pixel(point(-5., 0.)), false, false);
+    assert_eq!(editor.snapped, Some(point(-5., 0.)));
 }
 
 #[test]

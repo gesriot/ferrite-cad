@@ -76,7 +76,7 @@ impl Editor {
         );
         draft.sketch = id;
         draft.original = Some(stored.clone());
-        draft.accepted = presentation
+        draft.state.curves = presentation
             .curves()
             .iter()
             .map(|c| SketchCurve {
@@ -85,7 +85,6 @@ impl Editor {
                 geometry: c.geometry().clone(),
             })
             .collect();
-        draft.state.curves = draft.accepted.clone();
         self.open(path, source.version, draft);
         true
     }
@@ -172,9 +171,7 @@ impl Editor {
             None => Vec::new(),
         };
         self.snapped = geometry::snap(
-            geometry::targets(&draft.state.curves)
-                .chain(geometry::targets(&draft.accepted))
-                .chain(pending),
+            geometry::targets(&draft.state.curves).chain(pending),
             camera,
             plane,
             at,
