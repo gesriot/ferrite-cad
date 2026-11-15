@@ -5,7 +5,7 @@ account. This early application provides sketch and solid modelling, a command
 line with STEP import, and STL/FBX export. The `.fcad` format is not stable; a
 document from another build may not open.
 
-Platforms: Windows, Linux and macOS on Apple Silicon; see [platform support](docs/platform-support.md).
+Platforms: Windows, Linux and Apple Silicon macOS; see [platform support](docs/platform-support.md).
 
 ## Build for use
 
