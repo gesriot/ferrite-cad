@@ -9,6 +9,8 @@ pub(crate) struct Source {
     pub built_sketches: Vec<ObjectId>,
     /// Resolved datum frames from that same rebuild; never recomputed by a form.
     pub datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
+    /// Accepted rebuild explanations for built sketches that cannot supply a sweep profile.
+    pub profile_failures: Vec<(ObjectId, String)>,
     pub conflicts: Vec<crate::sketch_conflicts::Conflict>,
     pub cut_bodies: Vec<crate::feature_facts::CutChoice>,
     pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
@@ -142,6 +144,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             conflicts: Vec::new(),
             built_sketches: Vec::new(),
             datum_planes: Vec::new(),
+            profile_failures: Vec::new(),
             sketches: vec![],
             constraint_sketches: vec![],
             circle_sketches: vec![],

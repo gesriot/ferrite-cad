@@ -36,8 +36,9 @@ classification or corner policies.
 
 The existing create commands are convenience templates. `create-sketch-revolve` uses
 local SketchY; the generic `edit` request supports all axes. Existing window forms
-continue to create and edit their saved features through the shared library; there are
-no additional generic sweep forms. Constraint recipes remain in
+continue to create and edit their saved features through the shared library.
+[Extrude and Revolve commands](extrude-and-revolve.md) create general sweeps from saved
+sketches through that same transaction. Constraint recipes remain in
 [Revolve profiles](revolve-profile-constraints.md) and
 [axis-contact profiles](axis-closed-revolve-constraints.md).
 

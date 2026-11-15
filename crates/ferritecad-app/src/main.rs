@@ -52,6 +52,7 @@ mod numeric;
 mod parameters;
 use numeric::mm;
 use workspace::form_window;
+mod object_names;
 mod recoveries;
 mod restores;
 mod sessions;
@@ -59,6 +60,7 @@ mod sketch;
 mod sketch_facts;
 mod sketch_mode;
 mod sketch_transactions;
+mod sweeps;
 mod tabs;
 mod workspace;
 
@@ -1635,6 +1637,7 @@ fn prepare_arrival<P>(
             sketch_conflicts::attach(&mut source, &loaded.sketch_conflicts);
             source.built_sketches = sketches.identities();
             source.datum_planes = loaded.datum_planes;
+            source.profile_failures = loaded.profile_failures;
             source
         }),
         document: document.to_path_buf(),
@@ -2218,6 +2221,7 @@ fn retarget_scene<P>(
     edit_source.built_sketches = scene.sketches.identities();
     if let Some(old) = &mut scene.edit_source {
         edit_source.datum_planes = std::mem::take(&mut old.datum_planes);
+        edit_source.profile_failures = std::mem::take(&mut old.profile_failures);
     }
     scene.edit_source = Some(edit_source);
 }
@@ -3718,6 +3722,9 @@ impl ApplicationHandler<AppEvent> for App {
                 self.creates.sketch.viewport.set_apply(
                     session_idle && self.sessions.takes_form_apply() && !self.edits.running(),
                 );
+                self.creates.sketch.sweeps.set_apply(
+                    session_idle && self.sessions.takes_form_apply() && !self.edits.running(),
+                );
                 self.creates.sketch.set_analytic_apply(analytic_apply);
                 self.creates.sketch.set_angle_apply(angle_apply);
                 self.creates.sketch.cuts.set_session(
@@ -4055,6 +4062,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_apply_request()
                         {
+                            self.apply_expressions(request.expected, request.changes);
+                        }
+                        if let Some(request) = self.creates.sketch.sweeps.take_request() {
                             self.apply_expressions(request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.viewport.take_request() {
@@ -6761,6 +6771,7 @@ mod tests {
             sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
             datum_planes: Vec::new(),
+            profile_failures: Vec::new(),
         }
     }
 

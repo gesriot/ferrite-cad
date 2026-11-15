@@ -129,6 +129,8 @@ impl Default for AnnulusState {
 pub(crate) struct Editor {
     /// The viewport drawing form travels with this same tab-owned editor.
     pub(crate) viewport: crate::sketch_mode::Editor,
+    /// Sweep drafts share saved-object ownership, tab parking and publication.
+    pub(crate) sweeps: crate::sweeps::Editor,
     /// Text editing over the current accepted document, following Model selection.
     pub(crate) parameters: crate::parameters::Editor,
     pub(crate) constraints: crate::constraints::Editor,
@@ -419,6 +421,7 @@ impl Editor {
             || self.chamfers.active()
             || self.parameters.active()
             || self.viewport.active()
+            || self.sweeps.active()
     }
     pub(crate) fn dismiss(&mut self) {
         // What the window said about the session is not the draft's: it is said
@@ -501,6 +504,7 @@ impl Editor {
             || self.chamfers.active()
             || self.parameters.active()
             || self.viewport.active()
+            || self.sweeps.active()
     }
     /// §30P: the drawing window for a new document is open. It is not about the
     /// open document and never goes with a tab.
@@ -1290,6 +1294,10 @@ impl Editor {
         running: bool,
         outcome: &str,
     ) {
+        if self.sweeps.active() {
+            self.sweeps.draw(ui, running, outcome);
+            return;
+        }
         if self.viewport.active() {
             self.viewport.draw(ui, running, outcome);
             return;
@@ -3721,7 +3729,7 @@ fn paint_guide(
         paint_pointer_label(painter, rect, pointer, &words, colour);
     }
 }
-fn number(s: &str) -> Result<f64> {
+pub(crate) fn number(s: &str) -> Result<f64> {
     s.trim()
         .parse()
         .map_err(|_| CadError::input(format!("Not a number: {s:?}")))

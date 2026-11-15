@@ -2,14 +2,14 @@
 use crate::commands;
 use crate::sessions::tests::tabs::Window;
 
-pub(super) struct Ui {
+pub(crate) struct Ui {
     ctx: egui::Context,
     confirmation: Option<commands::Confirmation>,
     size: egui::Vec2,
 }
 
 impl Ui {
-    pub(super) fn new(window: &mut Window) -> Self {
+    pub(crate) fn new(window: &mut Window) -> Self {
         let mut result = Self {
             ctx: egui::Context::default(),
             confirmation: None,
@@ -22,7 +22,7 @@ impl Ui {
         result
     }
 
-    pub(super) fn frame(
+    pub(crate) fn frame(
         &mut self,
         w: &mut Window,
         events: Vec<egui::Event>,
@@ -40,6 +40,10 @@ impl Ui {
         w.creates
             .sketch
             .viewport
+            .set_apply(w.sessions.takes_form_apply());
+        w.creates
+            .sketch
+            .sweeps
             .set_apply(w.sessions.takes_form_apply());
         let tab = w.sessions.tab().key();
         let (form, sketch) = w.creates.forms();
@@ -108,20 +112,31 @@ impl Ui {
         (output, answers.chosen)
     }
 
-    pub(super) fn settle(&mut self, w: &mut Window) -> egui::FullOutput {
+    pub(crate) fn settle(&mut self, w: &mut Window) -> egui::FullOutput {
         for _ in 0..3 {
             self.frame(w, vec![]);
         }
         self.frame(w, vec![]).0
     }
 
-    pub(super) fn press(&mut self, w: &mut Window, label: &str, last: bool) -> commands::Chosen {
+    pub(crate) fn press(&mut self, w: &mut Window, label: &str, last: bool) -> commands::Chosen {
         let output = self.settle(w);
         let at = rect(&output, label, last).center();
         self.frame(w, clicks(at)).1
     }
 
-    pub(super) fn key(&mut self, w: &mut Window, key: egui::Key) {
+    pub(crate) fn type_value(&mut self, w: &mut Window, before: &str, value: &str) {
+        self.press(w, before, true);
+        self.frame(
+            w,
+            vec![
+                key(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text(value.into()),
+            ],
+        );
+    }
+
+    pub(crate) fn key(&mut self, w: &mut Window, key: egui::Key) {
         self.frame(w, vec![self::key(key, egui::Modifiers::NONE)]);
     }
 }
@@ -173,7 +188,7 @@ fn rect(output: &egui::FullOutput, words: &str, last: bool) -> egui::Rect {
     .unwrap_or_else(|| panic!("missing visible text {words}"))
 }
 
-pub(super) fn text(output: &egui::FullOutput) -> Vec<String> {
+pub(crate) fn text(output: &egui::FullOutput) -> Vec<String> {
     output
         .shapes
         .iter()

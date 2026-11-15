@@ -9,7 +9,7 @@ use ferritecad_ui::{PointerButton, ViewportEvent};
 use std::{path::Path, sync::mpsc, time::Duration};
 use widgets::{Ui, text};
 
-fn open(path: &Path, drawn: Drawn) -> Window {
+pub(crate) fn open(path: &Path, drawn: Drawn) -> Window {
     let mut w = Window::new(drawn, None);
     w.open(path);
     w.input
@@ -18,7 +18,7 @@ fn open(path: &Path, drawn: Drawn) -> Window {
     w
 }
 
-fn enter(w: &mut Window, id: ObjectId, edit: ferritecad_ui::ModelEdit) {
+pub(crate) fn enter(w: &mut Window, id: ObjectId, edit: ferritecad_ui::ModelEdit) {
     let source = w.scene.edit_source.as_ref().expect("source");
     let navigation = w.tabs.model_navigation(w.sessions.tab());
     let row = source
@@ -53,7 +53,7 @@ fn enter(w: &mut Window, id: ObjectId, edit: ferritecad_ui::ModelEdit) {
     w.creates.sketch.viewport.look(&mut w.input);
 }
 
-fn start_new(w: &mut Window, ui: &mut Ui) {
+pub(crate) fn start_new(w: &mut Window, ui: &mut Ui) {
     assert!(ui.press(w, "New sketch…", false).new_sketch);
     let source = w.scene.edit_source.as_ref().expect("source");
     assert_eq!(
@@ -68,7 +68,7 @@ fn start_new(w: &mut Window, ui: &mut Ui) {
     w.creates.sketch.viewport.look(&mut w.input);
 }
 
-fn click(w: &mut Window, at: Point2, shift: bool) {
+pub(crate) fn click(w: &mut Window, at: Point2, shift: bool) {
     let d = w.creates.sketch.viewport.draft.as_ref().expect("draft");
     let pixel = geometry::screen(
         w.input.camera(),
@@ -99,13 +99,13 @@ fn click(w: &mut Window, at: Point2, shift: bool) {
     );
 }
 
-fn version(w: &Window) -> ferritecad_document::DocumentVersion {
+pub(crate) fn version(w: &Window) -> ferritecad_document::DocumentVersion {
     w.sessions.export_source().expect("version").version()
 }
 fn draft(w: &Window) -> &Draft {
     w.creates.sketch.viewport.draft.as_ref().expect("draft")
 }
-fn finish(w: &mut Window, ui: &mut Ui) -> EditRequest {
+pub(crate) fn finish(w: &mut Window, ui: &mut Ui) -> EditRequest {
     ui.press(w, "Finish", false);
     w.creates
         .sketch
@@ -113,7 +113,7 @@ fn finish(w: &mut Window, ui: &mut Ui) -> EditRequest {
         .take_request()
         .expect("one request")
 }
-fn apply(w: &mut Window, request: EditRequest) -> bool {
+pub(crate) fn apply(w: &mut Window, request: EditRequest) -> bool {
     assert_eq!(request.expected, version(w));
     let (tx, rx) = mpsc::channel();
     let address = w

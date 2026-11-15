@@ -82,7 +82,7 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     let id = key.0;
     let mut out = Vec::new();
     if source.built_sketches.contains(&id) {
-        out.push(ModelEdit::Sketch);
+        out.extend([ModelEdit::Sketch, ModelEdit::Extrude, ModelEdit::Revolve]);
     }
     if source
         .objects
@@ -173,6 +173,20 @@ fn open_editor(
             .sketch
             .viewport
             .begin_with(path, source, accepted, id),
+        ModelEdit::Extrude => creates.sketch.sweeps.begin_with(
+            path,
+            source,
+            accepted,
+            id,
+            crate::sweeps::Kind::Extrude,
+        ),
+        ModelEdit::Revolve => creates.sketch.sweeps.begin_with(
+            path,
+            source,
+            accepted,
+            id,
+            crate::sweeps::Kind::Revolve,
+        ),
         ModelEdit::NewSketch => creates.sketch.viewport.begin_new(path, source, Some(id)),
         ModelEdit::Parameters => creates.sketch.parameters.begin(source),
         ModelEdit::Height => edits.begin_selected(path, source, id),
@@ -431,6 +445,9 @@ impl Command {
             .ok_or("This object is no longer in the document.")?;
         match self {
             Self::Edit(edit) => {
+                if matches!(edit, ModelEdit::Extrude | ModelEdit::Revolve) {
+                    crate::sweeps::available(source, object)?;
+                }
                 if !actions(source, key).contains(&edit) {
                     return Err("This editor is unavailable for the selected object.".into());
                 }

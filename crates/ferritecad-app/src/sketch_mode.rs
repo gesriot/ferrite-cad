@@ -7,7 +7,7 @@ mod paint;
 pub(crate) use integration::sync;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{sketch::accepted::Accepted, sketch_facts::Source};
 use draft::{Draft, Pending, Plane, Tool};
@@ -105,7 +105,11 @@ impl Editor {
         self.open(
             path,
             source.version,
-            Draft::new(draft::sketch_name(&source.objects), planes, plane),
+            Draft::new(
+                crate::object_names::next(&source.objects, "Sketch"),
+                planes,
+                plane,
+            ),
         );
         true
     }

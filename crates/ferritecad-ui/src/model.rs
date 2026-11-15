@@ -17,6 +17,10 @@ pub struct ModelNavigation {
 pub enum ModelEdit {
     /// Edit any built sketch drawing in the viewport.
     Sketch,
+    /// Create an extrusion from the accepted sketch profile.
+    Extrude,
+    /// Create a revolution from the accepted sketch profile.
+    Revolve,
     /// Start a drawing on the selected datum plane.
     NewSketch,
     Height,
@@ -36,6 +40,8 @@ impl ModelEdit {
     pub fn label(self) -> &'static str {
         match self {
             Self::Sketch => "Edit sketch…",
+            Self::Extrude => "Extrude…",
+            Self::Revolve => "Revolve…",
             Self::NewSketch => "New sketch…",
             Self::Height => "Edit height…",
             Self::Vertices => "Edit vertices…",
