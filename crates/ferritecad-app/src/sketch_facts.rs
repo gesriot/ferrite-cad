@@ -5,6 +5,10 @@ use ferritecad_types::{ObjectId, Result, StableEntityId};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Source {
     facts: ferritecad_document::ExtrudeEditSource,
+    /// Sketch identities that have a drawing in the accepted scene.
+    pub built_sketches: Vec<ObjectId>,
+    /// Resolved datum frames from that same rebuild; never recomputed by a form.
+    pub datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
     pub conflicts: Vec<crate::sketch_conflicts::Conflict>,
     pub cut_bodies: Vec<crate::feature_facts::CutChoice>,
     pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
@@ -136,6 +140,8 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             fillet_bodies,
             facts,
             conflicts: Vec::new(),
+            built_sketches: Vec::new(),
+            datum_planes: Vec::new(),
             sketches: vec![],
             constraint_sketches: vec![],
             circle_sketches: vec![],

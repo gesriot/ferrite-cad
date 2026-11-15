@@ -112,6 +112,8 @@ pub struct LoadedScene {
     /// unlike [`sketch_solves`][Self::sketch_solves] an unconstrained sketch
     /// has one too: it was never solved, and it was still drawn.
     pub sketch_presentations: Vec<SketchPresentation>,
+    /// Built datum placements from this same accepted rebuild, including unused planes.
+    pub datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
 }
 
 /// What one solved sketch of this document turned out to be, in the
@@ -851,6 +853,7 @@ struct Picture<'a> {
     sketch_solves: Vec<SketchSolveFacts>,
     sketch_conflicts: Vec<SketchConflict>,
     sketch_presentations: Vec<SketchPresentation>,
+    datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
 }
 
 impl Picture<'_> {
@@ -873,6 +876,7 @@ impl Picture<'_> {
             sketch_solves: Vec::new(),
             sketch_conflicts: Vec::new(),
             sketch_presentations: Vec::new(),
+            datum_planes: Vec::new(),
         }
     }
 
@@ -1060,6 +1064,9 @@ impl prepare::LoadSink for Picture<'_> {
         // two extrudes read is one sketch, and from the rebuild because it is
         // the only thing that knows where a solve left the curves.
         for object in objects {
+            if let Some(plane) = built.plane(object.id) {
+                self.datum_planes.push((object.id, plane));
+            }
             if let Some(presentation) = built.sketch_presentation(object.id) {
                 self.sketch_presentations.push(presentation.clone());
             }
@@ -1246,6 +1253,7 @@ impl prepare::LoadSink for Picture<'_> {
             sketch_solves: self.sketch_solves,
             sketch_conflicts: self.sketch_conflicts,
             sketch_presentations: self.sketch_presentations,
+            datum_planes: self.datum_planes,
         })
     }
 }

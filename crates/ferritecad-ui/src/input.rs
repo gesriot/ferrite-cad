@@ -646,6 +646,14 @@ impl ViewportInput {
         self.camera.projection_mode()
     }
 
+    /// Orients a tool's plane using the camera's shared arbitrary-frame operation.
+    /// Like a standard view, this retires pending questions about the previous picture.
+    pub fn look_along(&mut self, direction: [f32; 3], up: [f32; 3]) {
+        self.by_hand(|camera| {
+            camera.look_along(direction, up);
+        });
+    }
+
     /// Asks for the next frame to be drawn.
     ///
     /// Used for anything this reducer did not cause: a model that finished

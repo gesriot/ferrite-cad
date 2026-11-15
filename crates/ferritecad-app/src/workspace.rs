@@ -306,6 +306,15 @@ fn model(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         return;
     };
     let source = view.scene.edit_source;
+    if let Some(source) = source {
+        let answer = commands::new_sketch_available(source, available);
+        let button = ui.add_enabled(answer.is_ok(), egui::Button::new("New sketch…"));
+        answers.chosen.new_sketch = button.clicked();
+        if let Err(reason) = answer {
+            button.on_disabled_hover_text(reason);
+        }
+    }
+
     let rows = model_rows(source);
     answers.chosen.model = ferritecad_ui::model_panel(ui, *tab, &rows, navigation, |key| {
         source

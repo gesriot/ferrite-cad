@@ -81,6 +81,16 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     }
     let id = key.0;
     let mut out = Vec::new();
+    if source.built_sketches.contains(&id) {
+        out.push(ModelEdit::Sketch);
+    }
+    if source
+        .objects
+        .iter()
+        .any(|o| o.id == id && o.payload.kind() == Some(ObjectKind::DatumPlane))
+    {
+        out.push(ModelEdit::NewSketch);
+    }
     if source
         .objects
         .iter()
@@ -159,6 +169,11 @@ fn open_editor(
 ) -> bool {
     let id = asked.row.0;
     match asked.edit {
+        ModelEdit::Sketch => creates
+            .sketch
+            .viewport
+            .begin_with(path, source, accepted, id),
+        ModelEdit::NewSketch => creates.sketch.viewport.begin_new(path, source, Some(id)),
         ModelEdit::Parameters => creates.sketch.parameters.begin(source),
         ModelEdit::Height => edits.begin_selected(path, source, id),
         ModelEdit::Vertices => creates.sketch.begin_edit(path, source, id),
@@ -332,6 +347,7 @@ pub(crate) struct Chosen {
     pub(crate) model: Option<Action>,
     /// One text field submitted by the Parameters form this frame.
     pub(crate) parameter: Option<crate::parameters::Request>,
+    pub(crate) new_sketch: bool,
     pub(crate) confirm_delete: Option<bool>,
 }
 impl std::ops::Deref for Chosen {
@@ -373,18 +389,18 @@ impl Command {
             | Self::RollToEnd => &[],
         }
     }
-    fn available(
+    fn access(
         self,
         source: &ExtrudeEditSource,
-        key: ModelKey,
+        key: Option<ModelKey>,
         idle: Availability,
     ) -> std::result::Result<(), String> {
         if let Access::Parameters { operation } = idle.map_err(str::to_owned)? {
             if !matches!(self, Self::Delete | Self::DeleteWithDependents)
-                || !source
-                    .objects
-                    .iter()
-                    .any(|o| o.id == key.0 && o.payload.kind() == Some(ObjectKind::Parameter))
+                || !source.objects.iter().any(|o| {
+                    Some(o.id) == key.map(|key| key.0)
+                        && o.payload.kind() == Some(ObjectKind::Parameter)
+                })
             {
                 return Err("Close the Parameters form before another command.".into());
             }
@@ -393,6 +409,15 @@ impl Command {
         if let Some(reason) = &source.refusal {
             return Err(reason.clone());
         }
+        Ok(())
+    }
+    fn available(
+        self,
+        source: &ExtrudeEditSource,
+        key: ModelKey,
+        idle: Availability,
+    ) -> std::result::Result<(), String> {
+        self.access(source, Some(key), idle)?;
         let row = source
             .model_tree
             .rows
@@ -447,6 +472,13 @@ impl Command {
         }
         Ok(())
     }
+}
+
+pub(crate) fn new_sketch_available(
+    source: &ExtrudeEditSource,
+    idle: Availability,
+) -> std::result::Result<(), String> {
+    Command::Edit(ModelEdit::NewSketch).access(source, None, idle)
 }
 
 fn history_body(
@@ -660,6 +692,9 @@ impl crate::App {
     /// on every frame would be paying continuously for something wanted when
     /// somebody clicks.
     pub(crate) fn choose_at(&mut self, x: f32, y: f32) -> Option<ModelKey> {
+        if self.creates.sketch.viewport.active() {
+            return None;
+        }
         let live = self.live.as_mut()?;
         // Rounded rather than truncated, and refused outside the picture: a
         // pointer position is a float in window coordinates and the frame is a
