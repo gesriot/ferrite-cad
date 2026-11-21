@@ -1,6 +1,6 @@
 # 16. Solve viewport sketch constraints as draft edits
 
-**Status:** proposed; the Finish rule for released geometry needs a decision.
+**Status:** accepted design.
 
 ## Selection and rules
 
@@ -43,23 +43,18 @@ Use the existing session transaction. For a new sketch send one AddSketch with s
 and rules (after adding a datum if necessary). For an existing sketch, remove constraints,
 remove curves, add curves, write moved surviving curves, set construction flags, add rules,
 then set changed constant expression slots. Additions retain creation order and identities.
-Compare each surviving curve with its **accepted solved geometry** using a 1e-9 mm tolerance;
-leave an unmoved curve's saved coordinates alone. Drop cancelled changes. An empty difference
-costs no document version. The accepted drawing must agree with the preview within 1e-6 mm.
+Rebuild solves from stored coordinates. Predict its input with saved coordinates on surviving
+curves, draft coordinates on new curves, and the final construction flags and constraint
+list, including final dimension values. Use the same evaluator as the draft. Without
+constraints the input itself is the prediction.
 
-## Open decision: releasing a constraint without moving a curve
-
-A stored point at (0, 0) may have been shown at (10, 0) because of a Fixed rule. Remove
-that rule while leaving an independent Fixed rule on another point. Starting the draft
-solve at the accepted positions leaves the released point at (10, 0). It has not moved
-relative to the accepted drawing, so the rule above emits only RemoveConstraint. On
-rebuild the free point starts from its stored (0, 0) and stays there. Both solves succeed.
-
-Writing the released point's draft geometry alongside RemoveConstraint preserves the preview
-in this example. That would require an exception to the accepted-position comparison. The
-alternative is to preview the actual stored-geometry request and show the point moving to
-(0, 0) as soon as the rule is removed. These give different editing behaviour; neither is a
-change to the solver or the file format.
+Write SetCurveGeometry only for surviving stored curves whose predicted position differs
+from the preview by more than 1e-6 mm in any coordinate or radius. Solve again with those
+writes if needed. Check every curve, including new curves, against the preview at the same
+tolerance. If the solver settles elsewhere, keep the draft and its history; send no request.
+The final prediction and the committed drawing have the same input and must agree within
+1e-9 mm. Prediction runs on Finish only. Drop cancelled changes; an empty difference costs
+no document version.
 
 ## Rejected alternatives
 
@@ -68,3 +63,4 @@ change to the solver or the file format.
 - Translating constraints to solver IDs in the window would duplicate the evaluator.
 - Writing all solved coordinates at Finish would modify unrelated stored geometry.
 - Turning a drawing snap into a constraint silently introduces design intent.
+- Writing only directly released points misses curves connected through other constraints.

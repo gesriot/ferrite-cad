@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Disposable drawing steps and the single ordered transaction they describe.
+use super::rules::{Button, Selection};
 use ferritecad_document::{
-    DatumPlane, EditChange, ObjectPayload, ObjectRecord, Point2, Sketch, SketchCurve,
-    SketchGeometry,
+    DatumPlane, EditChange, ObjectPayload, ObjectRecord, Point2, Sketch, SketchConstraint,
+    SketchCurve, SketchGeometry,
 };
 use ferritecad_kernel::SketchPlane;
 use ferritecad_types::{ObjectId, Point3, StableEntityId, Transform, Vec3};
@@ -91,13 +92,17 @@ pub(super) enum Pending {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct State {
     pub curves: Vec<SketchCurve>,
-    pub selected: BTreeSet<StableEntityId>,
+    pub constraints: Vec<SketchConstraint>,
+    pub selected: Vec<Selection>,
+    pub diameters: BTreeSet<StableEntityId>,
+    pub report: Option<ferritecad_eval::SketchSolveReport>,
 }
 
 #[derive(Debug)]
 pub(super) struct Draft {
     pub sketch: ObjectId,
     pub name: String,
+    pub message: String,
     pub original: Option<Sketch>,
     pub planes: Vec<Plane>,
     pub plane: usize,
@@ -117,6 +122,7 @@ impl Draft {
         Self {
             sketch: ObjectId::new(),
             name,
+            message: String::new(),
             original: None,
             planes,
             plane,
@@ -143,6 +149,7 @@ impl Draft {
         if let Some(state) = from.pop() {
             to.push(std::mem::replace(&mut self.state, state));
             self.pending = None;
+            self.message.clear();
         }
     }
 
@@ -196,45 +203,161 @@ impl Draft {
         }
     }
 
-    pub fn select(&mut self, id: Option<StableEntityId>, shift: bool) {
-        if !shift || id.is_none() {
+    pub fn select(&mut self, item: Option<Selection>, shift: bool) {
+        if !shift || item.is_none() {
             self.state.selected.clear();
         }
-        if let Some(id) = id
-            && !self.state.selected.insert(id)
-        {
-            self.state.selected.remove(&id);
+        if let Some(item) = item {
+            if let Some(index) = self.state.selected.iter().position(|s| *s == item) {
+                self.state.selected.remove(index);
+            } else {
+                self.state.selected.push(item);
+            }
         }
     }
 
     pub fn delete(&mut self) {
-        if self.state.selected.is_empty() {
+        let selected = &self.state.selected;
+        let mut next = self.state.clone();
+        next.curves
+            .retain(|c| !selected.iter().any(|s| s.whole() == Some(c.id)));
+        next.constraints.retain(|c| {
+            !selected.contains(&Selection::Constraint(c.id))
+                && c.rule
+                    .curves()
+                    .into_iter()
+                    .chain(c.rule.points().into_iter().map(|p| p.curve))
+                    .all(|id| next.curves.iter().any(|c| c.id == id))
+        });
+        if next.curves.len() == self.state.curves.len()
+            && next.constraints.len() == self.state.constraints.len()
+        {
             return;
         }
-        self.begin_step();
-        self.state
-            .curves
-            .retain(|c| !self.state.selected.contains(&c.id));
-        self.state.selected.clear();
-        self.pending = None;
+        next.diameters
+            .retain(|id| next.constraints.iter().any(|c| c.id == *id));
+        let solve = next.constraints.len() != self.state.constraints.len()
+            && ferritecad_eval::solver_available();
+        next.selected.clear();
+        self.accept(next, solve);
     }
 
     pub fn toggle(&mut self) {
-        if self.state.selected.is_empty() {
+        let selected: Vec<_> = self
+            .state
+            .selected
+            .iter()
+            .filter_map(|s| s.whole())
+            .collect();
+        if selected.is_empty() {
             return;
         }
-        let construction = !self
+        let flag = !self
             .state
             .curves
             .iter()
-            .filter(|c| self.state.selected.contains(&c.id))
+            .filter(|c| selected.contains(&c.id))
             .all(|c| c.construction);
         self.begin_step();
         for c in &mut self.state.curves {
-            if self.state.selected.contains(&c.id) {
-                c.construction = construction;
+            if selected.contains(&c.id) {
+                c.construction = flag;
             }
         }
+    }
+
+    pub fn add_rule(&mut self, rule: ferritecad_document::SketchConstraintRule, button: Button) {
+        let mut next = self.state.clone();
+        let id = StableEntityId::new();
+        next.constraints.push(SketchConstraint { id, rule });
+        if button == Button::Diameter {
+            next.diameters.insert(id);
+        }
+        next.selected = vec![Selection::Constraint(id)];
+        self.accept(next, true);
+    }
+
+    pub fn set_value(&mut self, id: StableEntityId, value: &str) {
+        let mut next = self.state.clone();
+        let Some(c) = next.constraints.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        let Some((_, expr)) = dimension(c) else {
+            return;
+        };
+        if expr.numeric_form_refusal().is_some() {
+            self.message = super::rules::READ_ONLY.into();
+            return;
+        }
+        if let Err(e) = super::rules::set_number(&mut c.rule, value, next.diameters.contains(&id)) {
+            self.message = e.to_string();
+            return;
+        }
+        // Restore the exact saved spelling when the value is returned to its starting value.
+        if let Some(old) = self
+            .original
+            .iter()
+            .flat_map(|s| &s.constraints)
+            .find(|k| k.id == id)
+            && dimension(old).map(|(_, v)| v.value()) == dimension(c).map(|(_, v)| v.value())
+        {
+            c.rule = old.rule.clone();
+        }
+        if next.constraints != self.state.constraints {
+            self.accept(next, true);
+        } else {
+            self.message.clear();
+        }
+    }
+
+    fn accept(&mut self, mut next: State, solve: bool) {
+        if solve {
+            let sketch = Sketch {
+                plane: self.planes[self.plane].id,
+                curves: std::mem::take(&mut next.curves),
+                constraints: std::mem::take(&mut next.constraints),
+            };
+            match solve_drawing(&sketch, self.sketch) {
+                Ok(answer) => {
+                    let (drawing, report) = match answer {
+                        Some((solved, report)) => (solved, Some(report)),
+                        None => (sketch, None),
+                    };
+                    next.curves = drawing.curves;
+                    next.constraints = drawing.constraints;
+                    next.report = report;
+                }
+                Err(msg) => {
+                    self.message = msg;
+                    return;
+                }
+            }
+        }
+        self.undo.push(std::mem::replace(&mut self.state, next));
+        self.redo.clear();
+        self.message.clear();
+        self.pending = None;
+    }
+
+    pub fn constraint_counts(&self) -> (usize, usize, usize) {
+        let original = self
+            .original
+            .as_ref()
+            .map_or(&[][..], |s| s.constraints.as_slice());
+        let current = &self.state.constraints;
+        let added = current
+            .iter()
+            .filter(|c| !original.iter().any(|s| s.id == c.id))
+            .count();
+        let removed = original
+            .iter()
+            .filter(|c| !current.iter().any(|s| s.id == c.id))
+            .count();
+        let changed = current
+            .iter()
+            .filter(|c| original.iter().any(|s| s.id == c.id && *s != **c))
+            .count();
+        (added, removed, changed)
     }
 
     pub fn removed_constraints(&self) -> Vec<StableEntityId> {
@@ -252,9 +375,23 @@ impl Draft {
             .collect()
     }
 
-    /// One ordered request; original saved geometry is never replaced by solved geometry.
-    pub fn changes(&self) -> Vec<EditChange> {
+    /// Assemble the request only after verifying its rebuilt geometry.
+    pub fn changes(&self) -> Result<Vec<EditChange>, String> {
+        self.changes_with(|s| solve_drawing(s, self.sketch).map(|r| r.map(|(solved, _)| solved)))
+    }
+
+    pub fn changes_with(
+        &self,
+        solve: impl FnMut(&Sketch) -> Result<Option<Sketch>, String>,
+    ) -> Result<Vec<EditChange>, String> {
         let sketch = self.sketch;
+        let drawing = Sketch {
+            plane: self.planes[self.plane].id,
+            curves: self.state.curves.clone(),
+            constraints: self.state.constraints.clone(),
+        };
+        let geometry =
+            super::prediction::geometry_changes(sketch, self.original.as_ref(), &drawing, solve)?;
         let Some(original) = &self.original else {
             let plane = &self.planes[self.plane];
             let mut changes = Vec::new();
@@ -268,18 +405,18 @@ impl Draft {
             changes.push(EditChange::AddSketch {
                 object: sketch,
                 name: Some(self.name.clone()),
-                sketch: Sketch {
-                    plane: plane.id,
-                    curves: self.state.curves.clone(),
-                    constraints: Vec::new(),
-                },
+                sketch: drawing,
             });
-            return changes;
+            return Ok(changes);
         };
-        let mut changes: Vec<_> = self
-            .removed_constraints()
-            .into_iter()
-            .map(|constraint| EditChange::RemoveConstraint { sketch, constraint })
+        let mut changes: Vec<_> = original
+            .constraints
+            .iter()
+            .filter(|c| !drawing.constraints.iter().any(|k| k.id == c.id))
+            .map(|c| EditChange::RemoveConstraint {
+                sketch,
+                constraint: c.id,
+            })
             .collect();
         for curve in &original.curves {
             if !self.state.curves.iter().any(|c| c.id == curve.id) {
@@ -297,6 +434,7 @@ impl Draft {
                 });
             }
         }
+        changes.extend(geometry);
         for curve in &self.state.curves {
             if original
                 .curves
@@ -310,7 +448,25 @@ impl Draft {
                 });
             }
         }
-        changes
+        for c in &drawing.constraints {
+            if !original.constraints.iter().any(|old| old.id == c.id) {
+                changes.push(EditChange::AddConstraint {
+                    sketch,
+                    constraint: c.clone(),
+                });
+            }
+        }
+        for c in &drawing.constraints {
+            if let Some(old) = original.constraints.iter().find(|old| old.id == c.id)
+                && let Some((slot, expr)) = dimension(c)
+                && dimension(old).is_some_and(|(_, old)| old != expr)
+            {
+                changes.push(
+                    EditChange::constant(sketch, slot, expr.value()).map_err(|e| e.to_string())?,
+                );
+            }
+        }
+        Ok(changes)
     }
 
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -341,4 +497,44 @@ impl Draft {
             .count();
         (added, removed, changed)
     }
+}
+
+pub(super) fn dimension(
+    c: &SketchConstraint,
+) -> Option<(
+    ferritecad_document::ExpressionSlot,
+    &ferritecad_document::Expression,
+)> {
+    use ferritecad_document::{ExpressionSlot as S, SketchConstraintRule as R};
+    let constraint = c.id;
+    match &c.rule {
+        R::Distance { distance, .. } => Some((S::Distance { constraint }, distance)),
+        R::Radius { radius, .. } => Some((S::Radius { constraint }, radius)),
+        R::DirectedAngle { angle, .. } => Some((S::DirectedAngle { constraint }, angle)),
+        _ => None,
+    }
+}
+
+fn solve_drawing(
+    sketch: &Sketch,
+    id: ObjectId,
+) -> Result<Option<(Sketch, ferritecad_eval::SketchSolveReport)>, String> {
+    #[cfg(test)]
+    if !sketch.constraints.is_empty() {
+        SOLVES.with(|n| n.set(n.get() + 1));
+    }
+    ferritecad_eval::solve_sketch(sketch, id).map_err(|e| {
+        let mut message = e.to_string();
+        if let Some(conflict) = ferritecad_eval::SketchConflict::of(&e) {
+            for c in conflict.constraints() {
+                let words = crate::ConstraintWords::of(c.id(), c.rule());
+                message.push_str(&format!("\n{}: {}", words.identifier, words.says));
+            }
+        }
+        message
+    })
+}
+#[cfg(test)]
+thread_local! {
+    pub(super) static SOLVES: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
 }

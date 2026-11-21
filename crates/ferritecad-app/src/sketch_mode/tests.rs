@@ -203,7 +203,7 @@ fn a_curve_deleted_from_the_draft_is_no_longer_a_snap_target() {
         ..Editor::default()
     };
     let draft = editor.draft.as_mut().expect("draft");
-    draft.select(Some(gone.id), false);
+    draft.select(Some(Selection::Curve(gone.id)), false);
     draft.delete();
     let pixel = |at| geometry::screen(&camera, plane, at).expect("screen");
     editor.pointer(&camera, pixel(point(10., 0.)), false, false);
@@ -322,13 +322,13 @@ fn circle_zero_radius_and_escape_add_nothing_but_a_completed_circle_is_one_step(
 fn selection_toggles_and_one_delete_or_construction_is_one_history_step() {
     let mut d = existing(vec![line([0., 0.], [1., 0.]), line([0., 1.], [1., 1.])]);
     let ids = [d.state.curves[0].id, d.state.curves[1].id];
-    d.select(Some(ids[0]), false);
-    d.select(Some(ids[1]), true);
+    d.select(Some(Selection::Curve(ids[0])), false);
+    d.select(Some(Selection::Curve(ids[1])), true);
     d.toggle();
     assert!(d.state.curves.iter().all(|c| c.construction));
     assert_eq!(d.undo.len(), 1);
     d.toggle();
-    assert!(d.changes().is_empty());
+    assert!(d.changes().expect("Finish prediction").is_empty());
     d.delete();
     assert!(d.state.curves.is_empty());
     assert_eq!(d.undo.len(), 3);
@@ -337,8 +337,8 @@ fn selection_toggles_and_one_delete_or_construction_is_one_history_step() {
     d.history(false);
     assert!(d.state.curves.is_empty());
     d.history(true);
-    d.select(Some(ids[1]), true);
-    assert_eq!(d.state.selected, [ids[0]].into_iter().collect());
+    d.select(Some(Selection::Curve(ids[1])), true);
+    assert_eq!(d.state.selected, vec![Selection::Curve(ids[0])]);
     d.select(None, true);
     assert!(d.state.selected.is_empty());
 }
@@ -349,13 +349,13 @@ fn request_omits_added_then_removed_and_double_toggled_curves() {
     d.tool = Tool::Point;
     d.click(point(2., 3.));
     let added = d.state.curves[1].id;
-    d.select(Some(added), false);
+    d.select(Some(Selection::Curve(added)), false);
     d.delete();
     let kept = d.state.curves[0].id;
-    d.select(Some(kept), false);
+    d.select(Some(Selection::Curve(kept)), false);
     d.toggle();
     d.toggle();
-    assert_eq!(d.changes(), vec![]);
+    assert_eq!(d.changes().expect("Finish prediction"), vec![]);
     assert_eq!(d.counts(), (0, 0, 0));
 }
 
@@ -366,12 +366,34 @@ fn request_preserves_untouched_stored_coordinates_in_a_solved_draft() {
         start: point(3., 4.),
         end: point(8., 4.),
     };
-    assert!(d.changes().is_empty());
+    // This pure fixture supplies the solved drawing. Two Fixed rules describe the same
+    // projection when Finish asks what would be rebuilt from the saved coordinates.
     let id = d.state.curves[0].id;
-    d.select(Some(id), false);
+    for (at, x) in [
+        (SketchPointSelector::Start, 3.),
+        (SketchPointSelector::End, 8.),
+    ] {
+        d.state.constraints.push(SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Fixed {
+                point: SketchPointRef::new(id, at),
+                x: ferritecad_document::Expression::constant(x).expect("finite x"),
+                y: ferritecad_document::Expression::constant(4.).expect("fixture operation"),
+            },
+        });
+    }
+    d.original.as_mut().expect("open draft").constraints = d.state.constraints.clone();
+    let expected = d.state.curves[0].geometry.clone();
+    let solve = |input: &Sketch| {
+        let mut solved = input.clone();
+        solved.curves[0].geometry = expected.clone();
+        Ok(Some(solved))
+    };
+    assert!(d.changes_with(solve).expect("Finish prediction").is_empty());
+    d.select(Some(Selection::Curve(id)), false);
     d.toggle();
     assert_eq!(
-        d.changes(),
+        d.changes_with(solve).expect("Finish prediction"),
         vec![EditChange::SetConstruction {
             sketch: d.sketch,
             curve: id,
@@ -397,16 +419,16 @@ fn request_explicitly_removes_constraints_before_curves_then_adds_and_flags() {
                 b: SketchPointRef::new(removed, SketchPointSelector::End),
             },
         });
-    d.select(Some(removed), false);
+    d.select(Some(Selection::Curve(removed)), false);
     d.delete();
     d.tool = Tool::Point;
     d.click(point(2., 3.));
     let added = d.state.curves[1].clone();
-    d.select(Some(kept), false);
+    d.select(Some(Selection::Curve(kept)), false);
     d.toggle();
     assert_eq!(d.removed_constraints(), vec![constraint]);
     assert_eq!(
-        d.changes(),
+        d.changes().expect("Finish prediction"),
         vec![
             EditChange::RemoveConstraint {
                 sketch: d.sketch,
@@ -434,7 +456,7 @@ fn new_empty_sketch_creates_only_its_missing_standard_plane_and_sketch() {
     let d = empty();
     let plane = &d.planes[0];
     assert_eq!(
-        d.changes(),
+        d.changes().expect("Finish prediction"),
         vec![
             EditChange::AddDatumPlane {
                 object: plane.id,
@@ -468,7 +490,7 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
     assert_eq!(choices[0].id, f.plane);
     assert_eq!(choices[0].addition, None);
     let d = Draft::new("Sketch 1".into(), choices, Some(f.plane));
-    assert_eq!(d.changes().len(), 1);
+    assert_eq!(d.changes().expect("Finish prediction").len(), 1);
     source.objects[0].name = Some("Sketch 1".into());
     source.objects[1].name = Some("Sketch 3".into());
     assert_eq!(
@@ -477,7 +499,10 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
     );
 }
 
+mod buttons;
+mod constraint_widgets;
 mod gpu;
+mod prediction;
 pub(crate) mod widgets;
 pub(crate) mod window;
 
@@ -501,10 +526,10 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
                 radius: ferritecad_document::Expression::constant(3.).expect("radius"),
             },
         });
-    d.select(Some(id), false);
+    d.select(Some(Selection::Curve(id)), false);
     d.delete();
     assert_eq!(
-        d.changes(),
+        d.changes().expect("Finish prediction"),
         vec![
             EditChange::RemoveConstraint {
                 sketch: d.sketch,
