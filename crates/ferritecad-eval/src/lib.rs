@@ -53,7 +53,7 @@ pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;
 pub use plan::{RebuildPlan, plan_full_rebuild, plan_rebuild};
 pub use presentation::{PresentedCurve, SketchPresentation};
-pub use solve::{ConflictingConstraint, SketchConflict, SketchSolveReport};
+pub use solve::{ConflictingConstraint, SketchConflict, SketchDrag, SketchSolveReport};
 
 /// Solve a draft with the same translation and diagnostics as a rebuild.
 /// A drawing without constraints needs no solve and returns `Ok(None)`.

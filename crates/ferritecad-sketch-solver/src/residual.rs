@@ -26,7 +26,7 @@ pub(crate) fn worst(prepared: &Prepared, state: &[f64], radii: &[f64]) -> f64 {
     let mut worst = 0.0f64;
     let mut note = |value: f64| worst = worst.max(value.abs());
 
-    for constraint in &prepared.constraints {
+    for constraint in prepared.caller_constraints() {
         let slot = |point| prepared.slot_of(point);
         match *constraint {
             // Measured against the radius that came back, which is the whole
