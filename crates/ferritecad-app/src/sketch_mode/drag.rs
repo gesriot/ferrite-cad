@@ -112,7 +112,11 @@ impl Gesture {
             .curves
             .iter()
             .zip(&self.before.curves)
-            .any(|(a, b)| !super::prediction::agrees(&a.geometry, &b.geometry));
+            .any(|(a, b)| match &self.motion {
+                Motion::Free => a.geometry != b.geometry,
+                Motion::Constrained(_) => !super::prediction::agrees(&a.geometry, &b.geometry),
+                Motion::Armed | Motion::Refused => false,
+            });
         if changed {
             draft.undo.push(self.before);
             draft.redo.clear();

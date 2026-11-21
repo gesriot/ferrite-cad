@@ -36,6 +36,15 @@ fn sample(drag: &mut Drag, target: (f64, f64)) -> solver::Solution {
     let Outcome::Solved(solution) = out else {
         panic!("unreachable sample: {out:?}");
     };
+    let pos = solution.position(drag.point()).expect("dragged point");
+    eprintln!(
+        "Drag sample: freedom={} target=({},{}) position=({:.12},{:.12})",
+        solution.degrees_of_freedom(),
+        target.0,
+        target.1,
+        pos.x,
+        pos.y,
+    );
     solution
 }
 

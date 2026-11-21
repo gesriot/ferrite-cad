@@ -390,3 +390,65 @@ fn consecutive_drags_released_between_frames_keep_both_steps_in_order() {
     near(at(&w, a), target_a);
     near(at(&w, b), point(10., 0.));
 }
+
+#[test]
+fn returning_the_handle_to_its_start_creates_no_history_step() {
+    let side = line([-10., 0.], [10., 0.]);
+    let end = SketchPointRef::new(side.id, S::End);
+    let (_f, mut w, _ui) = fixture(vec![side], vec![], Drawn::Mock);
+    w.creates.sketch.viewport.snapping.grid = Snap::One;
+    let before = d(&w).state.clone();
+    let camera = *w.input.camera();
+    press(&mut w, point(10., 0.));
+    movement(&mut w, point(15., 4.));
+    frame(&mut w);
+    near(at(&w, end), point(15., 4.));
+    movement(&mut w, point(10., 0.));
+    release(&mut w);
+    assert_eq!(d(&w).state, before);
+    assert!(d(&w).undo.is_empty());
+    assert_eq!(camera, *w.input.camera());
+}
+
+#[test]
+fn a_contradictory_drawing_reports_the_same_named_rules_at_drag_start_as_on_rebuild() {
+    if !native() {
+        return;
+    }
+    let (side, a, _b, rules) = horizontal();
+    let (_f, mut w, _ui) = fixture(vec![side], rules, Drawn::Native);
+    let draft = w
+        .creates
+        .sketch
+        .viewport
+        .draft
+        .as_mut()
+        .expect("open drawing");
+    draft.state.constraints.push(SketchConstraint {
+        id: StableEntityId::new(),
+        rule: Rule::Fixed {
+            point: a,
+            x: Expression::constant(20.).expect("x"),
+            y: Expression::constant(0.).expect("y"),
+        },
+    });
+    let stated = Sketch {
+        plane: draft.planes[draft.plane].id,
+        curves: draft.state.curves.clone(),
+        constraints: draft.state.constraints.clone(),
+    };
+    let failure =
+        ferritecad_eval::solve_sketch(&stated, draft.sketch).expect_err("conflicting fixes");
+    let facts = ferritecad_eval::SketchConflict::of(&failure).expect("named conflicting rules");
+    assert!(!facts.constraints().is_empty());
+    let expected = draft::solve_message(&failure);
+    let before = draft.state.clone();
+    reset();
+    press(&mut w, point(10., 0.));
+    movement(&mut w, point(15., 4.));
+    release(&mut w);
+    assert_eq!(d(&w).message, expected);
+    assert_eq!(d(&w).state, before);
+    assert!(d(&w).undo.is_empty());
+    assert_eq!(counts(), (1, 0, 0));
+}

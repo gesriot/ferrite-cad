@@ -6723,6 +6723,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
 }
 
 #[cfg(test)]
+use sketch_mode::apply_viewport_input;
+
+#[cfg(test)]
 mod feature_tests;
 #[cfg(test)]
 mod transaction_tests;
@@ -6738,7 +6741,6 @@ mod tests {
     use ferritecad_viewport::PickId;
 
     use super::*;
-    use crate::sketch_mode::apply_viewport_input;
 
     /// A picture with nothing catalogued, for tests that only look at where
     /// the camera ends up.
