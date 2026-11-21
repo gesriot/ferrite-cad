@@ -523,16 +523,18 @@ fn solve_drawing(
     if !sketch.constraints.is_empty() {
         SOLVES.with(|n| n.set(n.get() + 1));
     }
-    ferritecad_eval::solve_sketch(sketch, id).map_err(|e| {
-        let mut message = e.to_string();
-        if let Some(conflict) = ferritecad_eval::SketchConflict::of(&e) {
-            for c in conflict.constraints() {
-                let words = crate::ConstraintWords::of(c.id(), c.rule());
-                message.push_str(&format!("\n{}: {}", words.identifier, words.says));
-            }
+    ferritecad_eval::solve_sketch(sketch, id).map_err(|e| solve_message(&e))
+}
+
+pub(super) fn solve_message(e: &ferritecad_types::CadError) -> String {
+    let mut message = e.to_string();
+    if let Some(conflict) = ferritecad_eval::SketchConflict::of(e) {
+        for c in conflict.constraints() {
+            let words = crate::ConstraintWords::of(c.id(), c.rule());
+            message.push_str(&format!("\n{}: {}", words.identifier, words.says));
         }
-        message
-    })
+    }
+    message
 }
 #[cfg(test)]
 thread_local! {

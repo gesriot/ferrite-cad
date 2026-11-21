@@ -59,6 +59,8 @@ mod sessions;
 mod sketch;
 mod sketch_facts;
 mod sketch_mode;
+#[cfg(test)]
+use sketch_mode::apply_viewport_input;
 mod sketch_transactions;
 mod sweeps;
 mod tabs;
@@ -4348,7 +4350,14 @@ impl ApplicationHandler<AppEvent> for App {
                 ) {
                     journal::report(format_args!("ferritecad: {error}"));
                 }
-                apply_viewport_input(&mut self.input, &other, response.consumed, pointer_claimed);
+                self.creates.sketch.viewport.window_event(
+                    &mut self.input,
+                    &other,
+                    response.consumed,
+                    pointer_claimed,
+                    self.sessions.takes_form_apply(),
+                    self.modifiers.shift_key(),
+                );
             }
         }
 
@@ -6488,23 +6497,6 @@ fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bo
         // A move is claimed only while no gesture is running; the reducer
         // keeps a drag that began in the viewport.
         _ => consumed,
-    }
-}
-
-/// Translates one window event and gives only viewport state to its answers.
-///
-/// Selection and visibility are deliberately absent: camera gestures cannot
-/// change either through this semantic route. Keeping the small piece of
-/// window wiring free also lets tests drive the same path without a window.
-fn apply_viewport_input(
-    input: &mut ViewportInput,
-    event: &WindowEvent,
-    consumed: bool,
-    wants_pointer: bool,
-) {
-    for event in translate(event) {
-        let claimed = claimed_by_interface(&event, consumed, wants_pointer);
-        input.handle(event, claimed);
     }
 }
 

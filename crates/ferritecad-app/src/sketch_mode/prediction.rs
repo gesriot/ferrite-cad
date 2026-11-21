@@ -11,7 +11,7 @@ fn near(a: Point2, b: Point2) -> bool {
     (a.x - b.x).abs() <= TOLERANCE_MM && (a.y - b.y).abs() <= TOLERANCE_MM
 }
 
-fn agrees(a: &SketchGeometry, b: &SketchGeometry) -> bool {
+pub(super) fn agrees(a: &SketchGeometry, b: &SketchGeometry) -> bool {
     use SketchGeometry::{Arc, Circle, Line, Point};
     match (a, b) {
         (Point { at: a }, Point { at: b }) => near(*a, *b),
