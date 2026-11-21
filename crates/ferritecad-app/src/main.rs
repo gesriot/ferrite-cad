@@ -59,8 +59,6 @@ mod sessions;
 mod sketch;
 mod sketch_facts;
 mod sketch_mode;
-#[cfg(test)]
-use sketch_mode::apply_viewport_input;
 mod sketch_transactions;
 mod sweeps;
 mod tabs;
@@ -6740,6 +6738,7 @@ mod tests {
     use ferritecad_viewport::PickId;
 
     use super::*;
+    use crate::sketch_mode::apply_viewport_input;
 
     /// A picture with nothing catalogued, for tests that only look at where
     /// the camera ends up.
