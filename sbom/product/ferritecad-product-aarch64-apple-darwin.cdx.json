@@ -6592,6 +6592,7 @@
         "native+occt@8.0.1",
         "native+planegcs@1.0.1",
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
+        "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
@@ -7815,7 +7816,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:d42244758eab4062ffba7e9b3fb6fdaf54417d176877e95c7c3f1afe8bfc5781"
+        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:21d1055d573175bd29fe575a7f029d673532227e5dc78ea56b5514cc072f007b"
       },
       {
         "name": "ferritecad:sbom:product-format",

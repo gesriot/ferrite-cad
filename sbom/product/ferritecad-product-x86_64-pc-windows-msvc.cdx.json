@@ -6718,6 +6718,7 @@
         "native+occt@8.0.1",
         "native+planegcs@1.0.1",
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
+        "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
@@ -7966,7 +7967,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:bb61adf50cbbd3eb38cb909acbaee44cba9fad7e763acc645be46513b055e7ea"
+        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:8599fbeb1cbb0204b354d80474d5ca16876429610e9527b222c4e3b1f81aa34a"
       },
       {
         "name": "ferritecad:sbom:product-format",
