@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! One saved-object form, painting its disposable drawing over the viewport.
+mod constraint_panel;
 mod draft;
 mod geometry;
 mod integration;
 mod paint;
+mod prediction;
+mod rules;
 pub(crate) use integration::sync;
 
 #[cfg(test)]
@@ -15,6 +18,7 @@ use ferritecad_document::{DocumentVersion, ObjectPayload, Point2, SketchCurve};
 use ferritecad_jobs::EditRequest;
 use ferritecad_types::{ObjectId, StableEntityId};
 use ferritecad_viewport::Camera;
+use rules::Selection;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default)]
@@ -26,7 +30,9 @@ pub(crate) struct Editor {
     look: bool,
     cursor: Option<Point2>,
     snapped: Option<Point2>,
-    hovered: Option<StableEntityId>,
+    hovered: Option<Selection>,
+    labels: Vec<(StableEntityId, [[f64; 2]; 2])>,
+    value_field: Option<(StableEntityId, f64, String)>,
     status: String,
     can_apply: bool,
 }
@@ -75,6 +81,12 @@ impl Editor {
             None,
         );
         draft.sketch = id;
+        draft.state.report = source
+            .sketch_reports
+            .iter()
+            .find(|(key, _)| *key == id)
+            .map(|(_, report)| report.clone());
+        draft.state.constraints = stored.constraints.clone();
         draft.original = Some(stored.clone());
         draft.state.curves = presentation
             .curves()
@@ -162,7 +174,15 @@ impl Editor {
             self.status = "The selected plane is not built.".into();
             return;
         };
-        self.hovered = geometry::pick(&draft.state.curves, camera, plane, at);
+        self.hovered = geometry::selection(
+            &draft.state.curves,
+            camera,
+            plane,
+            at,
+            &draft.state.selected,
+            click && shift,
+            &self.labels,
+        );
         let Some(point) = geometry::point_on_plane(camera, at, plane) else {
             self.cursor = None;
             self.snapped = None;
@@ -238,6 +258,7 @@ impl Editor {
                     }
                 }
             });
+            constraint_panel::controls(ui, draft, &mut self.value_field);
             ui.checkbox(&mut draft.construction, "Construction");
             ui.horizontal_wrapped(|ui| {
                 if ui
@@ -251,7 +272,7 @@ impl Editor {
                 }
                 if ui
                     .add_enabled(
-                        !draft.state.selected.is_empty(),
+                        draft.state.selected.iter().any(|s| s.whole().is_some()),
                         egui::Button::new("Construction"),
                     )
                     .clicked()
@@ -291,6 +312,16 @@ impl Editor {
             ui.label(format!(
                 "{count} {noun}: {added} added, {removed} removed, {changed} changed"
             ));
+            let (added, removed, changed) = draft.constraint_counts();
+            let count = draft.state.constraints.len();
+            let noun = if count == 1 {
+                "constraint"
+            } else {
+                "constraints"
+            };
+            ui.label(format!(
+                "{count} {noun}: {added} added, {removed} removed, {changed} changed"
+            ));
             let constraints = draft.removed_constraints().len();
             if constraints != 0 {
                 let noun = if constraints == 1 {
@@ -310,10 +341,17 @@ impl Editor {
         if let Some(p) = self.cursor {
             ui.label(format!("{:.6}, {:.6} mm", p.x, p.y));
         }
+        ui.label(&draft.message);
         ui.label(&self.status);
         ui.label(outcome);
         if finish {
-            let changes = draft.changes();
+            let changes = match draft.changes() {
+                Ok(changes) => changes,
+                Err(message) => {
+                    draft.message = message;
+                    return;
+                }
+            };
             if changes.is_empty() {
                 cancel = true;
             } else {

@@ -55,6 +55,15 @@ pub use plan::{RebuildPlan, plan_full_rebuild, plan_rebuild};
 pub use presentation::{PresentedCurve, SketchPresentation};
 pub use solve::{ConflictingConstraint, SketchConflict, SketchSolveReport};
 
+/// Solve a draft with the same translation and diagnostics as a rebuild.
+/// A drawing without constraints needs no solve and returns `Ok(None)`.
+pub fn solve_sketch(
+    sketch: &ferritecad_document::Sketch,
+    id: ferritecad_types::ObjectId,
+) -> ferritecad_types::Result<Option<(ferritecad_document::Sketch, SketchSolveReport)>> {
+    solve::solved(sketch, id)
+}
+
 /// Whether this build can solve a constrained sketch at all.
 ///
 /// Forwarded rather than re-derived, so a caller that depends on the evaluator

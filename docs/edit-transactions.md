@@ -43,7 +43,8 @@ value. Constraint additions preserve the supplied UUID.
 uses the same strict object as an `add_sketch` curve. `remove_curve` removes exactly
 that curve UUID. `set_construction` changes its construction flag; setting the
 saved value again is a no-op, as for `set_suppressed`. The window sketch mode sends
-these same changes together in one request on Finish.
+these same changes together in one request on Finish, including constraint additions,
+explicit removals, changed dimension values and any geometry needed to preserve the preview.
 
 ```json
 {"kind":"remove_curve","sketch":"<Sketch UUID>","curve":"<curve UUID>"}

@@ -17,6 +17,7 @@ mod analytic;
 mod anchor;
 pub(crate) mod dimension;
 mod guide;
+pub(crate) mod ink;
 pub(crate) mod marker;
 mod navigation;
 mod object_snap;

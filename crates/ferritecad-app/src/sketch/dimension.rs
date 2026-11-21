@@ -185,7 +185,7 @@ impl Shown {
 /// A number short enough for a label: its shortest exact spelling when that has at most nine
 /// characters, else four decimals followed by an ellipsis (or an exponent, outside the range
 /// where decimals read well). The list and the form give every digit.
-fn compact(value: f64) -> String {
+pub(crate) fn compact(value: f64) -> String {
     let exact = value.to_string();
     if exact.chars().count() <= 9 {
         return exact;
@@ -369,7 +369,7 @@ impl ShownTurn {
 /// ellipsis. A value that four decimals would turn into `0`, `180` or `-180` while it is not that
 /// number is written with all its digits (in scientific form when it is tiny), because a label
 /// that says `180…` for 179.9999999 would show the opposite direction.
-fn compact_degrees(angle: DirectedAngle) -> String {
+pub(crate) fn compact_degrees(angle: DirectedAngle) -> String {
     let value = editable_degrees(angle);
     let exact = value.to_string();
     if exact.chars().count() <= 9 {

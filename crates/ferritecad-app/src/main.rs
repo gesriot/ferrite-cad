@@ -1635,6 +1635,11 @@ fn prepare_arrival<P>(
         edit_source: loaded.edit_source.map(|facts| {
             let mut source = crate::sketch_facts::Source::from(facts);
             sketch_conflicts::attach(&mut source, &loaded.sketch_conflicts);
+            source.sketch_reports = loaded
+                .sketch_solves
+                .iter()
+                .map(|facts| (facts.sketch(), facts.report().clone()))
+                .collect();
             source.built_sketches = sketches.identities();
             source.datum_planes = loaded.datum_planes;
             source.profile_failures = loaded.profile_failures;
@@ -2220,6 +2225,7 @@ fn retarget_scene<P>(
     scene.sketches.follow(edit_source.version);
     edit_source.built_sketches = scene.sketches.identities();
     if let Some(old) = &mut scene.edit_source {
+        edit_source.sketch_reports = std::mem::take(&mut old.sketch_reports);
         edit_source.datum_planes = std::mem::take(&mut old.datum_planes);
         edit_source.profile_failures = std::mem::take(&mut old.profile_failures);
     }

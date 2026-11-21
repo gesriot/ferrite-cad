@@ -170,3 +170,41 @@ pub(super) fn snap(
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(point, _)| point)
 }
+
+/// Select what is painted. Among coincident handles, Shift can reach the other curve's end.
+pub(super) fn selection(
+    curves: &[SketchCurve],
+    camera: &Camera,
+    plane: SketchPlane,
+    at: [f64; 2],
+    selected: &[super::Selection],
+    extend: bool,
+    labels: &[(StableEntityId, [[f64; 2]; 2])],
+) -> Option<super::Selection> {
+    use super::Selection;
+    if let Some((id, _)) = labels
+        .iter()
+        .rev()
+        .find(|(_, [a, b])| a[0] <= at[0] && at[0] <= b[0] && a[1] <= at[1] && at[1] <= b[1])
+    {
+        return Some(Selection::Constraint(*id));
+    }
+    let mut points: Vec<_> = curves
+        .iter()
+        .flat_map(super::rules::handles)
+        .filter_map(|(p, pos)| {
+            let d = distance(screen(camera, plane, pos)?, at);
+            (d <= PICK_PIXELS).then_some((p, d))
+        })
+        .collect();
+    points.sort_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some(&(first, d)) = points.first() {
+        let choice = points
+            .iter()
+            .take_while(|(_, dist)| *dist == d)
+            .find(|(p, _)| extend && !selected.contains(&Selection::Point(*p)))
+            .map_or(first, |(p, _)| *p);
+        return Some(Selection::Point(choice));
+    }
+    pick(curves, camera, plane, at).map(Selection::Curve)
+}

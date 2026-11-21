@@ -534,7 +534,7 @@ fn native_solved_seed_is_not_written_and_deleted_line_lists_its_constraint_expli
         presentation.curves()[0].geometry()
     );
     assert!(
-        draft(&w).changes().is_empty(),
+        draft(&w).changes().expect("Finish prediction").is_empty(),
         "solving does not rewrite saved geometry"
     );
     let mut ui = Ui::new(&mut w);
@@ -715,13 +715,10 @@ fn existing_arcs_can_be_selected_toggled_deleted_and_undone_through_widgets() {
     enter(&mut w, f.sketch, ferritecad_ui::ModelEdit::Sketch);
     let mut ui = Ui::new(&mut w);
     click(&mut w, point(10., 0.), false);
-    assert_eq!(
-        draft(&w).state.selected.iter().copied().collect::<Vec<_>>(),
-        vec![arc.id]
-    );
+    assert_eq!(draft(&w).state.selected, vec![Selection::Curve(arc.id)]);
     ui.press(&mut w, "Construction", true);
     assert_eq!(
-        draft(&w).changes(),
+        draft(&w).changes().expect("Finish prediction"),
         vec![EditChange::SetConstruction {
             sketch: f.sketch,
             curve: arc.id,
@@ -730,7 +727,7 @@ fn existing_arcs_can_be_selected_toggled_deleted_and_undone_through_widgets() {
     );
     ui.key(&mut w, egui::Key::Backspace);
     assert_eq!(
-        draft(&w).changes(),
+        draft(&w).changes().expect("Finish prediction"),
         vec![EditChange::RemoveCurve {
             sketch: f.sketch,
             curve: arc.id
@@ -739,7 +736,7 @@ fn existing_arcs_can_be_selected_toggled_deleted_and_undone_through_widgets() {
     ui.press(&mut w, "Undo", true);
     ui.press(&mut w, "Undo", true);
     assert_eq!(draft(&w).state.curves, vec![arc]);
-    assert!(draft(&w).changes().is_empty());
+    assert!(draft(&w).changes().expect("Finish prediction").is_empty());
 }
 
 #[test]
@@ -759,7 +756,10 @@ fn mode_consumes_hover_and_readonly_clicks_without_entity_requests_or_draft_chan
     );
     assert!(w.creates.sketch.viewport.take_hover(&mut w.input));
     assert_eq!(w.input.take_hover(), ferritecad_ui::Hover::Unchanged);
-    assert_eq!(w.creates.sketch.viewport.hovered, Some(state.curves[0].id));
+    assert_eq!(
+        w.creates.sketch.viewport.hovered,
+        Some(Selection::Curve(state.curves[0].id))
+    );
     assert!(w.creates.sketch.viewport.take_click(
         &mut w.input,
         pixel.map(|v| v as f32),

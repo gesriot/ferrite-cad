@@ -21,12 +21,14 @@ Turn a finished sketch into a body with [Extrude… and Revolve…](extrude-and-
 - **Circle** takes a centre and a point on its circumference. Escape cancels a
   pending circle. A zero radius adds nothing.
 - **Point** adds a point at each click.
-- **Select** picks a curve or point. Shift-click adds or removes it from the
-  selection; clicking empty space clears the selection.
+- **Select** picks a curve, point, or constraint label. Near a line end, circle centre
+  or standalone point, the point takes priority over the curve. Shift-click adds to or
+  removes from the selection. At a shared corner, Shift-click can pick the other line's
+  end. Clicking empty space clears the selection.
 - The **Construction** checkbox controls new curves. The **Construction** button
   makes the selected curves construction curves, or makes them main curves when
   all are already construction curves.
-- **Delete**, Delete and Backspace remove the selected curves. The form lists how
+- **Delete**, Delete and Backspace remove the selected curves and constraints. The form lists how
   many of their constraints Finish will explicitly remove as well.
 
 Existing arcs can be selected, deleted and switched between main and construction
@@ -39,16 +41,40 @@ arc centres, and points, a marker shows the nearest snap target. A click copies
 that target's exact coordinates. Snapping adds no constraint. Elsewhere,
 coordinates are neither rounded nor snapped to a grid.
 
+## Constraints and dimensions
+
+Select two points for **Coincident**, or a single point for **Fix**. **Horizontal**,
+**Vertical** and **Distance** accept either two points or one line. Select two lines
+for **Parallel**, **Perpendicular**, **Equal**, **Collinear** or **Angle**. The angle runs
+counterclockwise from the first selected line to the second. Select a circle for **Radius**
+or **Diameter**. A disabled button explains the selection it needs. Arc ends and centres
+can be snapped to but cannot be used as constraint points.
+
+A new dimension starts at its measured value. Click its label to select it. Type a
+**Value** in millimetres or degrees and press Enter or **Set**. Diameter shows the full
+width; the stored rule is a radius. A dimension driven by an expression shows its
+source instead: edit it in **Parameters**. Click a marker to select a geometric rule.
+The selected marker or dimension is highlighted like a selected curve.
+
+Each rule change solves the draft immediately. The panel reports remaining degrees of
+freedom and redundant rules. If the solver refuses, the message and any conflicting
+rules appear below the controls; the drawing and its Undo history stay as they were.
+Without a sketch solver, the constraint buttons are unavailable. Drawing and deleting
+curves, including their referenced rules, still work.
+
 ## Finish, Cancel and Undo
 
 **Undo** and **Redo**, including the usual document history shortcuts, change only
 the draft while the form is open. One curve addition, deletion of the selection,
-or construction toggle is one draft step.
+construction toggle, constraint addition or value change is one draft step.
 
 **Finish** sends all changes as one ordinary document transaction and one document
-Undo step. Unchanged curves retain their saved coordinates, even when the drawing
-shows their solved coordinates. Finishing an unchanged existing sketch closes the
-form without a version; finishing a new empty sketch creates it.
+Undo step. Finish predicts the rebuilt sketch from its saved coordinates. It writes
+coordinates only where needed to keep the shown drawing, including curves freed by
+removing a constraint. If it cannot reproduce the preview, it leaves the form open
+and shows `Finish would not keep the drawing as shown; the solver settles elsewhere.`
+Finishing an unchanged existing sketch closes the form without a version; finishing a
+new empty sketch creates it.
 
 If the rebuild refuses a change, the form shows the full reason and keeps the
 draft and its Undo history. For example, removing a side from a profile used by a

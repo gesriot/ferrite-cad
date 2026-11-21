@@ -112,6 +112,18 @@ impl Ui {
         (output, answers.chosen)
     }
 
+    pub(super) fn paint(
+        &self,
+        editor: &mut super::Editor,
+        camera: &ferritecad_viewport::Camera,
+        region: ferritecad_viewport::PixelRect,
+    ) {
+        let mut output = self.ctx.run_ui(egui::RawInput::default(), |ui| {
+            editor.paint(ui.ctx(), camera, region)
+        });
+        output.textures_delta.clear();
+    }
+
     pub(crate) fn settle(&mut self, w: &mut Window) -> egui::FullOutput {
         for _ in 0..3 {
             self.frame(w, vec![]);

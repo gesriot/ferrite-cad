@@ -1971,31 +1971,12 @@ fn prepared(
 ) -> std::result::Result<SketchConstraintEdits, String> {
     let proposed = match d.kind {
         Kind::Length => {
-            let length = text
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| {
-                    ferritecad_types::CadError::input("enter a finite positive Line length in mm")
-                })
-                .and_then(LineLengthMm::new)
-                .map_err(|e| e.to_string())?;
+            let length = parse_length(text)?;
             let saved = LineLengthMm::new(d.target_mm).map_err(|e| e.to_string())?;
             replace_stored_length(edits, d.curve, d.id, saved, length)
         }
         Kind::Radius => {
-            let radius = match unit {
-                Unit::Radius => text
-                    .trim()
-                    .parse::<f64>()
-                    .ok()
-                    .and_then(|v| CircleRadiusMm::new(v).ok())
-                    .ok_or_else(|| "Enter a positive radius in mm.".to_owned())?,
-                Unit::Diameter => text
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|_| "Enter a positive diameter in mm.".to_owned())
-                    .and_then(|v| CircleRadiusMm::from_diameter_mm(v).map_err(|e| e.to_string()))?,
-            };
+            let radius = parse_radius(text, matches!(unit, Unit::Diameter))?;
             let saved = CircleRadiusMm::new(d.target_mm).map_err(|e| e.to_string())?;
             replace_stored_radius(edits, d.curve, d.id, saved, radius)
         }
@@ -2007,6 +1988,42 @@ fn prepared(
             .map_err(|e| e.to_string())?;
     }
     Ok(proposed)
+}
+
+/// A typed number of either sketch editor, refused in this form's words.
+pub(crate) fn parse_length(text: &str) -> std::result::Result<LineLengthMm, String> {
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| ferritecad_types::CadError::input("enter a finite positive Line length in mm"))
+        .and_then(LineLengthMm::new)
+        .map_err(|e| e.to_string())
+}
+pub(crate) fn parse_radius(
+    text: &str,
+    diameter: bool,
+) -> std::result::Result<CircleRadiusMm, String> {
+    Ok(match diameter {
+        false => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(|v| CircleRadiusMm::new(v).ok())
+            .ok_or_else(|| "Enter a positive radius in mm.".to_owned())?,
+        true => text
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "Enter a positive diameter in mm.".to_owned())
+            .and_then(|v| CircleRadiusMm::from_diameter_mm(v).map_err(|e| e.to_string()))?,
+    })
+}
+pub(crate) fn parse_angle(text: &str) -> std::result::Result<DirectedAngle, String> {
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| {
+            ferritecad_types::CadError::input("enter the angle in degrees, from -180 to 180")
+        })
+        .and_then(DirectedAngle::from_degrees)
+        .map_err(|e| e.to_string())
 }
 
 /// The line after the field that replaces `d`: what the typed number means for a Circle, and
@@ -2073,14 +2090,7 @@ fn prepared_turn(
     t: &Turn,
     text: &str,
 ) -> std::result::Result<SketchConstraintEdits, String> {
-    let angle = text
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| {
-            ferritecad_types::CadError::input("enter the angle in degrees, from -180 to 180")
-        })
-        .and_then(DirectedAngle::from_degrees)
-        .map_err(|e| e.to_string())?;
+    let angle = parse_angle(text)?;
     let proposed = replace_stored(
         edits,
         t.id,

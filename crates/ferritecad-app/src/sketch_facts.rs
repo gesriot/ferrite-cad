@@ -11,6 +11,8 @@ pub(crate) struct Source {
     pub datum_planes: Vec<(ObjectId, ferritecad_kernel::SketchPlane)>,
     /// Accepted rebuild explanations for built sketches that cannot supply a sweep profile.
     pub profile_failures: Vec<(ObjectId, String)>,
+    /// Solver reports paired with the accepted drawing, including on a checkpoint rename.
+    pub sketch_reports: Vec<(ObjectId, ferritecad_eval::SketchSolveReport)>,
     pub conflicts: Vec<crate::sketch_conflicts::Conflict>,
     pub cut_bodies: Vec<crate::feature_facts::CutChoice>,
     pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
@@ -142,6 +144,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             fillet_bodies,
             facts,
             conflicts: Vec::new(),
+            sketch_reports: Vec::new(),
             built_sketches: Vec::new(),
             datum_planes: Vec::new(),
             profile_failures: Vec::new(),
