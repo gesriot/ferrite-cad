@@ -71,8 +71,10 @@ construction toggle, constraint addition or value change is one draft step.
 **Finish** sends all changes as one ordinary document transaction and one document
 Undo step. Finish predicts the rebuilt sketch from its saved coordinates. It writes
 coordinates only where needed to keep the shown drawing, including curves freed by
-removing a constraint. If it cannot reproduce the preview it leaves the form open. Finishing an unchanged existing sketch closes the
-form without a version; finishing a new empty sketch creates it.
+removing a constraint. If it cannot reproduce the preview, it leaves the form open
+and shows `Finish would not keep the drawing as shown; the solver settles elsewhere.`
+Finishing an unchanged existing sketch closes the form without a version; finishing a
+new empty sketch creates it.
 
 If the rebuild refuses a change, the form shows the full reason and keeps the
 draft and its Undo history. For example, removing a side from a profile used by a

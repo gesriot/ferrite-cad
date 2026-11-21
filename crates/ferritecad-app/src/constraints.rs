@@ -1990,8 +1990,7 @@ fn prepared(
     Ok(proposed)
 }
 
-/// The line after the field that replaces `d`: what the typed number means for a Circle, and
-/// what the pending request does to this dimension. The drawing never moves before Apply.
+/// A typed number of either sketch editor, refused in this form's words.
 pub(crate) fn parse_length(text: &str) -> std::result::Result<LineLengthMm, String> {
     text.trim()
         .parse::<f64>()
@@ -2027,6 +2026,8 @@ pub(crate) fn parse_angle(text: &str) -> std::result::Result<DirectedAngle, Stri
         .map_err(|e| e.to_string())
 }
 
+/// The line after the field that replaces `d`: what the typed number means for a Circle, and
+/// what the pending request does to this dimension. The drawing never moves before Apply.
 fn dimension_words(d: &Dimension, unit: Unit, text: &str, pending: Option<Pending>) -> String {
     let typed = text.trim().parse::<f64>().ok();
     let converted = match (d.kind, unit, typed) {

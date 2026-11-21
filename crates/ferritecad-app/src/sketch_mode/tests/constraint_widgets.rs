@@ -371,6 +371,8 @@ fn angle_is_measured_in_pick_order_and_set_accepts_degrees() {
         unreachable!()
     };
     assert_eq!(angle.value(), 30.0_f64.to_radians());
+    // The field reads the stored radians back as the degrees typed, not 29.999999999999996.
+    assert!(text(&ui.settle(&mut w)).iter().any(|s| s == "30"));
     let ask = finish(&mut w, &mut ui);
     assert!(apply(&mut w, ask));
 }

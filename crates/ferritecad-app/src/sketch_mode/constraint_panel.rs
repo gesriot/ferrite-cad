@@ -65,7 +65,12 @@ pub(super) fn controls(
         return;
     }
     let (shown, unit) = match slot {
-        ExpressionSlot::DirectedAngle { .. } => (expr.value().to_degrees(), "°"),
+        // The degrees that read back as exactly the stored radians: 30 stays 30, not 29.999….
+        ExpressionSlot::DirectedAngle { .. } => (
+            ferritecad_document::DirectedAngle::from_radians(expr.value())
+                .map_or(f64::NAN, crate::sketch::dimension::editable_degrees),
+            "°",
+        ),
         ExpressionSlot::Radius { .. } if draft.state.diameters.contains(&id) => {
             (expr.value() * 2., "mm")
         }
