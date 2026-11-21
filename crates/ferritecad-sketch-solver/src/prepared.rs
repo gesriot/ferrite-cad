@@ -246,6 +246,11 @@ impl Prepared {
             * 2
     }
 
+    /// The rules of the drawing, excluding the optional final gesture target.
+    pub(crate) fn caller_constraints(&self) -> &[Constraint] {
+        &self.constraints[..self.caller_ids.len()]
+    }
+
     /// The caller's identifier for a stored constraint, if it has one.
     ///
     /// A gesture's own pin is stored past the end of `caller_ids` and answers

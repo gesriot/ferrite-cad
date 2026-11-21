@@ -158,6 +158,11 @@ impl Default for ViewportInput {
 }
 
 impl ViewportInput {
+    /// Whether two positions in physical window pixels still describe a click.
+    pub fn within_click_slop(from: (f32, f32), to: (f32, f32)) -> bool {
+        (to.0 - from.0).abs() <= CLICK_SLOP && (to.1 - from.1).abs() <= CLICK_SLOP
+    }
+
     pub fn new() -> Self {
         Self {
             camera: Camera::new(),
@@ -371,12 +376,10 @@ impl ViewportInput {
                 // A press and a release in nearly the same place is a question
                 // about what is there. One that travelled was an orbit, and
                 // answering it would select whatever the model stopped under.
-                if let (Some((from_x, from_y)), Some((to_x, to_y))) =
-                    (self.pressed_at.take(), self.pointer)
-                    && (to_x - from_x).abs() <= CLICK_SLOP
-                    && (to_y - from_y).abs() <= CLICK_SLOP
+                if let (Some(from), Some(to)) = (self.pressed_at.take(), self.pointer)
+                    && Self::within_click_slop(from, to)
                 {
-                    let at = Some(self.region.local((from_x, from_y)));
+                    let at = Some(self.region.local(from));
                     match button {
                         PointerButton::Primary => self.pick = at,
                         PointerButton::Secondary => self.context_pick = at,

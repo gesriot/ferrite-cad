@@ -103,6 +103,8 @@ typedef struct FcGcsConstraint {
   int32_t kind;
   int32_t points[4];
   int32_t circles[2];
+  /* One only for the temporary Fixed target of a drag session. */
+  int32_t temporary;
   double value;
   double value2;
 } FcGcsConstraint;
@@ -131,7 +133,7 @@ FcGcsSession *fc_gcs_session_create(const double *start, size_t point_count,
                                     const FcGcsCircle *circles,
                                     size_t circle_count,
                                     const FcGcsConstraint *constraints,
-                                    size_t constraint_count) FC_GCS_NOEXCEPT;
+                                    size_t constraint_count, int32_t dragging) FC_GCS_NOEXCEPT;
 
 void fc_gcs_session_destroy(FcGcsSession *session) FC_GCS_NOEXCEPT;
 
@@ -158,7 +160,7 @@ int32_t fc_gcs_session_diagnose(FcGcsSession *session, int32_t *out_dofs,
  * charging the same diagnosis twice. */
 int32_t fc_gcs_session_prepare(FcGcsSession *session) FC_GCS_NOEXCEPT;
 
-/* Moves the target of a Fixed constraint, which is what dragging is. */
+/* Moves the temporary drag target. Caller constraints cannot be moved here. */
 int32_t fc_gcs_session_move(FcGcsSession *session, size_t constraint_index,
                             double x, double y) FC_GCS_NOEXCEPT;
 

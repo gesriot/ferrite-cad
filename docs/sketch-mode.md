@@ -35,11 +35,29 @@ Existing arcs can be selected, deleted and switched between main and constructio
 geometry. There is no arc drawing tool. A click in the drawing does not select a
 body entity or open its context menu while the form is open.
 
-The draft appears over the model. Construction curves are thinner and paler;
-selection and hover use distinct colours. Near line or arc endpoints, circle or
-arc centres, and points, a marker shows the nearest snap target. A click copies
-that target's exact coordinates. Snapping adds no constraint. Elsewhere,
-coordinates are neither rounded nor snapped to a grid.
+The draft appears over the model. Construction curves are thinner and paler. Selection and
+hover use distinct colours.
+
+## Dragging and snapping
+
+In **Select**, drag a line end, circle centre or standalone point. A click still selects it.
+Dragging elsewhere orbits the view. Without constraints, only the handle you pressed moves,
+even if another curve has an endpoint at the same coordinates. With constraints, the solver
+moves the drawing to the reachable position closest to the pointer. A horizontal line with
+one fixed end lets its other end slide horizontally. A fixed point stays still. If a sample
+fails, the form shows the reason and keeps the last successful position. Dragging a constrained
+sketch requires a build with the sketch solver.
+
+Release to record one Undo step. Escape or loss of window focus restores the drawing at the
+press. Returning to the starting drawing leaves the history intact. Finish saves the displayed
+drawing using the same prediction as other sketch edits.
+
+The snap marker shows the coordinate used for drawing or dragging. A nearby endpoint, centre or
+standalone point has first priority. **Guides** can align a line to its last vertex or a drag to
+the position at the press. Choose **Orthogonal** for horizontal and vertical directions or
+**Polar 45°** to include diagonals. Away from an object or guide, **Grid** rounds both sketch
+coordinates to the selected step. With both controls off, a point away from objects uses the
+pointer's exact sketch coordinates. Snaps add no constraints. Closing the form clears both choices.
 
 ## Constraints and dimensions
 
