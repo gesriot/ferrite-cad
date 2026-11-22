@@ -87,6 +87,47 @@ pub(crate) fn solved(sketch: &Sketch, id: ObjectId) -> Result<Option<(Sketch, Sk
     translation.interpret(sketch, id, outcome).map(Some)
 }
 
+/// A gesture on a document point, using a single translated sketch and native solver session.
+#[derive(Debug)]
+pub struct SketchDrag {
+    sketch: Sketch,
+    id: ObjectId,
+    translation: Translation,
+    drag: solver::Drag,
+}
+
+impl SketchDrag {
+    /// Capture the drawing at press time and diagnose its constraints before the first sample.
+    pub fn begin(sketch: Sketch, id: ObjectId, point: SketchPointRef) -> Result<Self> {
+        let translation = Translation::read(&sketch)?;
+        let solver_point = translation.point_of.get(&point).copied().ok_or_else(|| {
+            CadError::constraint(format!("sketch {id} has no draggable point {point}"))
+        })?;
+        let drag = solver::Drag::begin(translation.stated(), solver_point)
+            .map_err(|e| translation.refusal(&e))?;
+        if let Some(conflict) = drag.initial_conflict() {
+            translation.interpret(&sketch, id, conflict)?;
+        }
+        Ok(Self {
+            sketch,
+            id,
+            translation,
+            drag,
+        })
+    }
+
+    /// Solve for the reachable position nearest the target and return the complete drawing.
+    pub fn move_to(&mut self, target: Point2) -> Result<Sketch> {
+        let outcome = self
+            .drag
+            .move_to(target.x, target.y)
+            .map_err(|e| self.translation.refusal(&e))?;
+        self.translation
+            .interpret(&self.sketch, self.id, outcome)
+            .map(|(sketch, _)| sketch)
+    }
+}
+
 /// What one successful solve found out about the sketch it solved.
 ///
 /// Everything here is said in the document's words and outlives the solve that

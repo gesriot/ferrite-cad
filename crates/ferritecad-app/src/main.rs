@@ -4348,7 +4348,14 @@ impl ApplicationHandler<AppEvent> for App {
                 ) {
                     journal::report(format_args!("ferritecad: {error}"));
                 }
-                apply_viewport_input(&mut self.input, &other, response.consumed, pointer_claimed);
+                self.creates.sketch.viewport.window_event(
+                    &mut self.input,
+                    &other,
+                    response.consumed,
+                    pointer_claimed,
+                    self.sessions.takes_form_apply(),
+                    self.modifiers.shift_key(),
+                );
             }
         }
 
@@ -6491,23 +6498,6 @@ fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bo
     }
 }
 
-/// Translates one window event and gives only viewport state to its answers.
-///
-/// Selection and visibility are deliberately absent: camera gestures cannot
-/// change either through this semantic route. Keeping the small piece of
-/// window wiring free also lets tests drive the same path without a window.
-fn apply_viewport_input(
-    input: &mut ViewportInput,
-    event: &WindowEvent,
-    consumed: bool,
-    wants_pointer: bool,
-) {
-    for event in translate(event) {
-        let claimed = claimed_by_interface(&event, consumed, wants_pointer);
-        input.handle(event, claimed);
-    }
-}
-
 /// What a double tap on a trackpad asks to be looked at.
 ///
 /// What is chosen, if anything chosen is drawn; otherwise everything that is
@@ -6731,6 +6721,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
         .iter()
         .find_map(|(view, _, shortcut)| (*shortcut == text.as_str()).then_some(*view))
 }
+
+#[cfg(test)]
+use sketch_mode::apply_viewport_input;
 
 #[cfg(test)]
 mod feature_tests;

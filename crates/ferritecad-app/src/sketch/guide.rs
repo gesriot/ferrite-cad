@@ -35,7 +35,7 @@ const PARTS_PER_MM: f64 = 1e9;
 
 /// The guide choice. Editor state beside the grid step, off for a new editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum Mode {
+pub(crate) enum Mode {
     #[default]
     Off,
     Orthogonal,
@@ -43,12 +43,12 @@ pub(super) enum Mode {
 }
 
 impl Mode {
-    pub(super) const CHOICES: [(Self, &'static str); 3] = [
+    pub(crate) const CHOICES: [(Self, &'static str); 3] = [
         (Self::Off, "Off"),
         (Self::Orthogonal, "Orthogonal"),
         (Self::Polar, "Polar 45°"),
     ];
-    pub(super) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         Self::CHOICES
             .iter()
             .find(|(value, _)| *value == self)
@@ -116,7 +116,7 @@ impl Heading {
 }
 
 /// The unit vector (document axes) of a held guide, to draw it.
-pub(super) fn unit(heading: usize) -> [f64; 2] {
+pub(crate) fn unit(heading: usize) -> [f64; 2] {
     HEADINGS[heading].unit
 }
 
@@ -169,7 +169,7 @@ pub(super) struct Reach {
 /// held guide, the offered guides within strictly less than that of the nearest are
 /// ranked axis before diagonal, then by distance, then by table order. Non-finite
 /// numbers and the anchor itself offer nothing.
-pub(super) fn acquire(
+pub(crate) fn acquire(
     mode: Mode,
     offset: [f64; 2],
     points_per_mm: f64,

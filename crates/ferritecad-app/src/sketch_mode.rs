@@ -2,11 +2,15 @@
 //! One saved-object form, painting its disposable drawing over the viewport.
 mod constraint_panel;
 mod draft;
+mod drag;
 mod geometry;
 mod integration;
 mod paint;
 mod prediction;
 mod rules;
+mod snapping;
+#[cfg(test)]
+pub(crate) use integration::apply_viewport_input;
 pub(crate) use integration::sync;
 
 #[cfg(test)]
@@ -28,6 +32,9 @@ pub(crate) struct Editor {
     version: Option<DocumentVersion>,
     pending: Option<EditRequest>,
     look: bool,
+    gesture: Option<drag::Gesture>,
+    deferred: std::collections::VecDeque<drag::Input>,
+    snapping: snapping::Snapping,
     cursor: Option<Point2>,
     snapped: Option<Point2>,
     hovered: Option<Selection>,
@@ -138,7 +145,12 @@ impl Editor {
 
     pub(crate) fn history(&mut self, undo: bool) {
         if let Some(draft) = &mut self.draft {
-            draft.history(undo);
+            if self.gesture.is_some() {
+                drag::cancel(&mut self.gesture, draft);
+                self.snapping.held = None;
+            } else {
+                draft.history(undo);
+            }
         }
     }
 
@@ -194,13 +206,18 @@ impl Editor {
             Some(Pending::Circle(center)) => vec![center],
             None => Vec::new(),
         };
-        self.snapped = geometry::snap(
+        let object = geometry::snap(
             geometry::targets(&draft.state.curves).chain(pending),
             camera,
             plane,
             at,
         );
-        let point = self.snapped.unwrap_or(point);
+        let anchor = match (draft.tool, draft.pending) {
+            (Tool::Line, Some(Pending::Line { last, .. })) => Some(last),
+            _ => None,
+        };
+        let (point, snapped) = self.snapping.resolve(point, object, anchor, camera, plane);
+        self.snapped = snapped.then_some(point);
         self.cursor = Some(point);
         self.status.clear();
         if click {
@@ -212,6 +229,7 @@ impl Editor {
     }
 
     pub(crate) fn clear_pointer(&mut self) {
+        self.snapping.held = None;
         self.cursor = None;
         self.snapped = None;
         self.hovered = None;
@@ -226,7 +244,13 @@ impl Editor {
         ui.separator();
         ui.heading("Sketch drawing");
         ui.label(&draft.name);
-        ui.add_enabled_ui(!running, |ui| {
+        if self.gesture.is_some()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            drag::cancel(&mut self.gesture, draft);
+            self.snapping.held = None;
+        }
+        ui.add_enabled_ui(!running && self.gesture.is_none(), |ui| {
             if draft.original.is_none() {
                 ui.add_enabled_ui(
                     draft.state.curves.is_empty() && draft.pending.is_none(),
@@ -258,6 +282,20 @@ impl Editor {
                     }
                 }
             });
+            egui::ComboBox::from_label("Grid")
+                .selected_text(self.snapping.grid.label())
+                .show_ui(ui, |ui| {
+                    for (value, label) in crate::sketch::grid::Snap::CHOICES {
+                        ui.selectable_value(&mut self.snapping.grid, value, label);
+                    }
+                });
+            egui::ComboBox::from_label("Guides")
+                .selected_text(self.snapping.guides.label())
+                .show_ui(ui, |ui| {
+                    for (value, label) in crate::sketch::guide::Mode::CHOICES {
+                        ui.selectable_value(&mut self.snapping.guides, value, label);
+                    }
+                });
             constraint_panel::controls(ui, draft, &mut self.value_field);
             ui.checkbox(&mut draft.construction, "Construction");
             ui.horizontal_wrapped(|ui| {
@@ -292,7 +330,8 @@ impl Editor {
                     draft.history(false);
                 }
             });
-            if !ui.ctx().egui_wants_keyboard_input() {
+            // A drag owns the drawing until release: Escape cancels it above, Delete is ignored.
+            if self.gesture.is_none() && !ui.ctx().egui_wants_keyboard_input() {
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                     draft.escape();
                 }

@@ -23,6 +23,7 @@ static_assert(alignof(FcGcsConstraint) == 8, "FcGcsConstraint ABI alignment chan
 static_assert(offsetof(FcGcsConstraint, kind) == 0, "FcGcsConstraint.kind moved");
 static_assert(offsetof(FcGcsConstraint, points) == 4, "FcGcsConstraint.points moved");
 static_assert(offsetof(FcGcsConstraint, circles) == 20, "FcGcsConstraint.circles moved");
+static_assert(offsetof(FcGcsConstraint, temporary) == 28, "FcGcsConstraint.temporary moved");
 static_assert(offsetof(FcGcsConstraint, value) == 32, "FcGcsConstraint.value moved");
 static_assert(offsetof(FcGcsConstraint, value2) == 40, "FcGcsConstraint.value2 moved");
 static_assert(sizeof(FcGcsCircle) == 16, "FcGcsCircle ABI size changed");
@@ -130,9 +131,9 @@ struct Session {
   // Held by pointer inside planegcs, so this must never reallocate and the
   // slots must stay put for the session's whole life.
   std::vector<double> values;
-  // Where each Fixed constraint's x target sits in `values`, or -1. Distance
-  // values also live in the vector but must never be mistaken for drag targets.
-  std::vector<long> fixed_value_of;
+  // Only the gesture owns a movable pair of targets in values.
+  double *drag_target = nullptr;
+  size_t drag_index = 0;
   GCS::System system;
   bool diagnosed = false;
   bool prepared = false;
@@ -143,8 +144,8 @@ struct Session {
 extern "C" FcGcsSession *fc_gcs_session_create(
     const double *start, size_t point_count, const FcGcsCircle *circles,
     size_t circle_count, const FcGcsConstraint *constraints,
-    size_t constraint_count) noexcept {
-  if ((point_count > 0 && start == nullptr) ||
+    size_t constraint_count, int32_t dragging) noexcept {
+  if ((dragging != 0 && dragging != 1) || (point_count > 0 && start == nullptr) ||
       (circle_count > 0 && circles == nullptr) ||
       (constraint_count > 0 && constraints == nullptr)) {
     return nullptr;
@@ -162,7 +163,6 @@ extern "C" FcGcsSession *fc_gcs_session_create(
     session->radii.reserve(circle_count);
     session->circles.reserve(circle_count);
     session->values.reserve(constraint_count * 2);
-    session->fixed_value_of.assign(constraint_count, -1);
 
     for (size_t i = 0; i < point_count; ++i) {
       GCS::Point point;
@@ -192,7 +192,14 @@ extern "C" FcGcsSession *fc_gcs_session_create(
 
     for (size_t i = 0; i < constraint_count; ++i) {
       const FcGcsConstraint &c = constraints[i];
-      const int tag = static_cast<int>(i) + 1;
+      if (c.temporary != 0 &&
+          (c.temporary != 1 || !dragging || c.kind != FC_GCS_FIXED ||
+           session->drag_target != nullptr || !std::isfinite(c.value) ||
+           !std::isfinite(c.value2))) {
+        return nullptr;
+      }
+      const int tag = c.temporary ? GCS::DefaultTemporaryConstraint
+                                  : static_cast<int>(i) + 1;
       if (!has_valid_references(c, point_count, circle_count)) {
         return nullptr;
       }
@@ -212,20 +219,17 @@ extern "C" FcGcsSession *fc_gcs_session_create(
               session->points[c.points[0]], session->points[c.points[1]], tag);
           break;
         case FC_GCS_FIXED: {
-          session->fixed_value_of[i] =
-              static_cast<long>(session->values.size());
+          const size_t slot = session->values.size();
           session->values.push_back(c.value);
           session->values.push_back(c.value2);
+          if (c.temporary) {
+            session->drag_target = &session->values[slot];
+            session->drag_index = i;
+          }
           session->system.addConstraintCoordinateX(
-              session->points[c.points[0]],
-              &session->values[static_cast<size_t>(
-                  session->fixed_value_of[i])], tag);
+              session->points[c.points[0]], &session->values[slot], tag);
           session->system.addConstraintCoordinateY(
-              session->points[c.points[0]],
-              &session->values[static_cast<size_t>(
-                                   session->fixed_value_of[i]) +
-                               1],
-              tag);
+              session->points[c.points[0]], &session->values[slot + 1], tag);
           break;
         }
         case FC_GCS_DISTANCE: {
@@ -323,6 +327,9 @@ extern "C" FcGcsSession *fc_gcs_session_create(
       }
     }
 
+    if (dragging && !session->drag_target) {
+      return nullptr;
+    }
     session->system.declareUnknowns(session->parameters);
     // Count systems that were actually built, not failed attempts that
     // returned null before a caller could own them.
@@ -435,18 +442,11 @@ extern "C" int32_t fc_gcs_session_move(FcGcsSession *handle,
     return FC_GCS_INVALID_INPUT;
   }
   Session *session = reinterpret_cast<Session *>(handle);
-  if (!session->prepared ||
-      constraint_index >= session->fixed_value_of.size()) {
+  if (!session->prepared || !session->drag_target || constraint_index != session->drag_index) {
     return FC_GCS_INVALID_INPUT;
   }
-  const long slot = session->fixed_value_of[constraint_index];
-  if (slot < 0 || static_cast<size_t>(slot) + 1 >= session->values.size()) {
-    return FC_GCS_INVALID_INPUT;
-  }
-  // Written through the pointers planegcs already holds, which is what makes
-  // this a nudge rather than a rebuild.
-  session->values[static_cast<size_t>(slot)] = x;
-  session->values[static_cast<size_t>(slot) + 1] = y;
+  session->drag_target[0] = x;
+  session->drag_target[1] = y;
   return FC_GCS_SUCCESS;
 }
 

@@ -25,6 +25,7 @@ impl Editor {
             return;
         };
         let scale = ctx.pixels_per_point();
+        self.snapping.pixels_per_point = Some(scale);
         let at = |p: [f64; 2]| {
             let (x, y) = region.window((p[0] as f32, p[1] as f32));
             egui::pos2(x, y) / scale
@@ -89,6 +90,17 @@ impl Editor {
             }
         }
         let project = |p| geometry::screen(camera, plane, p).map(at);
+        if let Some((anchor, heading)) = self.snapping.held {
+            let [x, y] = crate::sketch::guide::unit(heading);
+            let next = ferritecad_document::Point2 {
+                x: anchor.x + x,
+                y: anchor.y + y,
+            };
+            if let (Some(a), Some(b)) = (project(anchor), project(next)) {
+                let span = (b - a).normalized() * clip.size().length();
+                painter.line_segment([a - span, a + span], (1.0, colour(SKETCH_HOVER_COLOUR)));
+            }
+        }
         let mut occupied: Vec<egui::Rect> = Vec::new();
         for c in &draft.state.constraints {
             use crate::sketch::{dimension, ink};

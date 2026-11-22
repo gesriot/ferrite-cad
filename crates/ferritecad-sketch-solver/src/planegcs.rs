@@ -123,6 +123,7 @@ mod linked {
         /// in the wrong one is refused rather than resolved against the wrong
         /// geometry.
         pub(super) circles: [i32; 2],
+        pub(super) temporary: i32,
         pub(super) value: f64,
         pub(super) value2: f64,
     }
@@ -138,6 +139,7 @@ mod linked {
         assert_eq!(std::mem::offset_of!(RawConstraint, kind), 0);
         assert_eq!(std::mem::offset_of!(RawConstraint, points), 4);
         assert_eq!(std::mem::offset_of!(RawConstraint, circles), 20);
+        assert_eq!(std::mem::offset_of!(RawConstraint, temporary), 28);
         assert_eq!(std::mem::offset_of!(RawConstraint, value), 32);
         assert_eq!(std::mem::offset_of!(RawConstraint, value2), 40);
         assert_eq!(std::mem::size_of::<RawCircle>(), 16);
@@ -168,6 +170,7 @@ mod linked {
             kind: 0,
             points: [-1; 4],
             circles: [-1; 2],
+            temporary: 0,
             value: 0.0,
             value2: 0.0,
         };
@@ -177,7 +180,8 @@ mod linked {
         prepared
             .constraints
             .iter()
-            .map(|constraint| match *constraint {
+            .enumerate()
+            .map(|(index, constraint)| match *constraint {
                 Constraint::Radius { circle, radius } => RawConstraint {
                     kind: CIRCLE_RADIUS,
                     circles: [circle_at(circle), -1],
@@ -191,6 +195,7 @@ mod linked {
                 },
                 Constraint::Fixed { point, x, y } => RawConstraint {
                     kind: FIXED,
+                    temporary: i32::from(index == prepared.caller_constraints().len()),
                     points: [at(point), -1, -1, -1],
                     value: x,
                     value2: y,
@@ -254,6 +259,7 @@ mod linked {
             circle_count: usize,
             constraints: *const RawConstraint,
             constraint_count: usize,
+            dragging: i32,
         ) -> *mut c_void;
         pub(super) fn fc_gcs_session_destroy(session: *mut c_void);
         pub(super) fn fc_gcs_session_diagnose(
@@ -385,6 +391,7 @@ impl Session {
                 circles.len(),
                 encoded.as_ptr(),
                 encoded.len(),
+                i32::from(encoded.len() > prepared.caller_constraints().len()),
             )
         };
         if raw.is_null() {
@@ -473,12 +480,7 @@ impl Session {
         linked::solve_applied(status)
     }
 
-    /// Moves a stored pin, in the native system and in the copy the answer
-    /// will be judged against.
-    ///
-    /// Both, together, because measuring a solve against where the pointer
-    /// used to be makes a sample that followed perfectly look like one that
-    /// came apart.
+    /// Move the gesture target and keep the stored system in step with it.
     fn move_pin(&mut self, stored: usize, x: f64, y: f64) -> Result<(), SolverError> {
         // SAFETY: the session is live; the shim range-checks the index and
         // refuses a constraint that is not a pin.
@@ -724,7 +726,7 @@ impl std::fmt::Debug for Diagnosed {
 }
 
 impl Drag {
-    /// Begins a gesture that moves `point`, holding it where it is now.
+    /// Begins a gesture with a soft target at the current position of `point`.
     ///
     /// The system is built, diagnosed and partitioned here, once. Every sample
     /// afterwards is a solve of this same system.
@@ -743,12 +745,20 @@ impl Drag {
         })
     }
 
+    /// Conflicting caller constraints found at the start of this gesture.
+    pub fn initial_conflict(&self) -> Option<Outcome> {
+        (!self.diagnosed.conflicting.is_empty()).then(|| Outcome::Conflicting {
+            constraints: self.diagnosed.conflicting.clone(),
+            redundant: self.diagnosed.redundant.clone(),
+        })
+    }
+
     /// Which point this gesture is moving.
     pub fn point(&self) -> PointId {
         self.point
     }
 
-    /// Puts the dragged point at `(x, y)` and re-solves.
+    /// Moves the soft target to `(x, y)` and solves for the nearest reachable position.
     ///
     /// The same native system as every other sample of this gesture: what
     /// changes is where its pin points.
@@ -756,11 +766,8 @@ impl Drag {
         if !x.is_finite() || !y.is_finite() {
             return Err(NotFinite::PointCoordinate(self.point).into());
         }
-        if !self.diagnosed.conflicting.is_empty() {
-            return Ok(Outcome::Conflicting {
-                constraints: self.diagnosed.conflicting.clone(),
-                redundant: self.diagnosed.redundant.clone(),
-            });
+        if let Some(outcome) = self.initial_conflict() {
+            return Ok(outcome);
         }
         self.session.move_pin(self.pin, x, y)?;
         // The diagnosis is the one taken when the gesture began: the
@@ -817,6 +824,7 @@ mod tests {
             kind: 0,
             points: [-1; 4],
             circles: [-1; 2],
+            temporary: 0,
             value: 0.0,
             value2: 0.0,
         };
@@ -837,6 +845,7 @@ mod tests {
                     0,
                     constraints.as_ptr(),
                     constraints.len(),
+                    0,
                 )
             };
             if raw.is_null() {
@@ -958,6 +967,7 @@ mod tests {
             kind: 10,
             points: [0, 1, 2, 3],
             circles: [-1; 2],
+            temporary: 0,
             value: 0.0,
             value2: 0.0,
         };
@@ -973,6 +983,7 @@ mod tests {
                     0,
                     constraints.as_ptr(),
                     constraints.len(),
+                    0,
                 )
             };
             if raw.is_null() {
@@ -1095,6 +1106,50 @@ mod tests {
                 "kind {kind}"
             );
         }
+    }
+
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn only_one_temporary_fixed_target_belongs_to_a_drag_session() {
+        use linked::RawConstraint;
+        let pin = RawConstraint {
+            kind: 1,
+            points: [0, -1, -1, -1],
+            circles: [-1; 2],
+            temporary: 1,
+            value: 0.,
+            value2: 0.,
+        };
+        let make = |constraints: &[RawConstraint], dragging: i32| {
+            let coords = [0., 0., 1., 1.];
+            // SAFETY: the arrays live across creation. Release each returned owner once.
+            unsafe {
+                let raw = linked::fc_gcs_session_create(
+                    coords.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    0,
+                    constraints.as_ptr(),
+                    constraints.len(),
+                    dragging,
+                );
+                if raw.is_null() {
+                    return false;
+                }
+                linked::fc_gcs_session_destroy(raw);
+                true
+            }
+        };
+        assert!(make(&[pin], 1));
+        assert!(!make(&[pin], 0), "temporary pin in an ordinary solve");
+        assert!(!make(&[pin, pin], 1), "two temporary pins");
+        let horizontal = RawConstraint {
+            kind: 3,
+            points: [0, 1, -1, -1],
+            ..pin
+        };
+        assert!(!make(&[horizontal], 1), "temporary horizontal constraint");
+        assert!(!make(&[], 1), "drag missing its pin");
     }
 
     #[cfg(planegcs_linked)]

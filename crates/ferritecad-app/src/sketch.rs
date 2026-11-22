@@ -16,7 +16,9 @@ pub(crate) mod accepted;
 mod analytic;
 mod anchor;
 pub(crate) mod dimension;
-mod guide;
+pub(crate) mod grid;
+pub(crate) mod guide;
+use grid::Snap;
 pub(crate) mod ink;
 pub(crate) mod marker;
 mod navigation;
@@ -2480,17 +2482,6 @@ enum SnapChange {
     Anchors(bool),
 }
 
-/// Editor-only step. Not model data, not a preference, not persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Snap {
-    #[default]
-    Off,
-    Tenth,
-    One,
-    Five,
-    Ten,
-}
-
 #[derive(Debug)]
 struct VertexDrag {
     vertex: usize,
@@ -2538,43 +2529,6 @@ enum CanvasEdit {
     Gesture,
     Finished(Vec<State>),
 }
-impl Snap {
-    const CHOICES: [(Self, &'static str); 5] = [
-        (Self::Off, "Off"),
-        (Self::Tenth, "0.1 mm"),
-        (Self::One, "1 mm"),
-        (Self::Five, "5 mm"),
-        (Self::Ten, "10 mm"),
-    ];
-    fn label(self) -> &'static str {
-        Snap::CHOICES
-            .iter()
-            .find(|(value, _)| *value == self)
-            .map(|(_, label)| *label)
-            .expect("every Snap value has a label")
-    }
-    fn apply(self, value: f64) -> String {
-        let snapped = match self {
-            Self::Off => return value.to_string(),
-            // Multiply/divide by ten instead of by the inexact binary 0.1:
-            // decimal halves round away from zero, and 3/10 displays as "0.3".
-            Self::Tenth => (value * 10.0).round() / 10.0,
-            Self::One => value.round(),
-            Self::Five => (value / 5.0).round() * 5.0,
-            Self::Ten => (value / 10.0).round() * 10.0,
-        };
-        if !snapped.is_finite() {
-            // Keep invalid input invalid for the shared polygon policy. A
-            // float-to-integer cast would turn NaN into zero or saturate it.
-            value.to_string()
-        } else if snapped == 0.0 {
-            "0".into()
-        } else {
-            snapped.to_string()
-        }
-    }
-}
-
 impl Default for Canvas {
     fn default() -> Self {
         Self {

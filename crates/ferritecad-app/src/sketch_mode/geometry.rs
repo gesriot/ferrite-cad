@@ -138,23 +138,33 @@ pub(super) fn pick(
 
 /// The one catalogue of exact sketch-coordinate snap targets, in curve order.
 pub(super) fn targets(curves: &[SketchCurve]) -> impl Iterator<Item = Point2> + '_ {
-    curves.iter().flat_map(|curve| match curve.geometry {
-        SketchGeometry::Point { at } => vec![at],
-        SketchGeometry::Line { start, end } => vec![start, end],
-        SketchGeometry::Circle { center, .. } => vec![center],
-        SketchGeometry::Arc {
+    targets_except(curves, &[])
+}
+
+/// The same catalogue without the named points, which a drag carries along.
+pub(super) fn targets_except<'a>(
+    curves: &'a [SketchCurve],
+    exclude: &'a [ferritecad_document::SketchPointRef],
+) -> impl Iterator<Item = Point2> + 'a {
+    curves.iter().flat_map(move |curve| {
+        if let SketchGeometry::Arc {
             center,
             radius,
             start_angle,
             end_angle,
-        } => {
-            vec![
+        } = curve.geometry
+        {
+            return vec![
                 polar(center, radius, start_angle),
                 polar(center, radius, end_angle),
                 center,
-            ]
+            ];
         }
-        _ => Vec::new(),
+        super::rules::handles(curve)
+            .into_iter()
+            .filter(|(handle, _)| !exclude.contains(handle))
+            .map(|(_, at)| at)
+            .collect()
     })
 }
 

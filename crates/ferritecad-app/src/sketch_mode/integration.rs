@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 //! Routes the form through the existing window owners.
 use crate::{App, commands, sketch::accepted::Accepted};
+use crate::{claimed_by_interface, translate};
 use ferritecad_types::Result;
+use ferritecad_ui::{ViewportEvent, ViewportInput};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer};
+use winit::event::WindowEvent;
 
 pub(crate) fn sync(
     renderer: &mut Renderer,
@@ -88,7 +91,21 @@ impl super::Editor {
         if !self.active() {
             return false;
         }
-        match input.take_hover() {
+        self.resume_events(input);
+        let hover = input.take_hover();
+        if self.gesture.is_some() {
+            let moved = self
+                .gesture
+                .as_ref()
+                .is_some_and(super::drag::Gesture::pending_frame);
+            self.drag_frame(input.camera());
+            self.resume_events(input);
+            if moved {
+                input.request_redraw();
+            }
+            return true;
+        }
+        match hover {
             ferritecad_ui::Hover::At(x, y) => {
                 self.pointer(input.camera(), [f64::from(x), f64::from(y)], false, false);
                 input.request_redraw();
@@ -135,5 +152,52 @@ impl super::Editor {
             input.request_redraw();
         }
         true
+    }
+}
+
+/// Translates one window event and gives only viewport state to its answers.
+///
+/// Selection and visibility are deliberately absent: camera gestures cannot
+/// change either through this semantic route. Keeping the small piece of
+/// window wiring free also lets tests drive the same path without a window.
+pub(crate) fn apply_viewport_input(
+    input: &mut ViewportInput,
+    event: &WindowEvent,
+    consumed: bool,
+    wants_pointer: bool,
+) {
+    route_viewport_events(event, consumed, wants_pointer, |event, claimed| {
+        input.handle(event, claimed)
+    });
+}
+
+fn route_viewport_events(
+    event: &WindowEvent,
+    consumed: bool,
+    wants_pointer: bool,
+    mut route: impl FnMut(ViewportEvent, bool),
+) {
+    for event in translate(event) {
+        route(event, claimed_by_interface(&event, consumed, wants_pointer));
+    }
+}
+
+impl super::Editor {
+    pub(crate) fn window_event(
+        &mut self,
+        input: &mut ViewportInput,
+        event: &WindowEvent,
+        consumed: bool,
+        wants_pointer: bool,
+        editable: bool,
+        shift: bool,
+    ) {
+        if self.active() {
+            route_viewport_events(event, consumed, wants_pointer, |event, claimed| {
+                self.route(input, event, claimed, editable, shift);
+            });
+        } else {
+            apply_viewport_input(input, event, consumed, wants_pointer);
+        }
     }
 }
