@@ -1779,6 +1779,8 @@ impl Editor {
                                     .char_limit(64)
                                     .desired_width(125.),
                             );
+                            // A saved vertex keeps its curve ID and place in the contour.
+                            ui.add_enabled(false, egui::Button::new("Remove"));
                         });
                     }
                 });
