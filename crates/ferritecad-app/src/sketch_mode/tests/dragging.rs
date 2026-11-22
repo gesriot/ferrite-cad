@@ -288,6 +288,98 @@ fn escape_and_focus_loss_restore_the_press_without_touching_history() {
     }
 }
 
+fn new_line_for_transition() -> (tempfile::TempDir, Window, Ui) {
+    let root = tempfile::tempdir().expect("documents");
+    let file = root.path().join("empty.fcad");
+    ferritecad_document::Document::create(&file)
+        .expect("Empty")
+        .close()
+        .expect("close");
+    let mut w = open(&file, Drawn::Mock);
+    let mut ui = Ui::new(&mut w);
+    window::start_new(&mut w, &mut ui);
+    ui.press(&mut w, "Line", false);
+    window::click(&mut w, point(-10., 0.), false);
+    window::click(&mut w, point(10., 0.), false);
+    ui.press(&mut w, "Select", false);
+    (root, w, ui)
+}
+
+fn choose_file(w: &mut Window, file: &std::path::Path) -> Option<std::path::PathBuf> {
+    crate::choose_open(
+        &mut w.creates,
+        &w.tabs,
+        &mut w.sessions,
+        &w.edits,
+        &mut w.input,
+        &crate::restores::Restores::default(),
+        file.into(),
+    )
+}
+
+fn quit(w: &mut Window) -> bool {
+    crate::begin_window_quit(
+        &mut w.tabs,
+        &mut w.sessions,
+        &w.creates,
+        &crate::Loads::default(),
+        &crate::exports::Exports::default(),
+        &w.edits,
+        &w.input,
+    )
+}
+
+#[test]
+fn open_waits_for_the_viewport_sketch_handle() {
+    let (root, mut w, mut ui) = new_line_for_transition();
+    let other = root.path().join("other.fcad");
+    ferritecad_document::Document::create(&other)
+        .expect("other")
+        .close()
+        .expect("close");
+    for escape in [true, false] {
+        press(&mut w, point(10., 0.));
+        assert!(w.creates.sketch.viewport.gesturing());
+        assert!(!w.input.is_dragging());
+        assert_eq!(choose_file(&mut w, &other), None);
+        movement(&mut w, point(14., 3.));
+        frame(&mut w);
+        assert_eq!(choose_file(&mut w, &other), None);
+        assert!(w.creates.asking().is_none());
+        if escape {
+            ui.key(&mut w, egui::Key::Escape);
+        } else {
+            event(&mut w, E::GestureCancelled);
+        }
+        assert!(!w.creates.sketch.viewport.gesturing());
+        assert_eq!(choose_file(&mut w, &other).as_ref(), Some(&other));
+    }
+    press(&mut w, point(10., 0.));
+    movement(&mut w, point(15., 3.));
+    event(&mut w, E::PointerReleased(PointerButton::Primary));
+    assert!(!w.creates.sketch.viewport.gesturing());
+    frame(&mut w);
+    assert_eq!(choose_file(&mut w, &other), Some(other));
+}
+
+#[test]
+fn quit_waits_for_the_viewport_sketch_handle() {
+    let (_root, mut w, _ui) = new_line_for_transition();
+    press(&mut w, point(10., 0.));
+    assert!(!quit(&mut w));
+    let moved = movement(&mut w, point(14., 3.));
+    frame(&mut w);
+    let SketchGeometry::Line { end, .. } = d(&w).state.curves[0].geometry else {
+        panic!("line");
+    };
+    near(end, moved);
+    assert!(!quit(&mut w));
+    assert!(!w.tabs.quitting());
+    release(&mut w);
+    assert!(quit(&mut w));
+    assert!(w.tabs.quitting());
+}
+
 #[test]
 fn empty_space_and_curve_bodies_keep_the_orbit_gesture() {
     let (_f, mut w, _ui) = fixture(vec![line([-10., 0.], [10., 0.])], vec![], Drawn::Mock);
@@ -295,6 +387,8 @@ fn empty_space_and_curve_bodies_keep_the_orbit_gesture() {
     for hit in [point(0., 0.), point(8., 8.)] {
         let before = *w.input.camera();
         press(&mut w, hit);
+        assert!(!w.creates.sketch.viewport.gesturing());
+        assert!(w.input.is_dragging(), "the view owns this press");
         movement(&mut w, point(15., 6.));
         release(&mut w);
         assert_ne!(before, *w.input.camera());

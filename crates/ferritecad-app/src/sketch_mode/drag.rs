@@ -136,6 +136,13 @@ pub(super) fn cancel(gesture: &mut Option<Gesture>, draft: &mut Draft) {
 }
 
 impl Editor {
+    /// A sketch handle owns the primary press until release or cancellation.
+    pub(crate) fn gesturing(&self) -> bool {
+        self.gesture
+            .as_ref()
+            .is_some_and(|gesture| !gesture.released)
+    }
+
     /// Give the view every event except a primary gesture that began on an editable handle.
     pub(crate) fn route(
         &mut self,

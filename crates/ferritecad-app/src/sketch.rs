@@ -514,12 +514,11 @@ impl Editor {
     pub(crate) fn drawing_new(&self) -> bool {
         self.draft.is_some() && self.editing.is_none()
     }
-    /// §30P: a vertex is being dragged (or the press that may start a drag is
-    /// held) on the drawing: a gesture is not a draft and holds the window. §31I:
-    /// so does a handle held on the circle or annular canvas, and §31J a pan of the
-    /// view of any of the three canvases.
+    /// A captured sketch-mode handle, a legacy canvas edit, or a canvas pan
+    /// holds window transitions until the pointer is released or the gesture is cancelled.
     pub(crate) fn gesturing(&self) -> bool {
-        self.canvas.gesture.is_some()
+        self.viewport.gesturing()
+            || self.canvas.gesture.is_some()
             || self.canvas.claimed_press
             || self.canvas.nav.panning()
             || self.analytic_gesturing()
