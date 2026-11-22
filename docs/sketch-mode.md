@@ -11,6 +11,10 @@ sketch** restores this view; orbit, pan and zoom work as usual. Drawing from an
 edge-on view does not add a curve and shows an explanation. Leaving the form
 keeps the camera where it is.
 
+For a ring, draw two circles with a common centre. Select both centres and choose
+**Coincident** to keep them concentric. Extruding the finished sketch gives a solid
+with a hole.
+
 Turn a finished sketch into a body with [Extrude… and Revolve…](extrude-and-revolve.md).
 
 ## Tools and selection
