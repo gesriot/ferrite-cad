@@ -1,169 +1,86 @@
 // SPDX-License-Identifier: MIT
-//! §30L: a new document is a session before it is a file. Every `NewDocument`
-//! variant goes through the window's own create worker (`create_for_view`), is
-//! bound the way Open binds a session, exports before its first Save, is saved
-//! for the first time by the existing no-clobber Save As, reopened and rebuilt
-//! cold, and compared with the shipped command line's `create*` of the same
-//! content. Two independent creations share no identity, so the comparison maps
-//! exactly the new identities (all of them, by position) and nothing else; within
-//! one session (snapshot → first Save → reopen) nothing is remapped.
+//! §30L: a private version can be edited and exported before the document's first Save.
+//! Start with New, then draw and publish any custom solid through the sketch and sweep
+//! widgets. Independent CLI documents use their own identities. Inside one session,
+//! the snapshot, first Save and reopened file must agree without remapping anything.
 use super::add_cut::{Id, sql_mapped};
 use super::fillet::{saved, sql, state};
 use super::*;
-use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolveAngle,
-    SaveTarget,
+use crate::sessions::tests::tabs::{Drawn, Window};
+use crate::sweeps::tests::window::creation::{
+    BUSHING, Model, POLYGON, draw_model, independent_document,
 };
+use ferritecad_jobs::SaveTarget;
+use ferritecad_ui::{NewChoice, NewContent};
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 
-/// One of the seven variants: what the window asks for, and how the command
-/// line is asked for the same content (`{out}` is the destination).
-struct Variant {
-    name: &'static str,
-    content: NewDocument,
-    /// CLI arguments, and the JSON request when the command takes one.
-    cli: Vec<&'static str>,
-    request: Option<&'static str>,
-    /// Whether the document has an Extrude whose height the session can edit.
-    extrude: bool,
+#[derive(Clone, Copy)]
+enum Variant {
+    Empty,
+    Plate,
+    Drawing(Model),
 }
 
-const L_POLYGON: [[f64; 2]; 6] = [
-    [0., 0.],
-    [60., 0.],
-    [60., 20.],
-    [20., 20.],
-    [20., 40.],
-    [0., 40.],
-];
-const STEPPED: [[f64; 2]; 6] = [
-    [4., 0.],
-    [10., 0.],
-    [10., 5.],
-    [7., 5.],
-    [7., 15.],
-    [4., 15.],
-];
-
-fn variants() -> Vec<Variant> {
-    vec![
-        Variant {
-            name: "empty",
-            content: NewDocument::Empty,
-            cli: vec!["create"],
-            request: None,
-            extrude: false,
-        },
-        Variant {
-            name: "plate",
-            content: NewDocument::SamplePlate(PlateSize {
-                width: 83.,
-                depth: 47.,
-                height: 13.,
-            }),
-            cli: vec!["create", "--sample", "--size", "83", "47", "13"],
-            request: None,
-            extrude: true,
-        },
-        Variant {
-            name: "polygon",
-            content: NewDocument::SketchExtrude(
-                PolygonExtrusion::new(L_POLYGON.to_vec(), 10.).expect("polygon"),
-            ),
-            cli: vec!["create-sketch-extrude"],
-            request: Some(
-                r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#,
-            ),
-            extrude: true,
-        },
-        Variant {
-            name: "circle",
-            content: NewDocument::CircleExtrude(
-                CircleExtrusion::new([12., -7.], 10., 15.).expect("circle"),
-            ),
-            cli: vec!["create-circle-extrude"],
-            request: Some(
-                r#"{"schema_version":1,"center_mm":[12.0,-7.0],"radius_mm":10.0,"height_mm":15.0}"#,
-            ),
-            extrude: true,
-        },
-        Variant {
-            name: "annulus",
-            content: NewDocument::AnnularExtrude(
-                AnnularExtrusion::new([12., -7.], 10., 4., 15.).expect("annulus"),
-            ),
-            cli: vec!["create-annular-extrude"],
-            request: Some(concat!(
-                r#"{"schema_version":1,"center_mm":[12.0,-7.0],"#,
-                r#""outer_radius_mm":10.0,"inner_radius_mm":4.0,"height_mm":15.0}"#
-            )),
-            extrude: true,
-        },
-        Variant {
-            name: "revolve",
-            content: NewDocument::SketchRevolve(
-                FullTurnRevolution::new(STEPPED.to_vec()).expect("revolve"),
-            ),
-            cli: vec!["create-sketch-revolve"],
-            request: Some(concat!(
-                r#"{"request_version":1,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
-                r#""axis":"sketch_y","angle":"full_turn"}"#
-            )),
-            extrude: false,
-        },
-        Variant {
-            name: "partial-revolve",
-            content: NewDocument::SketchPartialRevolve {
-                profile: FullTurnRevolution::new(STEPPED.to_vec()).expect("revolve"),
-                angle: RevolveAngle::new(f64::to_radians(137.5)).expect("angle"),
-            },
-            cli: vec!["create-sketch-revolve"],
-            request: Some(concat!(
-                r#"{"request_version":2,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
-                r#""axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}"#
-            )),
-            extrude: false,
-        },
-    ]
-}
-
-/// The shipped command line's own creation of the same content, with its JSON
-/// answer read back: the contract is unchanged (exit 0, the asked path published).
-fn cli_create(variant: &Variant, root: &Path) -> PathBuf {
-    let out = root.join(format!("{}-cli.fcad", variant.name));
-    let mut args: Vec<OsString> = vec![variant.cli[0].into()];
-    if let Some(request) = variant.request {
-        let file = root.join(format!("{}-request.json", variant.name));
-        std::fs::write(&file, request).expect("request");
-        args.extend([
-            file.into_os_string(),
-            "-o".into(),
-            out.clone().into_os_string(),
-        ]);
-        args.push("--json".into());
-    } else {
-        args.push(out.clone().into_os_string());
-        args.extend(variant.cli[1..].iter().map(OsString::from));
-        args.push("--json".into());
+impl Variant {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Plate => "plate",
+            Self::Drawing(Model::Polygon(_)) => "polygon",
+            Self::Drawing(Model::Circle) => "circle",
+            Self::Drawing(Model::Annulus) => "annulus",
+            Self::Drawing(Model::FullTurn(_)) => "revolve",
+            Self::Drawing(Model::Sector) => "partial-revolve",
+        }
     }
-    let refs: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
-    let output = cli(&refs);
-    let answer = String::from_utf8_lossy(&output.stdout);
-    assert!(answer.contains(r#""ok":true"#), "{answer}");
-    assert!(answer.contains(r#""destination":"#), "{answer}");
+
+    fn has_extrude(self) -> bool {
+        matches!(
+            self,
+            Self::Plate | Self::Drawing(Model::Polygon(_) | Model::Circle | Model::Annulus)
+        )
+    }
+
+    fn create(self, w: &mut Window) {
+        assert!(w.begin_new());
+        if matches!(self, Self::Plate) {
+            let form = w.creates.form().expect("New form");
+            form.content = NewContent::SamplePlate;
+            form.width = "83".into();
+            form.depth = "47".into();
+            form.height = "13".into();
+        }
+        let request = w.answer_new(NewChoice::Create).expect("create");
+        w.create_from_new(request, Ok(()))
+            .expect("accepted document");
+        assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
+        if let Self::Drawing(model) = self {
+            draw_model(w, model);
+            assert!(w.sessions.can_undo() && !w.sessions.can_redo());
+        }
+    }
+}
+
+/// Independent CLI output. For a drawing each edit has the previous version's guard.
+fn cli_create(variant: Variant, root: &Path) -> PathBuf {
+    let dir = root.join(variant.name());
+    std::fs::create_dir(&dir).expect("peer directory");
+    if let Variant::Drawing(model) = variant {
+        independent_document(model, &dir);
+        return dir.join("cli.fcad");
+    }
+    let out = dir.join("cli.fcad");
+    let mut args = vec!["create".as_ref(), out.as_os_str()];
+    if matches!(variant, Variant::Plate) {
+        args.extend(["--sample", "--size", "83", "47", "13"].map(std::ffi::OsStr::new));
+    }
+    args.push("--json".as_ref());
+    let output = cli(&args);
+    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).expect("create JSON");
+    assert_eq!(answer["ok"], true);
+    assert_eq!(answer["result"]["destination"], out.to_str().expect("path"));
     assert!(out.is_file());
     out
-}
-
-/// The window's create worker, then the binding Open uses: the candidate becomes
-/// the session only here, as when its picture is accepted.
-fn create_into(s: &mut Sessions, root: &Path, content: NewDocument) {
-    let (scene, session) =
-        create_for_view(root, content, &OperationContext::default()).expect("the candidate");
-    assert!(session.is_untitled());
-    let _ = scene;
-    s.bind(Bind::Open(Box::new(session))).expect("bound");
 }
 
 /// Every 16-byte identity in `path`, in table, rowid and column order: a blob of
@@ -301,12 +218,20 @@ fn first_extrude(path: &Path) -> ObjectId {
 /// with the command line's own creation.
 fn matrix() {
     let root = tempfile::tempdir().expect("root");
-    let sessions_root = tempfile::tempdir().expect("sessions");
-    for variant in variants() {
-        let name = variant.name;
-        let theirs = cli_create(&variant, root.path());
-        let mut s = Sessions::default();
-        create_into(&mut s, sessions_root.path(), variant.content.clone());
+    for variant in [
+        Variant::Empty,
+        Variant::Plate,
+        Variant::Drawing(Model::Polygon(&POLYGON)),
+        Variant::Drawing(Model::Circle),
+        Variant::Drawing(Model::Annulus),
+        Variant::Drawing(Model::FullTurn(&BUSHING)),
+        Variant::Drawing(Model::Sector),
+    ] {
+        let name = variant.name();
+        let theirs = cli_create(variant, root.path());
+        let mut window = Window::new(Drawn::Native, None);
+        variant.create(&mut window);
+        let s = &mut window.sessions;
 
         // Untitled, unsaved, named without its private folder.
         assert_eq!(s.logical_path(), None, "{name}");
@@ -315,7 +240,6 @@ fn matrix() {
         assert_eq!(s.title(), "*Untitled — FerriteCAD");
         let private = s.private_directory().expect("private").to_path_buf();
         assert_eq!(shown_as(&private.join("v0.fcad")), "Untitled");
-        assert!(!s.can_undo() && !s.can_redo());
         let created = s.export_path().expect("current");
 
         // The same model as the command line's, under the new-identity bijection.
@@ -327,17 +251,17 @@ fn matrix() {
         );
 
         // A step and its Undo/Redo before any Save: never saved, no remap.
-        if variant.extrude {
-            apply_native(&mut s, first_extrude(&created), 7.5);
+        if variant.has_extrude() {
+            apply_native(s, first_extrude(&created), 7.5);
             assert!(s.can_undo() && s.dirty());
-            move_native(&mut s, true);
+            move_native(s, true);
             assert_eq!(sql(&s.export_path().expect("undone")), sql(&created));
             assert!(
                 s.dirty(),
                 "{name}: Undo to the created version is not a save"
             );
-            move_native(&mut s, false);
-            move_native(&mut s, true);
+            move_native(s, false);
+            move_native(s, true);
         }
         let current = s.export_path().expect("current");
 
@@ -371,7 +295,7 @@ fn matrix() {
             .expect("current")
             .meta()
             .document_id;
-        saved(&mut s, SaveTarget::As(file.clone()));
+        saved(s, SaveTarget::As(file.clone()));
         assert_eq!(s.logical_path(), Some(file.as_path()));
         assert!(!s.untitled() && !s.dirty());
         assert_eq!(s.title(), format!("{name}.fcad — FerriteCAD"));
@@ -419,14 +343,14 @@ fn matrix() {
                 artifacts(&format!("new-{name}-after-save"), &saved_stl, &saved_fbx);
             }
         }
-        if variant.extrude {
+        if variant.has_extrude() {
             assert!(s.can_redo(), "{name}: the history survived the first Save");
-            move_native(&mut s, false);
+            move_native(s, false);
             assert!(
                 s.dirty(),
                 "{name}: a version other than the saved one is unsaved"
             );
-            move_native(&mut s, true);
+            move_native(s, true);
             assert!(!s.dirty());
         }
         s.stop_all();
@@ -727,13 +651,7 @@ fn compare_gui(root: &Path) {
         "Undo STL against the CLI"
     );
 
-    let annulus = cli_create(
-        &variants()
-            .into_iter()
-            .find(|v| v.name == "annulus")
-            .expect("annulus"),
-        peer,
-    );
+    let annulus = cli_create(Variant::Drawing(Model::Annulus), peer);
     let (stl, fbx) = peer_bytes(&annulus, peer, "annulus");
     assert_eq!(file("annulus.stl"), stl, "annulus STL against the CLI");
     assert_eq!(
@@ -742,13 +660,7 @@ fn compare_gui(root: &Path) {
         "annulus FBX against the CLI under a bijection of UUIDs"
     );
 
-    let empty = cli_create(
-        &variants()
-            .into_iter()
-            .find(|v| v.name == "empty")
-            .expect("empty"),
-        peer,
-    );
+    let empty = cli_create(Variant::Empty, peer);
     let window_empty = root.join("empty.fcad");
     let map = pair_independent(&window_empty, &empty);
     assert_eq!(
@@ -847,18 +759,16 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
     let work = tempfile::tempdir().expect("work");
     let layout = work.path().join("layout");
     std::fs::create_dir_all(&layout).expect("layout");
-    let sessions_root = tempfile::tempdir().expect("sessions");
     let occupied = layout.join("occupied.fcad");
     cli(&["create".as_ref(), occupied.as_os_str()]);
     std::fs::create_dir_all(layout.join("inputs")).expect("inputs");
     std::fs::copy(&occupied, layout.join("inputs/occupied.fcad")).expect("pristine");
     let put = |name: &str, bytes: &[u8]| std::fs::write(layout.join(name), bytes).expect(name);
 
-    let mut s = Sessions::default();
-    let plate = variants().swap_remove(1).content;
-    create_into(&mut s, sessions_root.path(), plate);
-    let created = s.export_path().expect("created");
-    apply_native(&mut s, first_extrude(&created), 21.5);
+    let mut window = Window::new(Drawn::Native, None);
+    Variant::Plate.create(&mut window);
+    window.apply(21.5);
+    let s = &mut window.sessions;
     let alias = s.suggestion().expect("suggestion");
     let (stl, fbx) = export_bytes(&s.export_path().expect("edited"), &alias, work.path(), "u");
     put("unsaved.stl", &stl);
@@ -876,12 +786,12 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
             .published
     );
     let plate_file = layout.join("plate.fcad");
-    saved(&mut s, SaveTarget::As(plate_file.clone()));
+    saved(s, SaveTarget::As(plate_file.clone()));
     put(
         "first-save.fcad",
         &std::fs::read(&plate_file).expect("first"),
     );
-    move_native(&mut s, true);
+    move_native(s, true);
     put(
         "undo.stl",
         &export_bytes(
@@ -892,16 +802,16 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
         )
         .0,
     );
-    move_native(&mut s, false);
-    move_native(&mut s, true);
+    move_native(s, false);
+    move_native(s, true);
     // The guarded Save before the annulus replaces it: in place.
-    saved(&mut s, SaveTarget::InPlace);
+    saved(s, SaveTarget::InPlace);
     put(
         "after-guard.fcad",
         &std::fs::read(&plate_file).expect("guarded"),
     );
-    let annulus = variants().swap_remove(4).content;
-    create_into(&mut s, sessions_root.path(), annulus);
+    Variant::Drawing(Model::Annulus).create(&mut window);
+    let s = &mut window.sessions;
     let alias = s.suggestion().expect("suggestion");
     let (stl, fbx) = export_bytes(&s.export_path().expect("annulus"), &alias, work.path(), "a");
     put("annulus.stl", &stl);
@@ -911,8 +821,11 @@ fn native_window_scenario_on_session_files_passes_the_comparator_and_its_control
         s.replacing(Some(UnsavedChoice::Discard)),
         Replace::Discarded
     );
-    create_into(&mut s, sessions_root.path(), NewDocument::Empty);
-    saved(&mut s, SaveTarget::As(layout.join("empty.fcad")));
+    let discarded = s.tab();
+    window.close(discarded).expect("discard annulus");
+    Variant::Empty.create(&mut window);
+    let s = &mut window.sessions;
+    saved(s, SaveTarget::As(layout.join("empty.fcad")));
     s.stop_all();
     compare_with_controls(&layout);
 }

@@ -5,6 +5,7 @@ use super::{
     tests::{click, frame, replace_field, text_at},
     *,
 };
+use ferritecad_jobs::PolygonExtrusion;
 
 pub(super) fn canvas(output: &egui::FullOutput) -> egui::Rect {
     output

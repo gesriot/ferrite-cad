@@ -35,13 +35,15 @@ pub(super) fn context() -> egui::Context {
 /// Save, with no document behind it.
 pub(super) fn saved(points: &[[&str; 2]]) -> (egui::Context, Editor, EditRequest) {
     let ctx = context();
-    let mut e = Editor::default();
-    e.draft = Some(State {
-        points: points.iter().map(|p| p.map(str::to_owned)).collect(),
-        height: "10".into(),
-        feature: Feature::Extrude,
-        angle: String::new(),
-    });
+    let mut e = Editor {
+        draft: Some(State {
+            points: points.iter().map(|p| p.map(str::to_owned)).collect(),
+            height: "10".into(),
+            feature: Feature::Extrude,
+            angle: String::new(),
+        }),
+        ..Editor::default()
+    };
     let vertices: Vec<_> = Canvas::points(e.draft.as_ref().expect("draft"))
         .expect("points")
         .into_iter()

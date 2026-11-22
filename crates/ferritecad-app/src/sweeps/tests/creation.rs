@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 
 #[derive(Clone, Copy)]
-enum Model {
+pub(crate) enum Model {
     Polygon(&'static [[i32; 2]]),
     Circle,
     Annulus,
@@ -16,8 +16,8 @@ enum Model {
     Sector,
 }
 
-const POLYGON: [[i32; 2]; 6] = [[0, 0], [60, 0], [60, 20], [20, 20], [20, 40], [0, 40]];
-const BUSHING: [[i32; 2]; 6] = [[4, 0], [10, 0], [10, 5], [7, 5], [7, 15], [4, 15]];
+pub(crate) const POLYGON: [[i32; 2]; 6] = [[0, 0], [60, 0], [60, 20], [20, 20], [20, 40], [0, 40]];
+pub(crate) const BUSHING: [[i32; 2]; 6] = [[4, 0], [10, 0], [10, 5], [7, 5], [7, 15], [4, 15]];
 
 fn click_xy(w: &mut Window, [x, y]: [i32; 2]) {
     click(w, point(f64::from(x), f64::from(y)), false);
@@ -38,7 +38,7 @@ fn create_in_window(model: Model, output: &Path) {
     );
 }
 
-fn draw_model(w: &mut Window, model: Model) {
+pub(crate) fn draw_model(w: &mut Window, model: Model) {
     let mut ui = draw_profile(w, model);
     finish_model(w, &mut ui, model);
 }
@@ -201,7 +201,7 @@ fn add_version(dir: &Path, source: &str, target: &str, changes: Value) {
     );
 }
 
-fn independent_document(model: Model, dir: &Path) {
+pub(crate) fn independent_document(model: Model, dir: &Path) {
     let plane = ObjectId::new();
     let sketch = ObjectId::new();
     let circle = |radius| {
@@ -217,7 +217,10 @@ fn independent_document(model: Model, dir: &Path) {
         Model::FullTurn(points) => polygon_curves(points),
         Model::Sector => polygon_curves(&BUSHING),
     };
-    cli(dir, &["create", "empty.fcad"]);
+    let answer: Value = serde_json::from_slice(&cli(dir, &["create", "empty.fcad", "--json"]))
+        .expect("create JSON");
+    assert_eq!(answer["ok"], true);
+    assert_eq!(answer["result"]["destination"], "empty.fcad");
     add_version(
         dir,
         "empty.fcad",

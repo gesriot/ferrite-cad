@@ -5,7 +5,7 @@ use crate::sketch_facts::{
     AnnulusChoice, CircleChoice, SketchChoice, SketchProfileUse, Source as ExtrudeEditSource,
 };
 use ferritecad_document::{ExpressionSlotValue, SketchVertex};
-use ferritecad_jobs::{EditRequest, PolygonExtrusion, RevolveAngle};
+use ferritecad_jobs::{EditRequest, RevolveAngle};
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
