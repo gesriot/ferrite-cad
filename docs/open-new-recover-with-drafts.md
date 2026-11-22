@@ -7,8 +7,7 @@ file is the contract and the verification record of the slice.
 ## What a person can do
 
 In A, open **Edit extrusion…** and type `2..6` (not a number yet), or open any other
-form below. Without Apply, Cancel or Save: **Open…** B, **New**, **Create sketch +
-Extrude…**, or **Recover** a crash copy. Each new document comes up in a tab of its own
+form below. Without Apply, Cancel or Save: **Open…** B, **New…**, or **Recover** a crash copy. Each new document comes up in a tab of its own
 with no form; press A's tab and A's form is exactly as it was left — the same text,
 picks, pending changes and draft Undo/Redo — over A's unchanged, still unsaved model
 and its document history. Opening, making or recovering a document never applies,
@@ -18,7 +17,7 @@ cancels or saves A, and A's form never has to be closed for it.
 
 One predicate decides whether the shown tab may be left now:
 `may_leave_tab` (`main.rs`) — no session operation (Apply, Add, Undo, Redo, Save, a
-switch, Recover), no **New** (its form, drawing or worker), no copy worker, no pointer
+switch, Recover), no **New** (its form or worker), no copy worker, no pointer
 gesture (camera or vertex drag). An idle form does not hold it. `can_leave_tab` is
 `may_leave_tab` plus no load, export, export question or STL options form. Every
 widget and its handler ask the same function.
@@ -31,10 +30,9 @@ widget and its handler ask the same function.
 | A file a tab already names (same path, link, hard link, other spelling) | as Open | `Tabs::opening`: `Shown` (words only) or `Show(tab)` → `switch_to` | `can_leave_tab` | that tab's own come back (§30P `Tabs::activate`); the left tab's are parked; never a ninth tab, also at 8 |
 | A newer Open while one is read | as Open | `Loads::open` retires the older generation (its worker is cancelled at once and joined later) | `may_leave_tab` | the older answer is dropped by `Loads::accepted_path`; nothing moves |
 | Copy workflow's file (*Save new file…* of a form) | — | `App::open` → `read_document`, its §30A–§30K guard unchanged | unchanged | its form went with the publication (`published_draft`/`published_form`), unchanged |
-| Toolbar **New** (Empty, sample plate) | `can_create_document = can_leave_tab` | `App::begin_new(false)` → `open_new` → `ask_new` | `can_leave_tab` | **set aside** as A's draft (`Tabs::set_aside`) |
-| **Create sketch + Extrude…** (Line polygon, Circle, Circle with hole, full and partial Revolve) | the editor's button, offered beside a tab's form too, enabled by `can_leave_tab` (`Sections::can_new`) | a request (`Editor::take_drawing_request`) → `App::begin_new(true)` → `open_new` → `Editor::begin` | `can_leave_tab` | **set aside** |
-| New's Create (form or drawing) | `can_create` (unchanged) | `App::create_new`: the 8-tab room first, then the worker | `can_create` | stay aside; an accepted candidate hides A **with them** (`Tabs::open` takes the set-aside draft) |
-| New's Cancel (form **Cancel**, drawing **Cancel draft**) | — | `answer_form`/`Editor::dismiss`, then `App::end_new` → `Tabs::bring_back` | — | back, exactly as left |
+| Toolbar **New** (Empty, sample plate) | `can_create_document = can_leave_tab` | `App::begin_new()` → `open_new` → `ask_new` | `can_leave_tab` | **set aside** as A's draft (`Tabs::set_aside`) |
+| New's Create | `can_create` (unchanged) | `App::create_new`: the 8-tab room first, then the worker | `can_create` | stay aside; an accepted candidate hides A **with them** (`Tabs::open` takes the set-aside draft) |
+| New's **Cancel** | — | `answer_form`, then `App::end_new` → `Tabs::bring_back` | — | back, exactly as left |
 | **Recover** (start-up list) | `RecoveryPanel.can_act = can_recover` | `App::recover`: the 8-tab room first, then the claim's worker holding A's slot | `can_recover = can_leave_tab && !recoveries.running()` | stay in the window during the worker; move with A at `Bind::Open` |
 | Recovery **Delete** | `can_recover` | `App::delete_recovery` | `can_recover` | untouched |
 | Tab row (show, ×) | §30P, unchanged | `switch_to`, `close_tab` | `can_leave_tab` | §30P |
@@ -49,10 +47,7 @@ widget and its handler ask the same function.
    `DocumentId`) are two tabs with two drafts. No second, per-form protocol: Open and
    Recover use the existing `Bind::Open` move; New uses the same `Forms::park` /
    `Forms::restore`.
-2. **New's ownership (decided before implementation).** New has its own forms: the
-   window's `Creates.form` and, for drawings, the same `sketch::Editor` A's saved-object
-   forms live in (the drawing's polygon, circle and annulus states share fields with the
-   saved Circle/annulus forms). So opening New first **sets A's forms aside**
+2. **New's ownership (decided before implementation).** The New form belongs to the window. Opening New first **sets A's forms aside**
    (`Tabs::set_aside`, one `Option<(TabId, Draft)>`), leaving the window's forms empty;
    New never writes into A's. While New is open: New holds tab changes,
    Recover, Apply, document Undo and Save, as it did before §30Q. *Since §30T Open
@@ -112,7 +107,7 @@ is shown again the canvas sees no pressed button and reverts the unfinished drag
   (explicit listing was addressed by §30S: [contract](recovery-inspection-contention.md)).
 * **Drawing button permission (review).** The old saved-form fallback could enable
   Create sketch + Extrude during a camera gesture even though its handler refused
-  the request. The button now uses the window's New permission alone. The real-widget
+  the request. At the time, the fix used the window's New permission alone. The real-widget
   regression failed before the change and passes after it; a dirty document still
   permits New when idle.
 * A test-only timing error (reading the store before asynchronous retirement finished)
@@ -307,9 +302,8 @@ output.
 3. **Open…** `$ROOT/b.fcad`: a second tab, shown, with no height form.
 4. Press `a.fcad`: the form shows `2..6`. Replace it with `26` → **Apply** (`*a.fcad`).
 5. **Edit Sketch …** (the saved Sketch) → replace both `80` with `90`. Do not Apply.
-6. **Create sketch + Extrude…** (beside A's form): the drawing opens and A's Sketch
-   form goes. Choose **Circle**, type a Center X. **Cancel draft**: A's Sketch form is
-   back with both `90`.
+6. Press **New…** beside A's form, choose **Sample plate** and type a width.
+   Press **Cancel**. A's sketch form returns with both `90`.
 7. **New** → **Sample plate** → Width `50`, Depth `30`, Height `7` → **Create
    document**: a `*Untitled` tab, shown, with no form.
 8. **Recover** `plate.fcad`: a `*plate.fcad (recovered)` tab; the list is empty.

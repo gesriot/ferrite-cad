@@ -6,38 +6,28 @@
 #![allow(clippy::panic)]
 use super::{
     analytic::Handle,
-    analytic_tests::{self as analytic_t, context, open_new, saved},
+    analytic_tests::{self as analytic_t, context, saved},
     drag_tests,
     tests::{click, frame_running, text_at},
     *,
 };
 
-/// The six forms that hold a canvas.
+/// The saved forms that hold a canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Form {
-    LineNew,
-    LineSaved,
-    CircleNew,
-    CircleSaved,
-    AnnulusNew,
-    AnnulusSaved,
+    Line,
+    Circle,
+    Annulus,
 }
 
-const FORMS: [Form; 6] = [
-    Form::LineNew,
-    Form::LineSaved,
-    Form::CircleNew,
-    Form::CircleSaved,
-    Form::AnnulusNew,
-    Form::AnnulusSaved,
-];
+const FORMS: [Form; 3] = [Form::Line, Form::Circle, Form::Annulus];
 
 /// One form in one egui context, driven only by events.
 struct Rig {
     form: Form,
     ctx: egui::Context,
     e: Editor,
-    _root: Option<tempfile::TempDir>,
+    _root: tempfile::TempDir,
 }
 
 fn at(x: f32, y: f32) -> egui::Pos2 {
@@ -98,34 +88,24 @@ fn escape() -> egui::Event {
 impl Rig {
     fn open(form: Form, pixels_per_point: f32) -> Self {
         let ctx = context();
-        let mut root = None;
+        let root;
         let mut e = Editor::default();
         match form {
-            Form::LineNew => {
-                e.begin();
-                let draft = e.draft.as_mut().expect("draft");
-                draft.points = [["0", "0"], ["60", "0"], ["60", "20"]]
-                    .map(|p| p.map(str::to_owned))
-                    .to_vec();
-                draft.closed = false;
-            }
-            Form::LineSaved => {
+            Form::Line => {
                 let (dir, path, reading) = crate::fillets::tests::plate();
                 e.set_session(true, true, false);
                 assert!(e.begin_edit(&path, &reading, reading.sketches[0].sketch));
-                root = Some(dir);
+                root = dir;
             }
-            Form::CircleNew => open_new(&ctx, &mut e, "Circle"),
-            Form::AnnulusNew => open_new(&ctx, &mut e, "Circle with hole"),
-            Form::CircleSaved => {
+            Form::Circle => {
                 let (dir, _ctx, saved_editor) = saved(&[10.5]);
                 e = saved_editor;
-                root = Some(dir);
+                root = dir;
             }
-            Form::AnnulusSaved => {
+            Form::Annulus => {
                 let (dir, _ctx, saved_editor) = saved(&[10.5, 4.75]);
                 e = saved_editor;
-                root = Some(dir);
+                root = dir;
             }
         }
         ctx.set_pixels_per_point(pixels_per_point);
@@ -142,7 +122,7 @@ impl Rig {
     }
 
     fn line(&self) -> bool {
-        matches!(self.form, Form::LineNew | Form::LineSaved)
+        matches!(self.form, Form::Line)
     }
 
     fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
@@ -169,7 +149,7 @@ impl Rig {
                 ..Default::default()
             },
             |ui| {
-                e.draw(ui, true, running, "");
+                e.draw(ui, running, "");
                 if let Some(cover) = cover {
                     egui::Area::new(egui::Id::new("over the canvas"))
                         .order(egui::Order::Foreground)
@@ -191,12 +171,12 @@ impl Rig {
     /// Lower-left corner and points per mm.
     fn view(&self) -> ([f64; 2], f32) {
         match self.form {
-            Form::LineNew | Form::LineSaved => (self.e.canvas.minimum, self.e.canvas.scale),
-            Form::CircleNew | Form::CircleSaved => {
+            Form::Line => (self.e.canvas.minimum, self.e.canvas.scale),
+            Form::Circle => {
                 let v = self.e.circle_canvas.view.expect("a fitted view");
                 (v.minimum, v.scale)
             }
-            Form::AnnulusNew | Form::AnnulusSaved => {
+            Form::Annulus => {
                 let v = self.e.annulus_canvas.view.expect("a fitted view");
                 (v.minimum, v.scale)
             }
@@ -218,7 +198,7 @@ impl Rig {
     /// The screen point of a vertex (Line) or the outer handle (Circle, annulus).
     fn grab(&mut self) -> egui::Pos2 {
         match self.form {
-            Form::LineNew | Form::LineSaved => drag_tests::vertex(&self.ctx, &mut self.e, 1),
+            Form::Line => drag_tests::vertex(&self.ctx, &mut self.e, 1),
             _ => analytic_t::handle(&self.ctx, &mut self.e, Handle::Outer),
         }
     }
@@ -226,7 +206,7 @@ impl Rig {
     /// The screen point of vertex `i` (Line) or of the centre (0) / outer (1) handle.
     fn grab_at(&mut self, i: usize) -> egui::Pos2 {
         match self.form {
-            Form::LineNew | Form::LineSaved => drag_tests::vertex(&self.ctx, &mut self.e, i),
+            Form::Line => drag_tests::vertex(&self.ctx, &mut self.e, i),
             _ => analytic_t::handle(
                 &self.ctx,
                 &mut self.e,
@@ -242,7 +222,7 @@ impl Rig {
     /// Depth of the shown draft's Undo and Redo.
     fn depth(&self) -> (usize, usize) {
         match self.form {
-            Form::LineNew | Form::LineSaved => (self.e.undo.len(), self.e.redo.len()),
+            Form::Line => (self.e.undo.len(), self.e.redo.len()),
             _ => analytic_t::depth(&self.e),
         }
     }
@@ -250,9 +230,9 @@ impl Rig {
     /// An edit gesture (a vertex or a handle) is held.
     fn editing(&self) -> bool {
         match self.form {
-            Form::LineNew | Form::LineSaved => self.e.canvas.gesture.is_some(),
-            Form::CircleNew | Form::CircleSaved => self.e.circle_canvas.held().is_some(),
-            Form::AnnulusNew | Form::AnnulusSaved => self.e.annulus_canvas.held().is_some(),
+            Form::Line => self.e.canvas.gesture.is_some(),
+            Form::Circle => self.e.circle_canvas.held().is_some(),
+            Form::Annulus => self.e.annulus_canvas.held().is_some(),
         }
     }
 
@@ -269,14 +249,12 @@ impl Rig {
                 "{:?}",
                 (
                     &e.draft,
-                    &e.next,
                     &e.undo,
                     &e.redo,
                     e.canvas.selected.filter(|_| selection),
                     e.canvas.snap,
                     e.canvas.object_snap,
                     &e.canvas.length,
-                    e.pending.is_some(),
                     e.pending_edit.is_some(),
                     e.pending_apply.is_some(),
                     e.editing.is_some(),
@@ -293,8 +271,7 @@ impl Rig {
                         &e.annulus_redo,
                         &e.annulus_applied,
                     ),
-                    e.mode,
-                    e.pending.is_some(),
+                    e.editing_annulus.is_some(),
                     (
                         e.pending_apply_circle.is_some(),
                         e.pending_circle_edit.is_some(),
@@ -334,8 +311,7 @@ impl Rig {
 
     fn pending_request(&self) -> bool {
         let e = &self.e;
-        e.pending.is_some()
-            || e.pending_edit.is_some()
+        e.pending_edit.is_some()
             || e.pending_apply.is_some()
             || e.pending_apply_circle.is_some()
             || e.pending_circle_edit.is_some()
@@ -346,23 +322,15 @@ impl Rig {
     /// The form's own request, asked for and not taken: a job is queued.
     fn queue(&mut self) {
         match self.form {
-            Form::LineNew => {
-                self.e.pending = Some(NewDocument::SketchExtrude(
-                    PolygonExtrusion::new(vec![[0., 0.], [60., 0.], [60., 20.]], 10.)
-                        .expect("a triangle"),
-                ));
-            }
-            Form::LineSaved => {
+            Form::Line => {
                 self.e.pending_edit = Some(self.e.edit_request().expect("a request"));
             }
-            Form::CircleNew => self.press_label(CREATE_CIRCLE),
-            Form::AnnulusNew => self.press_label(CREATE_ANNULUS),
             // Apply is offered for a draft that differs from the saved numbers.
-            Form::CircleSaved => {
+            Form::Circle => {
                 analytic_t::type_into(&self.ctx, &mut self.e, "Radius", "11");
                 self.press_label("Apply circle");
             }
-            Form::AnnulusSaved => {
+            Form::Annulus => {
                 analytic_t::type_into(&self.ctx, &mut self.e, "Outer radius", "11");
                 self.press_label("Apply annulus");
             }
@@ -634,7 +602,8 @@ fn held_drag(form: Form, navigate: bool, cancel: bool) -> (String, String, ([f64
 
 #[test]
 fn a_pan_that_does_not_move_is_no_click_and_places_or_selects_nothing_on_the_line_canvas() {
-    for form in [Form::LineNew, Form::LineSaved] {
+    {
+        let form = Form::Line;
         let mut r = Rig::open(form, 1.);
         let facts = r.facts();
         let empty = r.free();
@@ -1087,10 +1056,11 @@ fn events_of_one_frame_keep_their_order_and_gestures_read_the_view_the_person_sa
 /// the view was panned to bring that middle to the centre of the canvas and zoomed in about
 /// it to 100 points/mm or more; and the scale it was made at.
 fn midpoint_drag(zoomed: bool, pixels_per_point: f32, off: f32) -> ([String; 2], f64) {
-    let mut r = Rig::open(Form::LineNew, pixels_per_point);
+    let mut r = Rig::open(Form::Line, pixels_per_point);
     r.e.draft.as_mut().expect("draft").points = [["0", "0"], ["0.4", "0"], ["0.55", "0.3"]]
         .map(|p| p.map(str::to_owned))
         .to_vec();
+    r.press_label("Reset view");
     r.press_label("Object snap");
     if zoomed {
         let rect = r.rect();
@@ -1132,12 +1102,11 @@ fn midpoint_drag(zoomed: bool, pixels_per_point: f32, off: f32) -> ([String; 2],
 fn zooming_in_makes_close_vertices_short_midpoints_and_a_tiny_bore_pickable_in_logical_points() {
     for pixels_per_point in [1., 2.] {
         // Two vertices 0.4 mm apart: 1.6 points at the opening scale of 4 points/mm.
-        let mut r = Rig::open(Form::LineNew, pixels_per_point);
+        let mut r = Rig::open(Form::Line, pixels_per_point);
         r.e.draft.as_mut().expect("draft").points = [["0", "0"], ["0.4", "0"], ["5", "5"]]
             .map(|p| p.map(str::to_owned))
             .to_vec();
-        // Closed: a press that takes no vertex adds none.
-        r.e.draft.as_mut().expect("draft").closed = true;
+        r.press_label("Reset view");
         let facts = r.facts_with(false);
         let v1 = r.grab_at(1);
         let near_v1 = v1 + egui::vec2(-1., 0.);
@@ -1203,7 +1172,7 @@ fn zooming_in_makes_close_vertices_short_midpoints_and_a_tiny_bore_pickable_in_l
         );
 
         // A bore so small that its handle is one point with the centre's, then zoomed.
-        let mut r = Rig::open(Form::AnnulusNew, pixels_per_point);
+        let mut r = Rig::open(Form::Annulus, pixels_per_point);
         analytic_t::type_into(&r.ctx, &mut r.e, "Inner radius", "0.01");
         let facts = r.facts();
         let c = r.grab_at(0);
@@ -1262,14 +1231,10 @@ fn fit_is_the_only_way_back_and_typing_dragging_and_invalid_text_never_refit() {
 
         // Typing, including text that cannot be drawn, does not move the view.
         if r.line() {
-            let (old, new) = if form == Form::LineNew {
-                ("60", "61")
-            } else {
-                ("33", "34")
-            };
+            let (old, new) = ("33", "34");
             crate::sketch::tests::replace_field(&r.ctx, &mut r.e, old, new);
         } else {
-            let radius = if matches!(form, Form::CircleNew | Form::CircleSaved) {
+            let radius = if matches!(form, Form::Circle) {
                 "Radius"
             } else {
                 "Outer radius"
@@ -1322,7 +1287,7 @@ fn fit_is_the_only_way_back_and_typing_dragging_and_invalid_text_never_refit() {
                 r.view(),
                 (Canvas::default().minimum, Canvas::default().scale)
             ));
-        } else if matches!(form, Form::CircleSaved | Form::AnnulusSaved) {
+        } else if matches!(form, Form::Circle | Form::Annulus) {
             // The saved numbers were typed over, so the fit is of the draft: it is a fit.
             assert!(fitted.1.is_finite() && fitted.1 > 0.);
         }
@@ -1380,92 +1345,13 @@ fn the_hint_names_the_gestures_and_says_when_the_view_is_locked() {
 }
 
 #[test]
-fn each_profile_keeps_its_own_view_and_cancelling_the_draft_forgets_all_of_them() {
-    let mut r = Rig::open(Form::AnnulusNew, 1.);
-    let line_opening = (r.e.canvas.minimum, r.e.canvas.scale);
-    let p = r.free();
-    // Zoom the annulus canvas.
-    r.frame(vec![moved(p)]);
-    r.frame(vec![wheel_lines(2.)]);
-    let annulus = r.e.annulus_canvas.view.expect("view");
-    // The circle canvas, once shown, fits and is zoomed by another amount.
-    r.press_label("Circle");
-    r.frame(vec![]);
-    let circle_opening = r.e.circle_canvas.view.expect("a fitted view");
-    let p = r.free();
-    r.frame(vec![moved(p)]);
-    r.frame(vec![wheel_lines(-2.)]);
-    let circle = r.e.circle_canvas.view.expect("view");
-    assert_ne!(circle, circle_opening);
-    assert_eq!(
-        r.e.annulus_canvas.view,
-        Some(annulus),
-        "the annulus view moved"
-    );
-    // The Line canvas is no part of either.
-    r.press_label("Line polygon");
-    r.frame(vec![]);
-    let p = r.free();
-    r.frame(vec![moved(p)]);
-    r.frame(vec![wheel_lines(3.)]);
-    let line = (r.e.canvas.minimum, r.e.canvas.scale);
-    assert!(!same(line, line_opening));
-    assert_eq!(r.e.circle_canvas.view, Some(circle));
-    assert_eq!(r.e.annulus_canvas.view, Some(annulus));
-    // Back and forth: each is where its person left it.
-    for (profile, expected) in [("Circle", circle), ("Circle with hole", annulus)] {
-        r.press_label(profile);
-        r.frame(vec![]);
-        let shown = if profile == "Circle" {
-            r.e.circle_canvas.view
-        } else {
-            r.e.annulus_canvas.view
-        };
-        assert_eq!(shown, Some(expected), "{profile}");
-    }
-    assert!(same((r.e.canvas.minimum, r.e.canvas.scale), line));
-    // A pan held on one canvas while another profile is chosen under it cannot hold the
-    // window for good: the canvas is no longer drawn, and its pan ends with the next frame.
-    r.press_label("Circle with hole");
-    r.frame(vec![]);
-    let p = r.free();
-    r.frame(vec![moved(p)]);
-    r.frame(vec![middle(p, true), moved(p + egui::vec2(12., 5.))]);
-    assert!(r.e.annulus_canvas.panning() && r.e.gesturing());
-    let spot = text_at(&r.frame(vec![]), "Circle");
-    click(&r.ctx, &mut r.e, spot);
-    r.frame(vec![]);
-    r.frame(vec![]);
-    assert!(
-        !r.e.gesturing(),
-        "a pan on a canvas that is gone holds the window"
-    );
-    assert!(!r.e.annulus_canvas.panning());
-    // It stopped: the pointer's next moves, and the release, pan nothing.
-    let stopped = r.e.annulus_canvas.view;
-    r.frame(vec![moved(spot + egui::vec2(50., 40.))]);
-    r.frame(vec![middle(spot + egui::vec2(50., 40.), false)]);
-    assert!(!r.e.gesturing());
-    assert_eq!(r.e.annulus_canvas.view, stopped, "a stopped pan went on");
-    // Cancel draft ends the form and every view with it.
-    r.press_label("Cancel draft");
-    assert!(!r.e.active());
-    assert_eq!(r.e.circle_canvas.view, None);
-    assert_eq!(r.e.annulus_canvas.view, None);
-    assert!(same(
-        (r.e.canvas.minimum, r.e.canvas.scale),
-        (Canvas::default().minimum, Canvas::default().scale)
-    ));
-}
-
-#[test]
 fn navigation_over_a_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_form()
 {
     use winit::{
         dpi::PhysicalPosition,
         event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
     };
-    for form in [Form::LineSaved, Form::CircleNew, Form::AnnulusSaved] {
+    for form in [Form::Line, Form::Circle, Form::Annulus] {
         for pixels_per_point in [1., 2.] {
             let mut r = Rig::open(form, pixels_per_point);
             let on_canvas = r.free();

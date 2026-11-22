@@ -1064,10 +1064,6 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
     w.creates = crate::creates::Creates::default();
-    crate::sketch::tests::begin_drawing(&mut w.creates.sketch);
-    assert!(request(&mut w, &loads, &exports).is_none());
-    kept(&w);
-    w.creates.sketch.dismiss();
     let source = w.sessions.export_path().expect("source");
     let reading = crate::sketch_facts::read(&source).expect("reading");
     w.edits.type_height(f, "20");

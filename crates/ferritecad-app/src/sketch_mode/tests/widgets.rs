@@ -57,7 +57,6 @@ impl Ui {
                 edits: &mut w.edits,
                 stl_form: None,
                 can_edit: false,
-                can_new: true,
                 height: ferritecad_ui::HeightState {
                     running: false,
                     can_cancel: false,

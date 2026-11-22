@@ -9,10 +9,10 @@ use std::{fs, path::Path, process::Command};
 
 #[derive(Clone, Copy)]
 enum Model {
-    Polygon,
+    Polygon(&'static [[i32; 2]]),
     Circle,
     Annulus,
-    FullTurn,
+    FullTurn(&'static [[i32; 2]]),
     Sector,
 }
 
@@ -25,85 +25,123 @@ fn click_xy(w: &mut Window, [x, y]: [i32; 2]) {
 
 fn create_in_window(model: Model, output: &Path) {
     let mut w = Window::new(Drawn::Native, None);
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     let empty = w
         .answer_new(ferritecad_ui::NewChoice::Create)
         .expect("Empty");
     w.create_from_new(empty, Ok(())).expect("show Empty");
     assert!(w.sessions.untitled());
-    let size = if matches!(model, Model::Polygon) {
+    draw_model(&mut w, model);
+    assert!(
+        w.save(ferritecad_jobs::SaveTarget::As(output.to_owned()))
+            .published
+    );
+}
+
+fn draw_model(w: &mut Window, model: Model) {
+    let mut ui = draw_profile(w, model);
+    finish_model(w, &mut ui, model);
+}
+
+fn draw_lines(w: &mut Window, ui: &mut Ui, points: &[[i32; 2]]) {
+    ui.press(w, "Line", false);
+    for p in points.iter().copied().chain([points[0]]) {
+        click_xy(w, p);
+    }
+}
+
+fn draw_profile(w: &mut Window, model: Model) -> Ui {
+    let size = if matches!(model, Model::Polygon(_)) {
         70.
     } else {
         20.
     };
     w.input.frame(([-size; 3], [size; 3])).expect("frame");
-    let mut ui = Ui::new(&mut w);
-    start_new(&mut w, &mut ui);
-    ui.press(&mut w, "Off", false);
-    ui.press(&mut w, "1 mm", false);
+    let mut ui = Ui::new(w);
+    start_new(w, &mut ui);
+    ui.press(w, "Off", false);
+    ui.press(w, "1 mm", false);
     match model {
         Model::Circle | Model::Annulus => {
-            ui.press(&mut w, "Circle", false);
+            ui.press(w, "Circle", false);
             for p in [[12, -7], [22, -7]] {
-                click_xy(&mut w, p);
+                click_xy(w, p);
             }
             if matches!(model, Model::Annulus) {
                 for p in [[12, -7], [16, -7]] {
-                    click_xy(&mut w, p);
+                    click_xy(w, p);
                 }
             }
         }
-        Model::Polygon | Model::FullTurn | Model::Sector => {
-            ui.press(&mut w, "Line", false);
-            let points = if matches!(model, Model::Polygon) {
-                [[0, 0], [60, 0], [60, 20], [20, 20], [20, 40], [0, 40]]
-            } else {
-                [[4, 0], [10, 0], [10, 5], [7, 5], [7, 15], [4, 15]]
-            };
-            for p in points.into_iter().chain([points[0]]) {
-                click_xy(&mut w, p);
-            }
-        }
+        Model::Polygon(points) | Model::FullTurn(points) => draw_lines(w, &mut ui, points),
+        Model::Sector => draw_lines(w, &mut ui, &BUSHING),
     }
+    ui
+}
 
+fn finish_model(w: &mut Window, ui: &mut Ui, model: Model) {
     // Refusing the picture must retain the complete draft without resubmitting it.
-    let asked = finish(&mut w, &mut ui);
+    let asked = finish(w, ui);
     let before = format!("{:?}", w.creates.sketch.viewport);
-    let original = version(&w);
+    let original = version(w);
     let refusal = ferritecad_types::CadError::rendering("test upload refused");
-    assert!(!apply_with_upload(&mut w, asked, Err(refusal)));
+    assert!(!apply_with_upload(w, asked, Err(refusal)));
     assert_eq!(format!("{:?}", w.creates.sketch.viewport), before);
-    assert_eq!(version(&w), original);
+    assert_eq!(version(w), original);
     assert!(w.creates.sketch.viewport.take_request().is_none());
-    let asked = finish(&mut w, &mut ui);
-    assert!(apply(&mut w, asked));
+    let asked = finish(w, ui);
+    assert!(apply(w, asked));
     assert!(!w.creates.sketch.viewport.active());
 
-    let sketch = objects(&w)
+    let sketch = objects(w)
         .into_iter()
         .find(|o| o.name.as_deref() == Some("Sketch 1"))
         .expect("published sketch")
         .id;
     let command = match model {
-        Model::Polygon | Model::Circle | Model::Annulus => ModelEdit::Extrude,
-        Model::FullTurn | Model::Sector => ModelEdit::Revolve,
+        Model::Polygon(_) | Model::Circle | Model::Annulus => ModelEdit::Extrude,
+        Model::FullTurn(_) | Model::Sector => ModelEdit::Revolve,
     };
-    enter(&mut w, sketch, command);
+    enter(w, sketch, command);
     match model {
-        Model::Circle | Model::Annulus => ui.type_value(&mut w, "10", "15"),
+        Model::Circle | Model::Annulus => ui.type_value(w, "10", "15"),
         Model::Sector => {
-            ui.press(&mut w, "Angle (°)", true);
-            ui.type_value(&mut w, "90", "137.5");
+            ui.press(w, "Angle (°)", true);
+            ui.type_value(w, "90", "137.5");
         }
-        Model::Polygon | Model::FullTurn => {}
+        Model::Polygon(_) | Model::FullTurn(_) => {}
     }
-    let asked = request(&mut w, &mut ui);
-    assert!(apply(&mut w, asked));
+    let asked = request(w, ui);
+    assert!(apply(w, asked));
     assert!(w.sessions.untitled());
+}
+pub(crate) fn draw_triangle(w: &mut Window) {
+    let model = Model::Polygon(&[[0, 0], [20, 0], [20, 10]]);
+    let mut ui = draw_profile(w, model);
+    let original = version(w);
+    ui.press(w, "Undo", true);
     assert!(
-        w.save(ferritecad_jobs::SaveTarget::As(output.to_owned()))
-            .published
+        text(&ui.settle(w))
+            .iter()
+            .any(|s| s == "2 curves: 2 added, 0 removed, 0 changed")
     );
+    ui.press(w, "Redo", true);
+    assert!(
+        text(&ui.settle(w))
+            .iter()
+            .any(|s| s == "3 curves: 3 added, 0 removed, 0 changed")
+    );
+    assert_eq!(version(w), original);
+    finish_model(w, &mut ui, model);
+}
+
+pub(crate) fn cli_triangle(dir: &Path) {
+    independent_document(Model::Polygon(&[[0, 0], [20, 0], [20, 10]]), dir);
+}
+
+pub(crate) fn solid_cylinder(ui: &Path, dir: &Path) {
+    create_in_window(Model::FullTurn(&[[0, 0], [10, 0], [10, 15], [0, 15]]), ui);
+    independent_document(Model::FullTurn(&[[0, 0], [10, 0], [10, 15], [0, 15]]), dir);
 }
 
 fn cli(dir: &Path, args: &[&str]) -> Vec<u8> {
@@ -173,10 +211,11 @@ fn independent_document(model: Model, dir: &Path) {
         })
     };
     let curves = match model {
-        Model::Polygon => polygon_curves(&POLYGON),
+        Model::Polygon(points) => polygon_curves(points),
         Model::Circle => vec![circle(10)],
         Model::Annulus => vec![circle(10), circle(4)],
-        Model::FullTurn | Model::Sector => polygon_curves(&BUSHING),
+        Model::FullTurn(points) => polygon_curves(points),
+        Model::Sector => polygon_curves(&BUSHING),
     };
     cli(dir, &["create", "empty.fcad"]);
     add_version(
@@ -192,8 +231,8 @@ fn independent_document(model: Model, dir: &Path) {
         ]),
     );
     let (name, feature) = match model {
-        Model::Polygon | Model::Circle | Model::Annulus => {
-            let distance = if matches!(model, Model::Polygon) {
+        Model::Polygon(_) | Model::Circle | Model::Annulus => {
+            let distance = if matches!(model, Model::Polygon(_)) {
                 10
             } else {
                 15
@@ -204,7 +243,7 @@ fn independent_document(model: Model, dir: &Path) {
                 "reversed":false,"end_condition":{"kind":"blind","distance":mm(distance)}}),
             )
         }
-        Model::FullTurn | Model::Sector => {
+        Model::FullTurn(_) | Model::Sector => {
             let extent = if matches!(model, Model::Sector) {
                 json!({"kind":"partial","angle":{"value":137.5,"unit":"deg"}})
             } else {
@@ -230,9 +269,9 @@ fn independent_document(model: Model, dir: &Path) {
 
 fn create_template(model: Model, dir: &Path) {
     let (command, input) = match model {
-        Model::Polygon => (
+        Model::Polygon(points) => (
             "create-sketch-extrude",
-            json!({"request_version":1,"points_mm":POLYGON,"height_mm":10}),
+            json!({"request_version":1,"points_mm":points,"height_mm":10}),
         ),
         Model::Circle => (
             "create-circle-extrude",
@@ -243,10 +282,10 @@ fn create_template(model: Model, dir: &Path) {
             json!({"schema_version":1,
             "center_mm":[12,-7],"outer_radius_mm":10,"inner_radius_mm":4,"height_mm":15}),
         ),
-        Model::FullTurn => (
+        Model::FullTurn(points) => (
             "create-sketch-revolve",
             json!({"request_version":1,
-            "points_mm":BUSHING,"axis":"sketch_y","angle":"full_turn"}),
+            "points_mm":points,"axis":"sketch_y","angle":"full_turn"}),
         ),
         Model::Sector => (
             "create-sketch-revolve",
@@ -314,8 +353,8 @@ fn compare_creation(model: Model) {
         "original template STL"
     );
     match model {
-        Model::Polygon => {}
-        Model::FullTurn => assert_eq!(
+        Model::Polygon(_) => {}
+        Model::FullTurn(_) => assert_eq!(
             export(dir, "ui", "fbx").len(),
             export(dir, "cli", "fbx").len()
         ),
@@ -344,7 +383,7 @@ fn compare_creation(model: Model) {
 
 #[test]
 fn native_polygon_creation_matches_both_cli_references() {
-    compare_creation(Model::Polygon);
+    compare_creation(Model::Polygon(&POLYGON));
 }
 #[test]
 fn native_circle_creation_matches_both_cli_references() {
@@ -356,9 +395,63 @@ fn native_annulus_creation_matches_both_cli_references() {
 }
 #[test]
 fn native_full_turn_creation_matches_both_cli_references() {
-    compare_creation(Model::FullTurn);
+    compare_creation(Model::FullTurn(&BUSHING));
 }
 #[test]
 fn native_sector_creation_matches_both_cli_references() {
     compare_creation(Model::Sector);
+}
+
+#[test]
+fn viewport_rectangle_submits_exactly_its_drawn_vertices_and_height() {
+    let root = tempfile::tempdir().expect("root");
+    let file = root.path().join("start.fcad");
+    Document::create(&file)
+        .expect("Empty")
+        .close()
+        .expect("close");
+    let mut w = Window::new(Drawn::Mock, None);
+    w.open(&file);
+    w.input.frame(([-70.; 3], [70.; 3])).expect("view");
+    let mut ui = Ui::new(&mut w);
+    start_new(&mut w, &mut ui);
+    ui.press(&mut w, "Off", false);
+    ui.press(&mut w, "1 mm", false);
+    ui.press(&mut w, "Line", false);
+    let expected = [[0, 0], [40, 0], [40, 30], [0, 30]];
+    for p in expected.into_iter().chain([expected[0]]) {
+        click_xy(&mut w, p);
+    }
+    let asked = finish(&mut w, &mut ui);
+    let EditChange::AddSketch {
+        object,
+        sketch: drawing,
+        ..
+    } = asked.changes.last().expect("sketch")
+    else {
+        panic!("expected the drawing");
+    };
+    let sketch = *object;
+    let curves = &drawing.curves;
+    assert_eq!(curves.len(), expected.len());
+    for (i, c) in curves.iter().enumerate() {
+        let SketchGeometry::Line { start, end } = c.geometry else {
+            panic!("line")
+        };
+        assert_eq!(start, point(expected[i][0].into(), expected[i][1].into()));
+        let next = expected[(i + 1) % expected.len()];
+        assert_eq!(end, point(next[0].into(), next[1].into()));
+    }
+    assert!(apply(&mut w, asked));
+    enter(&mut w, sketch, ModelEdit::Extrude);
+    let asked = request(&mut w, &mut ui);
+    let FeatureAddition::Extrude {
+        profile,
+        end_condition: EndCondition::Blind { distance },
+        ..
+    } = feature(&asked.changes[0])
+    else {
+        panic!("blind extrusion")
+    };
+    assert_eq!((*profile, distance.value()), (sketch, 10.));
 }

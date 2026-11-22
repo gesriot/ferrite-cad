@@ -132,7 +132,7 @@ impl Window {
         )
     }
 
-    fn picture(&self, path: &Path) -> Result<LoadedScene> {
+    pub(crate) fn picture(&self, path: &Path) -> Result<LoadedScene> {
         let (tx, rx) = mpsc::channel();
         let worker = draw(
             self.drawn,
@@ -206,7 +206,7 @@ impl Window {
 
     /// The shown tab's Apply of a height, through its edit worker, picture worker
     /// and the arrival statement.
-    fn apply(&mut self, millimetres: f64) {
+    pub(crate) fn apply(&mut self, millimetres: f64) {
         let feature = self.feature();
         let (tx, rx) = mpsc::channel();
         let generation = self

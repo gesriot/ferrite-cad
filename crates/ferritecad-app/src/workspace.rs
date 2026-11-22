@@ -437,7 +437,6 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
             );
             sections.sketch.draw(
                 ui,
-                sections.can_new,
                 sections.creating || sections.edits.running(),
                 sections.document_outcome,
             );
@@ -504,7 +503,6 @@ pub(crate) fn quiet_layout(
         edits: &mut edits,
         stl_form: None,
         can_edit: false,
-        can_new: true,
         height: ferritecad_ui::HeightState {
             running: false,
             can_cancel: false,

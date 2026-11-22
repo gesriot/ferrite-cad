@@ -1382,8 +1382,7 @@ struct Sections<'a> {
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
-    /// §30Q: New may be opened ([`can_leave_tab`]); the drawing's button asks it.
-    can_new: bool,
+
     /// What the height form may offer: Apply on the open document, and the copy
     /// workflow only while the document has nothing unsaved.
     height: ferritecad_ui::HeightState,
@@ -3830,7 +3829,6 @@ impl ApplicationHandler<AppEvent> for App {
                         model_menu: &mut self.model_menu,
                         dialog_failure: self.dialogs.failure(),
                         can_edit,
-                        can_new: leave,
                         height,
                         held_back: self.sessions.dirty() && !self.sessions.busy(),
                         document_outcome: &self.sessions.status,
@@ -3984,10 +3982,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // Opening the form replaces nothing; the question about
                         // unsaved changes is asked when the document is made.
                         if chosen.new_document {
-                            self.begin_new(false);
-                        }
-                        if self.creates.sketch.take_drawing_request() {
-                            self.begin_new(true);
+                            self.begin_new();
                         }
                         if chosen.cancel_document {
                             // A switch's slot is released by the shown tab's own
@@ -4176,9 +4171,6 @@ impl ApplicationHandler<AppEvent> for App {
                                 request.expected,
                                 request.changes,
                             );
-                        }
-                        if let Some(content) = self.creates.sketch.take_request() {
-                            self.create_new(content);
                         }
                         if chosen.cancel_create {
                             self.creates.cancel(&mut self.input);
@@ -4633,11 +4625,10 @@ impl App {
         );
     }
 
-    /// §30Q: **New** (`drawing: false`) or **Create sketch + Extrude…**: opens New's
-    /// form or drawing over the shown tab, whose open forms are set aside as its
+    /// Open New over the shown tab, whose open forms are set aside as its
     /// draft until New ends ([`open_new`]). Refused while anything but an idle form
     /// holds the window ([`can_leave_tab`], the predicate the buttons ask).
-    fn begin_new(&mut self, drawing: bool) {
+    fn begin_new(&mut self) {
         if !self.can_leave_tab() {
             self.input.request_redraw();
             return;
@@ -4649,15 +4640,7 @@ impl App {
             &mut self.edits,
             &mut self.creates,
             &mut self.input,
-            |creates, input| {
-                if drawing {
-                    creates.begin_drawing();
-                    input.request_redraw();
-                    true
-                } else {
-                    ask_new(creates, loads, exports, input)
-                }
-            },
+            |creates, input| ask_new(creates, loads, exports, input),
         );
     }
 

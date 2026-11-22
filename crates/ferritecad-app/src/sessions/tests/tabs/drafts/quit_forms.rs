@@ -554,10 +554,10 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
         .handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
     assert!(!w.begin_quit());
     w.input.forget_pending();
-    crate::sketch::tests::begin_drawing(&mut w.creates.sketch);
+    assert!(w.begin_new());
     assert!(w.begin_quit());
     w.stop_quit();
-    w.creates.sketch.dismiss();
+    w.answer_new(ferritecad_ui::NewChoice::Cancel);
     let g = w
         .sessions
         .begin_apply(|_, _, _| std::thread::spawn(|| {}))

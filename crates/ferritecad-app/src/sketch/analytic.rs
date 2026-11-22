@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §31I: the canvas of the Circle and Circle-with-hole forms, New and saved.
+//! §31I: the canvas of the saved Circle and annulus forms.
 //!
 //! A view of the strings the form already holds, with three handles on it. It
 //! owns no model and no history: a finished gesture hands back its exact press

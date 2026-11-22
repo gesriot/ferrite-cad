@@ -1,5 +1,9 @@
 # §31C — Object snaps in the Sketch editor
 
+The canvas controls described here remain available for a saved sketch. To create a sketch,
+use **New sketch…** in the viewport, then **Finish** and **Extrude…** or **Revolve…**.
+The dated verification sections record the interface used for those runs. [Sketch mode](sketch-mode.md)
+
 Status at the author handoff: implemented, **unstaged and uncommitted** on branch
 `sketch-object-snaps`; no window was run; the diff has no CI of its own. Base:
 `c89bd8b250a896ed13a6a2e897e6ab25df95107b` (merge of PR #105; HEAD = main =
@@ -45,11 +49,6 @@ implemented.
 * **Object beats grid.** Only without an object point does the grid step apply. The
   chosen point is written as the shortest decimal that reads back as the same number
   (`25.400000000000002`, not `25.400`), never re-rounded. Switch off: old behaviour.
-* **New points.** A click that would add a point uses the nearest object point; a click
-  inside the 9-point vertex grab still selects that vertex. Hovering shows the marker
-  (a square, triangle or cross) at the point and the name beside the pointer, only where
-  a click would act: over an open drawing, not over a closed contour, where only a
-  drag shows it.
 * **Drag.** The candidates are fixed at the press, with the switch as it was then (the
   grid step is frozen the same way; a later toggle changes the next gesture; the switch
   is disabled while held). The vertex itself and every candidate within the document
@@ -158,10 +157,7 @@ foot with a 20-wide column to y = 40, height 10; `shasum -a 256 L.fcad` =
    (20,20), (20,40), (0,40) and the original curve IDs) and compare SQL cells, UUIDs and
    references, `export-stl` and `export-fbx` bytes; independent STL should be 14000 mm³
    and strict ufbx should accept the FBX. Negative control: leave one vertex at (60, 20).
-6. New drawing: click three points, switch on, hover and click near the middle of the
-   first edge (`Midpoint`) and near a crossing made by a later edge (`Intersection`);
-   typed `Next X/Y` stay exact. Try a window over the canvas and a running job: no marker.
-7. Observe memory pressure and exit status; do not call the OOM investigation closed.
+6. Observe memory pressure and exit status; do not call the OOM investigation closed.
 
 ## Independent review
 

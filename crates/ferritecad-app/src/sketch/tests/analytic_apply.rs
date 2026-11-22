@@ -174,7 +174,7 @@ fn plate_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
     ferritecad_jobs::create_document(
         ferritecad_jobs::CreateDocumentRequest::new(
             &path,
-            NewDocument::SamplePlate(Default::default()),
+            ferritecad_jobs::NewDocument::SamplePlate(Default::default()),
             "test",
         ),
         &ferritecad_kernel::OperationContext::default(),
@@ -686,7 +686,7 @@ fn the_documents_last_outcome_is_readable_inside_the_open_form() {
                 )),
                 ..Default::default()
             },
-            |ui| e.draw(ui, true, false, outcome),
+            |ui| e.draw(ui, false, outcome),
         );
         out.textures_delta.clear();
         out

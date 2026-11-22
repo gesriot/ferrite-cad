@@ -7,7 +7,7 @@ use ferritecad_document::{
 };
 use ferritecad_types::StableEntityId;
 
-mod window;
+pub(crate) mod window;
 
 fn feature(change: &EditChange) -> &FeatureAddition {
     match change {

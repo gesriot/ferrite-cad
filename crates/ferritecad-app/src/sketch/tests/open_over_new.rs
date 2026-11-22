@@ -35,7 +35,7 @@ fn window_frame(
         },
         |ui| {
             let (form, sketch) = creates.forms();
-            crate::in_tab_scope(ui, "tab-forms", 1, |ui| sketch.draw(ui, true, false, ""));
+            crate::in_tab_scope(ui, "tab-forms", 1, |ui| sketch.draw(ui, false, ""));
             (asked, over) = ferritecad_ui::new_document_section(
                 ui,
                 form,

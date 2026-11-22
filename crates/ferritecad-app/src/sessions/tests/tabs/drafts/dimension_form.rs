@@ -50,7 +50,7 @@ pub(super) fn frame(
             events,
             ..Default::default()
         },
-        |ui| w.creates.sketch.draw(ui, true, false, ""),
+        |ui| w.creates.sketch.draw(ui, false, ""),
     );
     out.textures_delta.clear();
     out

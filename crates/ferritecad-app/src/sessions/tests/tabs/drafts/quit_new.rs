@@ -115,7 +115,7 @@ impl Window {
 fn idle_empty_and_sample_new_back_late_abort_and_original_create_are_executable() {
     for content in [NewContent::Empty, NewContent::SamplePlate] {
         let mut w = Window::new(Drawn::Mock, None);
-        assert!(w.begin_new(false));
+        assert!(w.begin_new());
         w.literal_new(content);
         assert!(w.begin_quit());
         let first = w.tabs.quit_new_question().expect("question");
@@ -139,7 +139,7 @@ fn idle_empty_and_sample_new_back_late_abort_and_original_create_are_executable(
         assert_eq!(w.complete_quit(&mut restores), crate::QuitEnd::Exit);
     }
     let mut empty = Window::new(Drawn::Mock, None);
-    assert!(empty.begin_new(false));
+    assert!(empty.begin_new());
     empty.hold_quit_new();
     assert_eq!(
         empty.complete_quit(&mut Restores::default()),
@@ -169,42 +169,16 @@ fn two_forms(w: &mut Window, root: &Path) -> (TabId, TabId, ObjectId, ObjectId) 
     (a, b, af, bf)
 }
 
-fn drawing_with_history(w: &mut Window) -> (Vec<[String; 2]>, usize, usize) {
-    assert!(w.begin_new(true));
-    crate::sketch::tests::fill_drawing(&mut w.creates.sketch);
-    crate::sketch::tests::scribble_drawing(&mut w.creates.sketch)
+fn open_empty_form(w: &mut Window) {
+    assert!(w.begin_new());
+    w.literal_new(NewContent::Empty);
 }
 
-fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, usize)) {
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch).as_ref(),
-        Some(before),
-        "New contour/history lost"
-    );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch)
-            .expect("drawing")
-            .0[0][0],
-        " 33.0 "
-    );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch).as_ref(),
-        Some(before)
-    );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    w.creates.set_can_create(true);
-    crate::sketch::tests::press(&mut w.creates.sketch, "Close contour");
-    crate::sketch::tests::press(&mut w.creates.sketch, crate::sketch::CREATE_DRAWN);
-    let request = w
-        .creates
-        .sketch
-        .take_request()
-        .expect("returned drawing submits");
+fn finish_returned_triangle(w: &mut Window) {
+    w.assert_literal_new(NewContent::Empty);
+    let request = w.answer_new(NewChoice::Create).expect("Empty");
     if w.drawn == Drawn::Native {
-        w.create_from_new(request, Ok(()))
-            .expect("original drawing job");
+        w.create_from_new(request, Ok(())).expect("create Empty");
     } else {
         // Same DocumentSession creation job with an explicit mock factory. This
         // is owner/action evidence; the separate true-stub gate proves refusal.
@@ -237,9 +211,9 @@ fn finish_returned_drawing(w: &mut Window, before: &(Vec<[String; 2]>, usize, us
         .expect("original job starts");
         let candidate = crate::creates::finish_create(&mut w.creates, &mut w.input, g, wait(&rx))
             .expect("mock candidate");
-        w.bind_candidate(candidate, Ok(()))
-            .expect("returned drawing accepted");
+        w.bind_candidate(candidate, Ok(())).expect("show Empty");
     }
+    crate::sweeps::tests::window::creation::draw_triangle(w);
     let reading =
         crate::sketch_facts::read(&w.sessions.export_path().expect("New model")).expect("read");
     assert_eq!(
@@ -270,7 +244,7 @@ fn late_cancel_after_save_or_deferred_discard_returns_new_above_b_and_both_tab_f
         let root = tempfile::tempdir().expect("root");
         let mut w = Window::new(Drawn::Mock, None);
         let (a, b, af, bf) = two_forms(&mut w, root.path());
-        let before = drawing_with_history(&mut w);
+        open_empty_form(&mut w);
         assert!(w.tabs.has_aside());
         let tab_count = w.tabs.count();
         w.hold_quit_new();
@@ -311,7 +285,7 @@ fn late_cancel_after_save_or_deferred_discard_returns_new_above_b_and_both_tab_f
             !save,
             "published Save or deferred Discard changed"
         );
-        finish_returned_drawing(&mut w, &before);
+        finish_returned_triangle(&mut w);
         let n = w.sessions.tab();
         assert_eq!(w.tabs.count(), tab_count + 1);
         w.round(b);
@@ -336,7 +310,7 @@ fn consent_names_quit_and_new_once_and_never_skips_the_dirty_model() {
     let mut w = Window::new(Drawn::Mock, None);
     w.open(&file);
     w.apply(18.);
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     assert!(w.begin_quit());
     let old = w.tabs.quit_new_question().expect("old question");
@@ -367,7 +341,7 @@ fn consent_names_quit_and_new_once_and_never_skips_the_dirty_model() {
     let model = w.tabs.ask_quit_model(&w.sessions).expect("dirty question");
     w.stop_quit();
     w.answer_new(NewChoice::Cancel);
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::Empty);
     assert!(w.begin_quit());
     let newer = w.tabs.quit_new_question().expect("new New");
@@ -393,7 +367,7 @@ fn save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new() 
         w.open_height_form();
         let af = w.feature();
         w.edits.type_height(af, " a literal ");
-        assert!(w.begin_new(false));
+        assert!(w.begin_new());
         w.literal_new(NewContent::SamplePlate);
         w.hold_quit_new();
         w.confirm_quit();
@@ -440,7 +414,7 @@ fn save_refusals_dialog_cancel_save_as_and_external_conflict_return_whole_new() 
     let root = tempfile::tempdir().expect("root");
     let mut w = Window::new(Drawn::Mock, None);
     w.create(NewDocument::Empty).expect("accepted Untitled");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::Empty);
     w.hold_quit_new();
     let occupied = root.path().join("occupied.fcad");
@@ -473,7 +447,7 @@ fn scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_erro
         let root = tempfile::tempdir().expect("root");
         let mut w = Window::new(Drawn::Mock, None);
         let (a, b, af, bf) = two_forms(&mut w, root.path());
-        assert!(w.begin_new(false));
+        assert!(w.begin_new());
         w.literal_new(NewContent::SamplePlate);
         w.hold_quit_new();
         w.confirm_quit();
@@ -518,7 +492,7 @@ fn scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_erro
     let mut restores = Restores::new(Ok(folder));
     let mut w = Window::new(Drawn::Mock, None);
     let (a, _, af, bf) = two_forms(&mut w, root.path());
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     w.hold_quit_new();
     assert!(matches!(
@@ -531,7 +505,7 @@ fn scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_erro
     assert_eq!(w.edits.typed(), Some((Some(bf), " Bx ")));
     w.round(a);
     assert_eq!(w.edits.typed(), Some((Some(af), " 26x ")));
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::Empty);
     w.hold_quit_new();
     assert_eq!(
@@ -546,7 +520,7 @@ fn scene_switch_refusals_and_first_last_tabs_error_return_all_owners_second_erro
 fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_result() {
     for made_first in [false, true] {
         let mut w = Window::new(Drawn::Mock, None);
-        assert!(w.begin_new(false));
+        assert!(w.begin_new());
         w.literal_new(NewContent::Empty);
         let held = hold_creation(
             &mut w.creates,
@@ -574,7 +548,7 @@ fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_res
         w.stop_quit();
     }
     let mut w = Window::new(Drawn::Mock, None);
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     let held = hold_creation(
         &mut w.creates,
@@ -601,7 +575,7 @@ fn running_queued_and_unaccepted_create_hold_quit_and_deliver_their_original_res
     // Receiving the result is not proof the thread exited: hold it after its
     // answer, so this boundary does not depend on the host scheduler's speed.
     let mut trailing = Window::new(Drawn::Mock, None);
-    assert!(trailing.begin_new(false));
+    assert!(trailing.begin_new());
     trailing.literal_new(NewContent::Empty);
     let (answered, answer) = mpsc::channel();
     let (release, resume) = mpsc::channel();
@@ -682,15 +656,10 @@ fn new_frame(
 
 #[test]
 fn real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_owners() {
-    for drawing in [false, true] {
+    for content in [NewContent::Empty, NewContent::SamplePlate] {
         let mut w = Window::new(Drawn::Mock, None);
-        assert!(w.begin_new(drawing));
-        let before = if drawing {
-            Some(drawing_already_open(&mut w))
-        } else {
-            w.literal_new(NewContent::SamplePlate);
-            None
-        };
+        assert!(w.begin_new());
+        w.literal_new(content);
         assert!(w.begin_quit());
         let ctx = egui::Context::default();
         let out = new_frame(&w, &ctx, vec![]).0;
@@ -708,11 +677,7 @@ fn real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_ow
             "whole Quit",
             "every tab form",
             "Saves already published",
-            if drawing {
-                "sketch you drew"
-            } else {
-                "choices and sizes"
-            },
+            "choices and sizes",
         ] {
             assert!(words.contains(word), "missing {word}: {words}");
         }
@@ -755,21 +720,9 @@ fn real_new_quit_widgets_explain_loss_and_back_and_discard_address_the_actual_ow
             if answer == CloseFormChoice::Discard {
                 w.stop_quit();
             }
-            if let Some(before) = &before {
-                assert_eq!(
-                    crate::sketch::tests::vertex_draft(&w.creates.sketch).as_ref(),
-                    Some(before)
-                );
-            } else {
-                w.assert_literal_new(NewContent::SamplePlate);
-            }
+            w.assert_literal_new(content);
         }
     }
-}
-
-fn drawing_already_open(w: &mut Window) -> (Vec<[String; 2]>, usize, usize) {
-    crate::sketch::tests::fill_drawing(&mut w.creates.sketch);
-    crate::sketch::tests::scribble_drawing(&mut w.creates.sketch)
 }
 
 #[test]
@@ -785,7 +738,7 @@ fn stub_real_creation_refusal_returns_idle_new_and_underlying_form() {
     w.open_height_form();
     let af = w.feature();
     w.edits.type_height(af, " a literal ");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     let (tx, rx) = mpsc::channel();
     let root_path = w.private.path().to_path_buf();
@@ -825,7 +778,7 @@ fn idle_new_transition_checks_foreground_and_gestures_before_taking_any_form() {
     w.open(&file);
     w.open_height_form();
     w.edits.type_height(w.feature(), " underneath New ");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     assert!(w.begin_quit());
     let id = w.tabs.quit_new_question().expect("question");
@@ -872,19 +825,15 @@ fn idle_new_transition_checks_foreground_and_gestures_before_taking_any_form() {
     assert!(!w.begin_quit());
     w.creates.keep_new(&mut w.input);
     w.answer_new(NewChoice::Cancel);
-    assert!(w.begin_new(true));
-    crate::sketch::tests::fill_drawing(&mut w.creates.sketch);
+    let source = w.sessions.export_path().expect("saved model");
+    let reading = crate::sketch_facts::read(&source).expect("model");
+    let sketch = reading.sketches[0].sketch;
+    assert!(w.creates.sketch.begin_edit(&source, &reading, sketch));
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
-    assert!(!w.begin_quit(), "new-contour gesture lost its hold");
+    assert!(!w.begin_quit(), "a held vertex keeps the transition");
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
-    // §31I: a handle held on New's Circle canvas holds Quit too.
-    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Circle");
-    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
-    assert!(!w.begin_quit(), "a held Circle handle in New lost its hold");
-    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
-    // §31J: a pan of its view holds Quit too.
     let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
-    assert!(!w.begin_quit(), "a held pan in New lost its hold");
+    assert!(!w.begin_quit(), "a held canvas pan keeps the transition");
     crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
 }
 
@@ -913,7 +862,7 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     let b = w.sessions.tab();
     w.open_height_form();
     w.round(a);
-    let new = drawing_with_history(&mut w);
+    open_empty_form(&mut w);
     w.hold_quit_new();
     assert_eq!(
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
@@ -926,7 +875,7 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     let id = w.park_quit_form();
     assert!(w.tabs.back_quit_form(&w.sessions, id));
     w.restore_after_quit();
-    finish_returned_drawing(&mut w, &new);
+    finish_returned_triangle(&mut w);
     w.round(a);
     assert_eq!(
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
@@ -987,13 +936,20 @@ fn compare_new_outputs(root: &Path) {
         r#"{"request_version":1,"points_mm":[[0,0],[20,0],[20,10]],"height_mm":10}"#,
     )
     .expect("request");
-    let independently_created = peer_root.path().join("created.fcad");
+    let template = peer_root.path().join("created.fcad");
     cli(&[
         "create-sketch-extrude".as_ref(),
         request.as_os_str(),
         "-o".as_ref(),
-        independently_created.as_os_str(),
+        template.as_os_str(),
     ]);
+    crate::sweeps::tests::window::creation::cli_triangle(peer_root.path());
+    let independently_created = peer_root.path().join("cli.fcad");
+    assert_eq!(
+        peer_stl(&origin, peer_root.path(), "original-geometry"),
+        peer_stl(&template, peer_root.path(), "template-geometry"),
+        "original triangle template STL"
+    );
     assert_eq!(
         read_semantics(&origin).0,
         read_semantics(&independently_created).0,
@@ -1159,7 +1115,7 @@ fn native_new_recipe(root: &Path) {
     .0;
     let b_form = format!("{:?}", w.creates.sketch);
     w.round(a);
-    let before = drawing_with_history(&mut w);
+    open_empty_form(&mut w);
     w.hold_quit_new();
     w.confirm_quit();
     assert!(w.save_quit(SaveTarget::InPlace, false).published);
@@ -1178,7 +1134,7 @@ fn native_new_recipe(root: &Path) {
     assert!(w.begin_quit());
     let again = w.tabs.quit_new_question().expect("repeat New question");
     assert!(w.answer_quit_new(again, CloseFormChoice::Back));
-    finish_returned_drawing(&mut w, &before);
+    finish_returned_triangle(&mut w);
     let n = w.sessions.tab();
     assert!(
         w.save(SaveTarget::As(root.join("n-created.fcad")))
@@ -1279,7 +1235,7 @@ fn mixed_returned_new_creates_with_occt_without_solver_and_keeps_both_forms() {
     w.open_height_form();
     let af = w.feature();
     w.edits.type_height(af, " a literal ");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.literal_new(NewContent::SamplePlate);
     w.hold_quit_new();
     w.confirm_quit();

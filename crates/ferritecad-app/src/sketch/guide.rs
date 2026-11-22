@@ -142,7 +142,7 @@ impl Length {
     }
 }
 
-/// What a gesture freezes at its press (a click for a new point): the guide choice
+/// What a gesture freezes at its press: the guide choice
 /// and the length as typed then.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Settings {
@@ -342,22 +342,13 @@ pub(super) fn shown(value: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// What the guide's anchor is, for the label: a new point after a vertex, or the
-/// vertex being dragged. Both numbers are the 1-based numbers the canvas draws.
+/// The saved vertex being dragged and the anchor from which its movement is measured.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Role {
-    Add {
-        after: usize,
-    },
     Drag {
         vertex: usize,
     },
-    /// §31D-2: a gesture that measures from a shown object point instead: it adds
-    /// vertex `vertices + 1`, or moves `vertex`, in a contour of `vertices` points.
-    AddFrom {
-        source: Candidate,
-        vertices: usize,
-    },
+    /// Measure the displacement from a shown object point.
     DragFrom {
         source: Candidate,
         vertices: usize,
@@ -378,16 +369,6 @@ pub(super) fn label(outcome: &Outcome, role: Role) -> Option<String> {
         }
     };
     match (outcome, role) {
-        (Outcome::Guide(g), Role::Add { after }) => {
-            let length = if g.typed { "Length " } else { "" };
-            Some(format!(
-                "{}° · {length}{} mm from vertex {}{}",
-                degrees(g.heading),
-                distance(g),
-                after + 1,
-                conflict(g),
-            ))
-        }
         (Outcome::Guide(g), Role::Drag { vertex }) => Some(if g.typed {
             format!(
                 "{}° · Length {} mm · vertex {} moved from its start{}",
@@ -404,12 +385,6 @@ pub(super) fn label(outcome: &Outcome, role: Role) -> Option<String> {
                 distance(g),
             )
         }),
-        (Outcome::Guide(g), Role::AddFrom { source, vertices }) => Some(from_object(
-            g,
-            &distance(g),
-            &format!("{} · {}", source.kind.label(), source.source(vertices)),
-            &format!("adds vertex {}", vertices + 1),
-        )),
         (
             Outcome::Guide(g),
             Role::DragFrom {
@@ -422,10 +397,6 @@ pub(super) fn label(outcome: &Outcome, role: Role) -> Option<String> {
             &distance(g),
             &format!("{} · {}", source.kind.label(), source.source(vertices)),
             &format!("moves vertex {}", vertex + 1),
-        )),
-        (Outcome::Refused { heading }, Role::Add { .. } | Role::AddFrom { .. }) => Some(format!(
-            "{}° · Length refused · no point added",
-            degrees(*heading)
         )),
         (Outcome::Refused { heading }, Role::Drag { vertex } | Role::DragFrom { vertex, .. }) => {
             Some(format!(
@@ -837,7 +808,7 @@ mod tests {
             (g.at, g.passed_over),
             ([22.5, 30.0], Some(SnapKind::Midpoint))
         );
-        let words = label(&outcome, Role::Add { after: 2 }).expect("label");
+        let words = label(&outcome, Role::Drag { vertex: 2 }).expect("label");
         assert!(
             words.contains("Length 2.5 mm") && words.contains("Midpoint is not at this length"),
             "{words}"
@@ -906,14 +877,12 @@ mod tests {
             passed_over: None,
         };
         assert_eq!(strings(1, g.at, &anchor_text()), ["20.0", "42.5"]);
-        let add = label(&Outcome::Guide(g.clone()), Role::Add { after: 2 }).expect("label");
-        assert_eq!(add, "90° · 12.5 mm from vertex 3");
         let drag = label(&Outcome::Guide(g.clone()), Role::Drag { vertex: 2 }).expect("label");
         assert_eq!(drag, "90° · vertex 3 moved 12.5 mm from its start");
         let typed = Guided { typed: true, ..g };
         let drag = label(&Outcome::Guide(typed), Role::Drag { vertex: 2 }).expect("label");
         assert_eq!(drag, "90° · Length 12.5 mm · vertex 3 moved from its start");
-        assert_eq!(label(&Outcome::Open, Role::Add { after: 0 }), None);
+        assert_eq!(label(&Outcome::Open, Role::Drag { vertex: 0 }), None);
         for (mode, length, fragment) in [
             (Mode::Off, Length::None, "Guides are off"),
             (Mode::Polar, Length::None, "ringed anchor"),
@@ -937,7 +906,7 @@ mod tests {
                 typed: true,
                 passed_over: None,
             };
-            let words = label(&Outcome::Guide(g), Role::Add { after: 0 }).expect("label");
+            let words = label(&Outcome::Guide(g), Role::Drag { vertex: 0 }).expect("label");
             assert!(words.contains(&format!("Length {length} mm")), "{words}");
             let (words, _) = note(Mode::Orthogonal, Length::Millimetres(length), "");
             assert!(words.contains(&format!("Length {length} mm")), "{words}");

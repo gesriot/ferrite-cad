@@ -140,14 +140,7 @@ pub(crate) fn apply_with_upload(
                 .recv_timeout(Duration::from_secs(60))
                 .expect("scene")
                 .expect("built");
-            let cold = ferritecad_scene::snapshot_of(
-                &path,
-                &mut ferritecad_occt::OcctKernel::new().expect("OCCT"),
-                ferritecad_occt::OcctKernel::import_step,
-                &Default::default(),
-                &Default::default(),
-            )
-            .expect("cold scene");
+            let cold = w.picture(&path).expect("independent cold scene");
             assert_eq!(
                 scene, cold,
                 "candidate must match a cold load before publication"
