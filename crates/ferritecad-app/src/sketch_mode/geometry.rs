@@ -138,13 +138,14 @@ pub(super) fn pick(
 
 /// The one catalogue of exact sketch-coordinate snap targets, in curve order.
 pub(super) fn targets(curves: &[SketchCurve]) -> impl Iterator<Item = Point2> + '_ {
-    targets_except(curves, None)
+    targets_except(curves, &[])
 }
 
-pub(super) fn targets_except(
-    curves: &[SketchCurve],
-    exclude: Option<ferritecad_document::SketchPointRef>,
-) -> impl Iterator<Item = Point2> + '_ {
+/// The same catalogue without the named points, which a drag carries along.
+pub(super) fn targets_except<'a>(
+    curves: &'a [SketchCurve],
+    exclude: &'a [ferritecad_document::SketchPointRef],
+) -> impl Iterator<Item = Point2> + 'a {
     curves.iter().flat_map(move |curve| {
         if let SketchGeometry::Arc {
             center,
@@ -161,7 +162,7 @@ pub(super) fn targets_except(
         }
         super::rules::handles(curve)
             .into_iter()
-            .filter(|(handle, _)| Some(*handle) != exclude)
+            .filter(|(handle, _)| !exclude.contains(handle))
             .map(|(_, at)| at)
             .collect()
     })

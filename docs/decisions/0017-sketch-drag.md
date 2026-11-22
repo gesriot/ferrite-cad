@@ -60,7 +60,8 @@ ADR 0016. Only Finish publishes a document edit.
 For a drawing click or drag sample, take the first available target in this order.
 
 1. Use the existing object snap targets and their exact sketch coordinates.
-   Exclude the grabbed point by identity during its own drag.
+   During a drag, exclude the grabbed point and every point that Coincident
+   constraints keep with it, because they move with the pointer.
 2. Project onto the held guide. Line uses its current segment start as the
    anchor. A drag uses the point's position at press time. Circle and Point
    have no guide anchor. Share the canvas's guide acquisition, including

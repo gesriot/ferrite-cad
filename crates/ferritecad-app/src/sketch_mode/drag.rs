@@ -33,6 +33,8 @@ enum Motion {
 #[derive(Debug)]
 pub(super) struct Gesture {
     handle: SketchPointRef,
+    // The handle and its Coincident partners: they move together, so none is a snap target.
+    carried: Vec<SketchPointRef>,
     anchor: Point2,
     press: (f32, f32),
     before: State,
@@ -224,6 +226,7 @@ impl Editor {
                 let anchor = rules::position(&draft.state.curves, handle).expect("selected handle");
                 self.gesture = Some(Gesture {
                     handle,
+                    carried: rules::coincident_with(&draft.state.constraints, handle),
                     anchor,
                     press,
                     before: draft.state.clone(),
@@ -285,7 +288,7 @@ impl Editor {
                 && let Some(raw) = geometry::point_on_plane(camera, pixel, plane)
             {
                 let object = geometry::snap(
-                    geometry::targets_except(&draft.state.curves, Some(g.handle)),
+                    geometry::targets_except(&draft.state.curves, &g.carried),
                     camera,
                     plane,
                     pixel,
@@ -338,6 +341,7 @@ mod tests {
         });
         let mut g = Gesture {
             handle: b,
+            carried: vec![b],
             anchor: point(10., 0.),
             press: (4., 4.),
             before: draft.state.clone(),

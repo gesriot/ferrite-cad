@@ -330,7 +330,8 @@ impl Editor {
                     draft.history(false);
                 }
             });
-            if !ui.ctx().egui_wants_keyboard_input() {
+            // A drag owns the drawing until release: Escape cancels it above, Delete is ignored.
+            if self.gesture.is_none() && !ui.ctx().egui_wants_keyboard_input() {
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                     draft.escape();
                 }

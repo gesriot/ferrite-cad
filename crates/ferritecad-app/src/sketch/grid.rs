@@ -36,6 +36,8 @@ impl Snap {
             Self::Five => (value / 5.0).round() * 5.0,
             Self::Ten => (value / 10.0).round() * 10.0,
         };
+        // Keep invalid input invalid for the shared polygon policy. A
+        // float-to-integer cast would turn NaN into zero or saturate it.
         if snapped.is_finite() { snapped } else { value }
     }
 

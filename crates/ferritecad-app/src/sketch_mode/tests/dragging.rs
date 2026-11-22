@@ -452,3 +452,55 @@ fn a_contradictory_drawing_reports_the_same_named_rules_at_drag_start_as_on_rebu
     assert!(d(&w).undo.is_empty());
     assert_eq!(counts(), (1, 0, 0));
 }
+
+#[test]
+fn a_coincident_corner_follows_pointer_steps_shorter_than_the_snap_aperture() {
+    if !native() {
+        return;
+    }
+    let first = line([-10., -6.], [10., -6.]);
+    let last = line([-10., 6.], [-10., -6.]);
+    let corner = SketchPointRef::new(first.id, S::Start);
+    let partner = SketchPointRef::new(last.id, S::End);
+    let rules = vec![Rule::Coincident {
+        a: partner,
+        b: corner,
+    }];
+    let (_f, mut w, _ui) = fixture(vec![first, last], rules, Drawn::Native);
+    press(&mut w, point(-10., -6.));
+    let (x, y) = w.input.pointer_position().expect("pressed pointer");
+    // Each step passes the click slop but stays inside the partner's snap aperture.
+    for step in 1..=3u8 {
+        let x = x - 6. * f32::from(step);
+        event(&mut w, E::PointerMoved { x, y });
+        frame(&mut w);
+        let plane = d(&w).planes[d(&w).plane].frame.expect("built plane");
+        let (lx, ly) = w.input.region().local((x, y));
+        let pointer =
+            geometry::point_on_plane(w.input.camera(), [f64::from(lx), f64::from(ly)], plane)
+                .expect("pointer on plane");
+        near(at(&w, corner), pointer);
+        near(at(&w, partner), pointer);
+    }
+    release(&mut w);
+    assert_eq!(d(&w).undo.len(), 1);
+}
+
+#[test]
+fn delete_during_a_drag_keeps_the_dragged_curve_and_one_history_step() {
+    let dot = curve(SketchGeometry::Point { at: point(4., 2.) });
+    let handle = SketchPointRef::new(dot.id, S::At);
+    let (_f, mut w, mut ui) = fixture(vec![dot], vec![], Drawn::Mock);
+    press(&mut w, point(4., 2.));
+    release(&mut w);
+    assert_eq!(d(&w).state.selected, vec![Selection::Point(handle)]);
+    press(&mut w, point(4., 2.));
+    movement(&mut w, point(9., 5.));
+    frame(&mut w);
+    ui.key(&mut w, egui::Key::Delete);
+    let target = movement(&mut w, point(12., 6.));
+    frame(&mut w);
+    release(&mut w);
+    near(at(&w, handle), target);
+    assert_eq!(d(&w).undo.len(), 1);
+}

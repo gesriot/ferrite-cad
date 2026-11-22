@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Selection order, measured dimensions and button availability have no screen dependencies.
 use ferritecad_document::{
-    Expression, LineLengthMm, Point2, SketchConstraintRule as Rule, SketchCurve,
+    Expression, LineLengthMm, Point2, SketchConstraint, SketchConstraintRule as Rule, SketchCurve,
     SketchGeometry as G, SketchPointRef as P, SketchPointSelector as S, SketchSegmentRef,
 };
 use ferritecad_types::StableEntityId as Id;
@@ -34,6 +34,30 @@ pub(super) fn handles(curve: &SketchCurve) -> Vec<(P, Point2)> {
         G::Circle { center, .. } => vec![at(S::Center, center)],
         _ => vec![],
     }
+}
+
+/// The point and every point that a chain of `Coincident` rules keeps in its place.
+pub(super) fn coincident_with(constraints: &[SketchConstraint], point: P) -> Vec<P> {
+    let mut group = vec![point];
+    let mut next = 0;
+    while let Some(&p) = group.get(next) {
+        next += 1;
+        for c in constraints {
+            if let Rule::Coincident { a, b } = c.rule {
+                let other = if a == p {
+                    b
+                } else if b == p {
+                    a
+                } else {
+                    continue;
+                };
+                if !group.contains(&other) {
+                    group.push(other);
+                }
+            }
+        }
+    }
+    group
 }
 
 pub(super) fn position(curves: &[SketchCurve], point: P) -> Option<Point2> {
