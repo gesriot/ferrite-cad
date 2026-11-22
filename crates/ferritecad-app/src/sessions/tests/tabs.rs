@@ -336,7 +336,7 @@ impl Window {
         assert_eq!(self.sessions.tab(), tab);
     }
 
-    fn save(&mut self, target: SaveTarget) -> SaveReport {
+    pub(crate) fn save(&mut self, target: SaveTarget) -> SaveReport {
         let (tx, rx) = mpsc::channel();
         let generation = self
             .sessions

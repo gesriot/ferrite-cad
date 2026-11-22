@@ -114,6 +114,14 @@ pub(crate) fn finish(w: &mut Window, ui: &mut Ui) -> EditRequest {
         .expect("one request")
 }
 pub(crate) fn apply(w: &mut Window, request: EditRequest) -> bool {
+    apply_with_upload(w, request, Ok(()))
+}
+
+pub(crate) fn apply_with_upload(
+    w: &mut Window,
+    request: EditRequest,
+    upload: ferritecad_types::Result<()>,
+) -> bool {
     assert_eq!(request.expected, version(w));
     let (tx, rx) = mpsc::channel();
     let address = w
@@ -144,10 +152,11 @@ pub(crate) fn apply(w: &mut Window, request: EditRequest) -> bool {
                 scene, cold,
                 "candidate must match a cold load before publication"
             );
-            let result = w.present(&path, Ok(scene), crate::sessions::Bind::Staged, Ok(()));
-            assert!(result.is_ok());
+            let accepted = upload.is_ok();
+            let result = w.present(&path, Ok(scene), crate::sessions::Bind::Staged, upload);
+            assert_eq!(result.is_ok(), accepted);
             assert!(w.sessions.finish_scene(address, result));
-            true
+            accepted
         }
         crate::sessions::Edited::Failed => false,
         other => panic!("unexpected completion: {other:?}"),

@@ -88,7 +88,7 @@ impl Window {
 
     /// `App::begin_new`: New's form (or, `drawing`, the drawing) over the shown
     /// tab, after the predicate its buttons ask. Whether New opened.
-    pub(super) fn begin_new(&mut self, drawing: bool) -> bool {
+    pub(crate) fn begin_new(&mut self, drawing: bool) -> bool {
         if !self.can_leave() {
             return false;
         }
@@ -120,7 +120,7 @@ impl Window {
     }
 
     /// The New form answered (`creates::answer_form` and what follows it).
-    pub(super) fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
+    pub(crate) fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
         let content = crate::creates::answer_form(&mut self.creates, &mut self.input, choice);
         self.end_new();
         content
@@ -128,7 +128,7 @@ impl Window {
 
     /// `App::create_new` and the `Created` handler: the room check first, then
     /// the window's creation worker; the candidate is accepted with its picture.
-    pub(super) fn create_from_new(
+    pub(crate) fn create_from_new(
         &mut self,
         content: NewDocument,
         upload: Result<()>,

@@ -216,32 +216,47 @@ if [ -n "${FCAD_SKETCH_CONSTRAINT_FBX_DIR:-}" ]; then
     echo "FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED"
 fi
 
+# Read all three independently created models. The oriented triangles of each
+# FBX must describe the window's STL even when the template names its Body differently.
+check_created_model() {
+    local directory="$1" model="$2" stem report python
+    python="$(command -v python3 || command -v python)"
+    for stem in ui cli template; do
+        report="$work/$model-$stem-triangles.txt"
+        "$reader" --triangles "$directory/$model-$stem.fbx" > "$report"
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$directory/$model-ui.stl" "$(native "$report")"
+    done
+}
+
 # §25J adds the analytic circle's actual publications — the CLI process, the
 # same model after a height edit, and the UI/peer-CLI pair — to this same
 # reader build, and §25K the copies its centre/radius edit publishes. Small
 # files, actually read rather than merely produced.
 if [ -n "${FCAD_CIRCLE_FBX_DIR:-}" ]; then
-    for name in circle circle-taller circle-ui circle-cli circle-edited circle-edit-ui circle-edit-cli; do
+    for name in circle circle-taller circle-ui circle-cli circle-template circle-edited circle-edit-ui circle-edit-cli; do
         "$reader" --identity "$FCAD_CIRCLE_FBX_DIR/$name.fbx" | tee "$work/circle-$name-reader.txt"
         count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/circle-$name-reader.txt")"
         [ -n "$count" ] && [ "$count" -ge 6 ] || {
             echo "error: pinned reader did not verify circle $name FBX" >&2; exit 1;
         }
     done
+    check_created_model "$FCAD_CIRCLE_FBX_DIR" circle
     echo "FCAD_CIRCLE_UFBX_EXECUTED"
 fi
 
 # §25L adds the hollow part's actual publications to the same reader build: the
 # CLI process, the same model after a height edit, and the UI/peer-CLI pair.
-# Four more small files, actually read rather than merely produced.
+# The original template also supplies an independent geometry reference.
 if [ -n "${FCAD_ANNULUS_FBX_DIR:-}" ]; then
-    for name in annulus annulus-taller annulus-ui annulus-cli; do
+    for name in annulus annulus-taller annulus-ui annulus-cli annulus-template; do
         "$reader" --identity "$FCAD_ANNULUS_FBX_DIR/$name.fbx" | tee "$work/annulus-$name-reader.txt"
         count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/annulus-$name-reader.txt")"
         [ -n "$count" ] && [ "$count" -ge 6 ] || {
             echo "error: pinned reader did not verify annular $name FBX" >&2; exit 1;
         }
     done
+    check_created_model "$FCAD_ANNULUS_FBX_DIR" annulus
     echo "FCAD_ANNULUS_UFBX_EXECUTED"
 fi
 
