@@ -953,11 +953,11 @@ fn height_state(
     }
 }
 
-/// Whether a form over the picture is open (the height form, or any editor of a
-/// saved object, or a drawing). Document Undo and Redo, by button or by
-/// Cmd/Ctrl+Z, wait while one is: each form has its own draft Undo and Redo
-/// (buttons only, no shortcut), and a document step would end the draft it is
-/// about. Apply or Cancel the form first.
+/// Whether a form over the picture is open (the height form or any editor of a
+/// saved object). Document Undo and Redo, by button or by Cmd/Ctrl+Z, wait while
+/// one is: each form has its own draft Undo and Redo (buttons only, no shortcut),
+/// and a document step would end the draft it is about. Apply or Cancel the form
+/// first.
 fn form_open(edits: &edits::Edits, sketch: &sketch::Editor) -> bool {
     edits.busy() || sketch.active()
 }
@@ -968,13 +968,12 @@ const LEAVE_WAIT: &str = "Another tab can be shown or closed once the current op
 
 /// §30Q: whether the shown tab may be left for another document now — another tab
 /// shown, or a new one added by Open, New or Recover. The one answer the tab row,
-/// the toolbar's Open and New, the drawing's button, Recover and all their
-/// handlers share: no session operation (Apply, Add, Undo, Redo, Save, a switch,
-/// Recover), New (its form, drawing or worker), copy worker or pointer gesture
-/// holds the window. An idle form over the shown document does not: it stays with
-/// its tab (`Tabs::bind`), or is set aside while New is open (`Tabs::set_aside`).
-/// Open asks the same without New being unfinished ([`can_open`]); everything else
-/// asks [`can_leave_tab`].
+/// the toolbar's Open and New, Recover and all their handlers share: no session
+/// operation (Apply, Add, Undo, Redo, Save, a switch, Recover), New (its form or
+/// worker), copy worker or pointer gesture holds the window. An idle form over the
+/// shown document does not: it stays with its tab (`Tabs::bind`), or is set aside
+/// while New is open (`Tabs::set_aside`). Open asks the same without New being
+/// unfinished ([`can_open`]); everything else asks [`can_leave_tab`].
 fn may_leave_tab(
     creates: &creates::Creates,
     edits: &edits::Edits,
@@ -1032,9 +1031,9 @@ fn ask_form_close(
 }
 
 /// §30Q: opens New over the shown tab once [`can_leave_tab`] allowed it — `open`
-/// puts up its form or its drawing. The tab's open forms are first set aside as
-/// its own draft (`Tabs::set_aside`), so New starts on empty forms and nothing
-/// typed into New reaches them; if New did not open, they come straight back.
+/// puts up its form. The tab's open forms are first set aside as its own draft
+/// (`Tabs::set_aside`), so New starts on empty forms and nothing typed into New
+/// reaches them; if New did not open, they come straight back.
 fn open_new(
     tabs: &mut tabs::Tabs,
     sessions: &mut sessions::Sessions,
@@ -1382,7 +1381,6 @@ struct Sections<'a> {
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
-
     /// What the height form may offer: Apply on the open document, and the copy
     /// workflow only while the document has nothing unsaved.
     height: ferritecad_ui::HeightState,
@@ -1838,7 +1836,7 @@ fn answer_window_quit_new(
 }
 
 /// Return all tab forms first; place the window New over the now-shown tab.
-/// Its saved-object Editor is moved aside before New's shared Editor returns.
+/// The tab's forms are set aside again before New's form returns.
 fn restore_window_quit(
     tabs: &mut tabs::Tabs,
     sessions: &mut sessions::Sessions,
@@ -4180,8 +4178,8 @@ impl ApplicationHandler<AppEvent> for App {
                         {
                             self.create_new(content);
                         }
-                        // §30Q: New closed this frame (its form's or drawing's
-                        // Cancel): the shown tab's forms come back.
+                        // §30Q: New closed this frame (its form's Cancel):
+                        // the shown tab's forms come back.
                         self.end_new();
                         // §30T: the answer to a file chosen while New was unfinished.
                         match chosen.open_over_new {

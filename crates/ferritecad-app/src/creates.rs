@@ -246,7 +246,7 @@ impl Creates {
         (self.idle_new() == Some(id.over)).then(|| self.losing())
     }
 
-    /// Validate before moving the shared Editor. Handles remain accounted here.
+    /// Validate before taking New's form. Handles remain accounted here.
     pub(crate) fn hold_new_for_quit(&mut self, id: crate::tabs::QuitNewId) -> bool {
         if self.idle_new() != Some(id.over) {
             return false;

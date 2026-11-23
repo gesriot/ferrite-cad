@@ -115,6 +115,7 @@ fn finish_model(w: &mut Window, ui: &mut Ui, model: Model) {
     assert!(apply(w, asked));
     assert!(w.sessions.untitled());
 }
+
 pub(crate) fn draw_triangle(w: &mut Window) {
     let model = Model::Polygon(&[[0, 0], [20, 0], [20, 10]]);
     let mut ui = draw_profile(w, model);
