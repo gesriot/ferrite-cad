@@ -5,10 +5,7 @@ use crate::sketch_facts::{
     AnnulusChoice, CircleChoice, SketchChoice, SketchProfileUse, Source as ExtrudeEditSource,
 };
 use ferritecad_document::{ExpressionSlotValue, SketchVertex};
-use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, EditRequest, FullTurnRevolution, NewDocument,
-    PolygonExtrusion, RevolveAngle,
-};
+use ferritecad_jobs::{EditRequest, RevolveAngle};
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
@@ -27,37 +24,20 @@ mod object_snap;
 #[derive(Debug, Clone, PartialEq)]
 struct State {
     points: Vec<[String; 2]>,
-    closed: bool,
     height: String,
-    /// What the closed polygon becomes. Part of the draft, so Undo and Redo
-    /// cover the choice exactly as they cover a typed coordinate.
+    /// The saved sweep that uses this line profile.
     feature: Feature,
-    /// §27D: the partial Revolve's angle in degrees, as typed. Kept while
-    /// another feature is chosen, like the height, so switching back does not
-    /// lose it; read only for [`Feature::RevolveAngle`].
+    /// The saved partial turn in degrees, shown by the vertex editor.
     angle: String,
 }
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            points: Vec::new(),
-            closed: false,
-            height: "10".into(),
-            feature: Feature::Extrude,
-            angle: "90".into(),
-        }
-    }
-}
-
-/// Which feature a new Line polygon starts its body with.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// The saved feature whose line profile is being edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Feature {
-    /// Blind along +Z by the typed height.
-    #[default]
+    /// Blind along +Z by the saved height.
     Extrude,
     /// One full turn about the sketch's local Y axis (§27A). X is the radius.
     Revolve,
-    /// §27D: the same turn through a typed partial angle, a sector with two
+    /// §27D: the same turn through a saved partial angle, a sector with two
     /// end faces. The same profile policy; the angle is the document's.
     RevolveAngle,
 }
@@ -67,20 +47,6 @@ impl Feature {
     fn revolves(self) -> bool {
         matches!(self, Self::Revolve | Self::RevolveAngle)
     }
-}
-
-/// Which profile the open draft window is asking for.
-///
-/// A mode of one window rather than a second window: both produce the same
-/// `NewDocument` through the same worker, and switching between them must not
-/// throw away what was typed in the other.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    #[default]
-    Polygon,
-    Circle,
-    /// One circle with one concentric circular hole: a hollow part.
-    Annulus,
 }
 
 /// The numbers a circle needs, as typed.
@@ -106,10 +72,7 @@ impl Default for CircleState {
 
 /// The numbers a circle with one concentric hole needs, as typed.
 ///
-/// Its own state rather than a circle's with a field added, for the same
-/// reason the circle's is its own: switching profile must not throw away what
-/// was typed in the other, and a shared radius would make "Radius" mean two
-/// different things depending on which form was last open.
+/// Keep the boundary and bore separate so that editing either radius leaves the other intact.
 #[derive(Debug, Clone, PartialEq)]
 struct AnnulusState {
     center: [String; 2],
@@ -152,8 +115,6 @@ pub(crate) struct Editor {
     draft: Option<State>,
     undo: Vec<State>,
     redo: Vec<State>,
-    next: [String; 2],
-    pending: Option<NewDocument>,
     canvas: Canvas,
     editing: Option<(EditRequest, SketchChoice)>,
     pending_edit: Option<EditRequest>,
@@ -174,16 +135,7 @@ pub(crate) struct Editor {
     /// The open document has unsaved changes: the copy workflow reads a file and
     /// writes a new one, so it is withheld, and the form says why.
     unsaved: bool,
-    /// §30L: whether a drawing may make a new document right now. The window's
-    /// own `can_create` predicate, written each frame and asked again by the
-    /// handler; never persisted.
-    can_create: bool,
-    /// Which profile the open window is asking for, and the circle's numbers.
-    /// Both outlive a trip through the other mode; only Cancel clears them.
-    mode: Mode,
     circle: CircleState,
-    /// The annular form's numbers. Outlives a trip through either other mode,
-    /// exactly as the circle's do; only Cancel clears them.
     annulus: AnnulusState,
     /// The saved circle being edited, with the request it was read from.
     editing_circle: Option<(EditRequest, CircleChoice)>,
@@ -219,18 +171,10 @@ pub(crate) struct Editor {
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
     published_draft: Option<(PathBuf, Box<Editor>)>,
-    /// §30Q: the drawing for a new document was asked for and not yet taken. The
-    /// window opens it (`App::begin_new`) once the tab's own forms are set aside.
-    pending_drawing: bool,
 }
 /// How many draft checkpoints either editor keeps. One bound, one policy.
 const DRAFT_HISTORY: usize = 128;
 
-/// §30L: the drawing forms make a new **Untitled** document; no dialog follows, so
-/// none of these ends in an ellipsis. The file is named by the first Save.
-pub(crate) const CREATE_DRAWN: &str = "Create new document";
-pub(crate) const CREATE_CIRCLE: &str = "Create circle document";
-pub(crate) const CREATE_ANNULUS: &str = "Create annular document";
 fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
     if stack.len() == DRAFT_HISTORY {
         stack.remove(0);
@@ -431,7 +375,6 @@ impl Editor {
         // again every frame, but a draft that is replaced must not forget it for
         // the frame in between.
         let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
-        let create = self.can_create;
         let analytic = self.can_apply_analytic;
         let angle = self.can_apply_angle;
         let constraints = self.constraints.session();
@@ -443,7 +386,6 @@ impl Editor {
         let chamfers_add = self.chamfers.add_session();
         *self = Self::default();
         self.can_begin_sketch = begin;
-        self.can_create = create;
         self.can_apply = apply;
         self.can_apply_analytic = analytic;
         self.can_apply_angle = angle;
@@ -457,17 +399,6 @@ impl Editor {
         self.chamfers
             .set_session(chamfers.0, chamfers.1, chamfers.2);
         self.chamfers.set_add(chamfers_add);
-    }
-    pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
-        self.pending.take()
-    }
-    /// §30Q: **Create sketch + Extrude…** was pressed.
-    pub(crate) fn take_drawing_request(&mut self) -> bool {
-        std::mem::take(&mut self.pending_drawing)
-    }
-    /// §30L: what the window says each frame about making a new document.
-    pub(crate) fn set_create(&mut self, can_create: bool) {
-        self.can_create = can_create;
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditRequest> {
         self.pending_edit.take()
@@ -485,17 +416,14 @@ impl Editor {
     }
     /// Saved-object forms describe the picture that was replaced and end here.
     /// Parameters reads each accepted version and keeps its unsubmitted text.
-    /// A drawing for a new document is not about the open one and also stays.
     pub(crate) fn finish_session_change(&mut self) {
-        // A drawing for a new document stays, but not an anchor held over the picture
-        // that was replaced.
         self.forget_anchor();
         if self.saved_object_open() && !self.parameters.active() {
             self.dismiss();
         }
     }
     /// A form about a saved object of the open document is open: what a hidden
-    /// tab keeps (§30P). A drawing for a new document is not one.
+    /// tab keeps (§30P).
     pub(crate) fn saved_object_open(&self) -> bool {
         self.editing.is_some()
             || self.editing_circle.is_some()
@@ -509,17 +437,11 @@ impl Editor {
             || self.viewport.active()
             || self.sweeps.active()
     }
-    /// §30P: the drawing window for a new document is open. It is not about the
-    /// open document and never goes with a tab.
-    pub(crate) fn drawing_new(&self) -> bool {
-        self.draft.is_some() && self.editing.is_none()
-    }
-    /// §30P: a vertex is being dragged (or the press that may start a drag is
-    /// held) on the drawing: a gesture is not a draft and holds the window. §31I:
-    /// so does a handle held on the circle or annular canvas, and §31J a pan of the
-    /// view of any of the three canvases.
+    /// A captured sketch-mode handle, a legacy canvas edit, or a canvas pan
+    /// holds window transitions until the pointer is released or the gesture is cancelled.
     pub(crate) fn gesturing(&self) -> bool {
-        self.canvas.gesture.is_some()
+        self.viewport.gesturing()
+            || self.canvas.gesture.is_some()
             || self.canvas.claimed_press
             || self.canvas.nav.panning()
             || self.analytic_gesturing()
@@ -532,10 +454,6 @@ impl Editor {
     /// disabled for it.
     fn analytic_gesturing(&self) -> bool {
         self.circle_canvas.gesturing() || self.annulus_canvas.gesturing()
-    }
-    /// §31I: the window for a new document shows its circle or annular form.
-    fn new_profile(&self) -> Option<Mode> {
-        (self.drawing_new() && self.mode != Mode::Polygon).then_some(self.mode)
     }
     /// §31I: the gestures that ended in this frame on the circle canvas, given by
     /// their press/release strings over the draft `frame` had at the frame's start.
@@ -708,7 +626,6 @@ impl Editor {
             return false;
         };
         self.dismiss();
-        self.mode = Mode::Annulus;
         self.annulus = AnnulusState {
             center: saved.center_mm.map(|n| n.to_string()),
             outer_radius: saved.outer_radius_mm.to_string(),
@@ -805,7 +722,6 @@ impl Editor {
             return false;
         };
         self.dismiss();
-        self.mode = Mode::Circle;
         self.circle = CircleState {
             center: saved.center_mm.map(|n| n.to_string()),
             radius: saved.radius_mm.to_string(),
@@ -905,20 +821,18 @@ impl Editor {
         // height to show, so none is invented; the editor offers no switch.
         // §27F: a sector shows its saved angle, which the edit keeps.
         let (height, feature, angle) = match choice.profile_use {
-            Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => (
-                height_mm.to_string(),
-                Feature::Extrude,
-                State::default().angle,
-            ),
+            Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => {
+                (height_mm.to_string(), Feature::Extrude, String::new())
+            }
             Some(SketchProfileUse::FullTurnRevolve { .. }) => {
-                (String::new(), Feature::Revolve, State::default().angle)
+                (String::new(), Feature::Revolve, String::new())
             }
             Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) => (
                 String::new(),
                 Feature::RevolveAngle,
                 ferritecad_types::display_degrees(angle.radians()).to_string(),
             ),
-            None => (String::new(), Feature::Extrude, State::default().angle),
+            None => (String::new(), Feature::Extrude, String::new()),
         };
         self.dismiss();
         self.draft = Some(State {
@@ -926,7 +840,6 @@ impl Editor {
                 .iter()
                 .map(|v| v.start_mm.map(|n| n.to_string()))
                 .collect(),
-            closed: true,
             height,
             feature,
             angle,
@@ -1088,49 +1001,6 @@ impl Editor {
         ferritecad_document::validate_sketch_changes(choice.sketch, stored, &request.changes)?;
         Ok(request)
     }
-    /// Opens the drawing for a new document (§30Q: asked by the window once the
-    /// tab's own forms are set aside).
-    pub(crate) fn begin(&mut self) {
-        self.dismiss();
-        self.draft = Some(State::default());
-        self.next = ["0".into(), "0".into()];
-        // §31I: the opening numbers are the first confirmed state of the circle and
-        // annular drafts, as the stored numbers are for the saved forms.
-        self.circle_applied = Some(self.circle.clone());
-        self.annulus_applied = Some(self.annulus.clone());
-    }
-    /// What the circle form is asking for, or why it is not a circle yet.
-    ///
-    /// Parses here and decides nothing else: whether a number that parses is
-    /// an acceptable size belongs to the document, which refuses what it will
-    /// not store and says why.
-    fn circle_content(&self) -> Result<NewDocument> {
-        Ok(NewDocument::CircleExtrude(CircleExtrusion::new(
-            [
-                number(&self.circle.center[0])?,
-                number(&self.circle.center[1])?,
-            ],
-            number(&self.circle.radius)?,
-            number(&self.circle.height)?,
-        )?))
-    }
-    /// What the annular form is asking for, or why it is not one yet.
-    ///
-    /// Parses here and decides nothing else, exactly as the circle form does:
-    /// whether two radii that parse are a boundary and a hole — concentric, one
-    /// inside the other, with a wall thick enough to be a wall — belongs to the
-    /// document, which refuses what it will not store and says why.
-    fn annulus_content(&self) -> Result<NewDocument> {
-        Ok(NewDocument::AnnularExtrude(AnnularExtrusion::new(
-            [
-                number(&self.annulus.center[0])?,
-                number(&self.annulus.center[1])?,
-            ],
-            number(&self.annulus.outer_radius)?,
-            number(&self.annulus.inner_radius)?,
-            number(&self.annulus.height)?,
-        )?))
-    }
     /// The coordinate strings `begin_edit` showed, from the vertices the request
     /// already holds. Compared as text, so `33.0` and `33` are not the same draft.
     fn saved_coordinate_text(vertices: &[SketchVertex]) -> Vec<[String; 2]> {
@@ -1186,7 +1056,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_annulus.is_some() || self.new_profile() == Some(Mode::Annulus) {
+        if self.editing_annulus.is_some() {
             if let Some(previous) = self.annulus_undo.pop() {
                 push_bounded(
                     &mut self.annulus_redo,
@@ -1198,7 +1068,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_circle.is_some() || self.new_profile() == Some(Mode::Circle) {
+        if self.editing_circle.is_some() {
             if let Some(previous) = self.circle_undo.pop() {
                 push_bounded(
                     &mut self.circle_redo,
@@ -1229,7 +1099,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_annulus.is_some() || self.new_profile() == Some(Mode::Annulus) {
+        if self.editing_annulus.is_some() {
             if let Some(next) = self.annulus_redo.pop() {
                 push_bounded(
                     &mut self.annulus_undo,
@@ -1241,7 +1111,7 @@ impl Editor {
             }
             return;
         }
-        if self.editing_circle.is_some() || self.new_profile() == Some(Mode::Circle) {
+        if self.editing_circle.is_some() {
             if let Some(next) = self.circle_redo.pop() {
                 push_bounded(
                     &mut self.circle_undo,
@@ -1259,44 +1129,7 @@ impl Editor {
             self.undo.push(current);
         }
     }
-    fn content(&self) -> Result<NewDocument> {
-        let draft = self
-            .draft
-            .as_ref()
-            .ok_or_else(|| CadError::input("no sketch draft"))?;
-        if !draft.closed {
-            return Err(CadError::input(
-                "Close the contour explicitly before creating.",
-            ));
-        }
-        let points = draft
-            .points
-            .iter()
-            .map(|p| Ok([number(&p[0])?, number(&p[1])?]))
-            .collect::<Result<Vec<_>>>()?;
-        match draft.feature {
-            Feature::Extrude => Ok(NewDocument::SketchExtrude(PolygonExtrusion::new(
-                points,
-                number(&draft.height)?,
-            )?)),
-            // The document's own policy decides, exactly as for an extrusion:
-            // the same simple-polygon rules and the positive-radius rule.
-            Feature::Revolve => Ok(NewDocument::SketchRevolve(FullTurnRevolution::new(points)?)),
-            // §27D: the same profile policy, and the angle's own policy, both
-            // the document's. Parsed here and decided nothing else.
-            Feature::RevolveAngle => Ok(NewDocument::SketchPartialRevolve {
-                profile: FullTurnRevolution::new(points)?,
-                angle: RevolveAngle::new(number(&draft.angle)?.to_radians())?,
-            }),
-        }
-    }
-    pub(crate) fn draw(
-        &mut self,
-        ui: &mut egui::Ui,
-        can_begin: bool,
-        running: bool,
-        outcome: &str,
-    ) {
+    pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool, outcome: &str) {
         if self.sweeps.active() {
             self.sweeps.draw(ui, running, outcome);
             return;
@@ -1312,15 +1145,6 @@ impl Editor {
         self.circle_canvas.forget_undrawn(frame);
         self.annulus_canvas.forget_undrawn(frame);
         self.constraints.forget_undrawn(frame);
-        // §30Q: offered beside the tab's own forms too; the window sets them aside
-        // as the tab's draft before the drawing opens, so it never replaces them.
-        if !self.drawing_new()
-            && ui
-                .add_enabled(can_begin, egui::Button::new("Create sketch + Extrude…"))
-                .clicked()
-        {
-            self.pending_drawing = true;
-        }
         if self.constraints.active() {
             self.constraints.draw(ui, running);
             return;
@@ -1352,16 +1176,14 @@ impl Editor {
                 "Edit saved annulus"
             } else if self.editing_circle.is_some() {
                 "Edit saved Circle"
-            } else if self.editing.is_some() {
-                "Edit saved Sketch"
             } else {
-                "Sketch + Extrude — new document"
+                "Edit saved Sketch"
             },
         )
         .resizable(false)
         .default_width(540.)
         .show(ui.ctx(), |ui| {
-            let analytic = self.editing_analytic() || self.new_profile().is_some();
+            let analytic = self.editing_analytic();
             self.draw_draft(ui, running, outcome);
             // §31I: with a canvas these forms are taller than egui's default window,
             // which sizes itself from the last frame. A line that appears (the
@@ -1375,134 +1197,6 @@ impl Editor {
                 ui.ctx().request_discard("a Circle or annulus form grew");
             }
         });
-    }
-
-    /// The circle half of the same window.
-    ///
-    /// Four numbers and one action. The polygon draft beside it is untouched
-    /// while this is on screen, so switching back finds the points that were
-    /// already there.
-    fn draw_circle(&mut self, ui: &mut egui::Ui) {
-        ui.label("XY · mm · one analytic circle · Blind · NewBody");
-        ui.label("The circle is stored as a centre and a radius, and stays one in the solid.");
-        // §31I: the canvas first, so the fields below show what it wrote this frame.
-        let frame = self.circle.clone();
-        let finished = self.circle_canvas.draw(
-            ui,
-            analytic::Fields {
-                centre: &mut self.circle.center,
-                outer: &mut self.circle.radius,
-                bore: None,
-            },
-            self.pending.is_some(),
-        );
-        self.record_circle_gestures(&frame, finished);
-        let gesture = self.circle_canvas.gesturing();
-        // A box that keeps the keyboard focus takes text even when disabled; while a
-        // handle is held or a job runs, none is interactive.
-        let editable = ui.is_enabled() && !gesture;
-        let [x, y] = &mut self.circle.center;
-        let fields: [(&str, &mut String); 4] = [
-            ("Center X", x),
-            ("Center Y", y),
-            ("Radius", &mut self.circle.radius),
-            ("Blind height", &mut self.circle.height),
-        ];
-        egui::Grid::new("ferritecad circle numbers")
-            .num_columns(3)
-            .show(ui, |ui| {
-                for (label, value) in fields {
-                    ui.label(label);
-                    ui.add(
-                        egui::TextEdit::singleline(value)
-                            .char_limit(64)
-                            .desired_width(120.)
-                            .interactive(editable),
-                    );
-                    ui.label("mm");
-                    ui.end_row();
-                }
-            });
-        match self.circle_content() {
-            Ok(content) => {
-                if ui
-                    .add_enabled(
-                        self.can_create && !gesture,
-                        egui::Button::new(CREATE_CIRCLE),
-                    )
-                    .clicked()
-                {
-                    self.pending = Some(content);
-                }
-            }
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
-        }
-    }
-
-    /// The annular half of the same window.
-    ///
-    /// Five numbers and one action. Both other drafts beside it are untouched
-    /// while this is on screen, so switching back finds what was already there.
-    fn draw_annulus(&mut self, ui: &mut egui::Ui) {
-        ui.label("XY · mm · two concentric analytic circles · Blind · NewBody");
-        ui.label(
-            "The hole is a loop of the same profile, so it is in the solid and in every export.",
-        );
-        // §31I: the canvas first, so the fields below show what it wrote this frame.
-        let frame = self.annulus.clone();
-        let finished = self.annulus_canvas.draw(
-            ui,
-            analytic::Fields {
-                centre: &mut self.annulus.center,
-                outer: &mut self.annulus.outer_radius,
-                bore: Some(&mut self.annulus.inner_radius),
-            },
-            self.pending.is_some(),
-        );
-        self.record_annulus_gestures(&frame, finished);
-        let gesture = self.annulus_canvas.gesturing();
-        let editable = ui.is_enabled() && !gesture;
-        let [x, y] = &mut self.annulus.center;
-        let fields: [(&str, &mut String); 5] = [
-            ("Center X", x),
-            ("Center Y", y),
-            ("Outer radius", &mut self.annulus.outer_radius),
-            ("Inner radius", &mut self.annulus.inner_radius),
-            ("Blind height", &mut self.annulus.height),
-        ];
-        egui::Grid::new("ferritecad annulus numbers")
-            .num_columns(3)
-            .show(ui, |ui| {
-                for (label, value) in fields {
-                    ui.label(label);
-                    ui.add(
-                        egui::TextEdit::singleline(value)
-                            .char_limit(64)
-                            .desired_width(120.)
-                            .interactive(editable),
-                    );
-                    ui.label("mm");
-                    ui.end_row();
-                }
-            });
-        match self.annulus_content() {
-            Ok(content) => {
-                if ui
-                    .add_enabled(
-                        self.can_create && !gesture,
-                        egui::Button::new(CREATE_ANNULUS),
-                    )
-                    .clicked()
-                {
-                    self.pending = Some(content);
-                }
-            }
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
-        }
     }
 
     /// The saved-circle half of the same window.
@@ -1969,58 +1663,6 @@ impl Editor {
             );
             return;
         }
-        // Editing a saved Sketch is not creating one, so it offers no choice
-        // of profile: the document already decided what it holds.
-        if self.editing.is_none() {
-            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Profile:");
-                    ui.selectable_value(&mut self.mode, Mode::Polygon, "Line polygon");
-                    ui.selectable_value(&mut self.mode, Mode::Circle, "Circle");
-                    ui.selectable_value(&mut self.mode, Mode::Annulus, "Circle with hole");
-                });
-            });
-            if matches!(self.mode, Mode::Circle | Mode::Annulus) {
-                let annular = self.mode == Mode::Annulus;
-                ui.add_enabled_ui(!running, |ui| {
-                    if annular {
-                        self.draw_annulus(ui);
-                    } else {
-                        self.draw_circle(ui);
-                    }
-                    // §31I: a gesture on the canvas is one step of this draft's own
-                    // bounded history, kept per profile while the others are shown.
-                    let (undo, redo) = if annular {
-                        (!self.annulus_undo.is_empty(), !self.annulus_redo.is_empty())
-                    } else {
-                        (!self.circle_undo.is_empty(), !self.circle_redo.is_empty())
-                    };
-                    ui.add_enabled_ui(!self.analytic_gesturing(), |ui| {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(undo, egui::Button::new("Undo draft"))
-                                .clicked()
-                            {
-                                self.undo();
-                            }
-                            if ui
-                                .add_enabled(redo, egui::Button::new("Redo draft"))
-                                .clicked()
-                            {
-                                self.redo();
-                            }
-                            if ui.button("Cancel draft").clicked() {
-                                self.dismiss();
-                            }
-                        });
-                    });
-                });
-                if running {
-                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
-                }
-                return;
-            }
-        }
         let feature = self.draft.as_ref().map(|d| d.feature);
         let revolve = feature.is_some_and(Feature::revolves);
         ui.label(match feature {
@@ -2043,22 +1685,16 @@ impl Editor {
             .as_ref()
             .filter(|d| d.feature == Feature::RevolveAngle)
             .map(|d| d.angle.clone());
-        ui.label(match (&self.editing, &sector) {
-            (Some(_), Some(angle)) => format!(
+        ui.label(match &sector {
+            Some(angle) => format!(
                 "Edit exact coordinates. Curve IDs, order, closure and the saved {angle}° sector \
                  about Y are retained."
             ),
-            (Some(_), None) if revolve => "Edit exact coordinates. Curve IDs, order, closure and \
+            None if revolve => "Edit exact coordinates. Curve IDs, order, closure and \
                  the saved full turn about Y are retained."
                 .to_owned(),
-            (Some(_), None) => {
-                "Edit exact coordinates. Curve IDs, order, closure and height are retained."
-                    .to_owned()
-            }
-            (None, _) => {
-                "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
-                    .to_owned()
-            }
+            None => "Edit exact coordinates. Curve IDs, order, closure and height are retained."
+                .to_owned(),
         });
         if let Some((request, choice)) = &self.editing {
             for detail in &choice.details {
@@ -2115,48 +1751,15 @@ impl Editor {
         let Some(before) = self.draft.clone() else {
             return;
         };
-        let queued =
-            self.pending.is_some() || self.pending_apply.is_some() || self.pending_edit.is_some();
+        let queued = self.pending_apply.is_some() || self.pending_edit.is_some();
         let draft = self.draft.as_mut().expect("present");
-        let canvas_edit = self.canvas.draw(ui, draft, self.editing.is_some(), queued);
+        let canvas_edit = self.canvas.draw(ui, draft, queued);
         // A pointer gesture owns its checkpoint. Ordinary numeric/button edits
         // keep their existing per-change history and cannot modify a live drag.
         ui.add_enabled_ui(matches!(canvas_edit, CanvasEdit::Ordinary), |ui| {
-            ui.add_enabled_ui(self.editing.is_none(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Next X");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.next[0])
-                            .char_limit(64)
-                            .desired_width(75.),
-                    );
-                    ui.label("Y");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.next[1])
-                            .char_limit(64)
-                            .desired_width(75.),
-                    );
-                    if ui
-                        .add_enabled(
-                            !draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS,
-                            egui::Button::new("Add point"),
-                        )
-                        .clicked()
-                    {
-                        draft.points.push(self.next.clone());
-                    }
-                    if ui
-                        .add_enabled(!draft.closed, egui::Button::new("Close contour"))
-                        .clicked()
-                    {
-                        draft.closed = true;
-                    }
-                });
-            });
             egui::ScrollArea::vertical()
                 .max_height(160.)
                 .show(ui, |ui| {
-                    let mut remove = None;
                     for (i, p) in draft.points.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             let label = egui::RichText::new(format!("{}  X mm", i + 1));
@@ -2176,32 +1779,16 @@ impl Editor {
                                     .char_limit(64)
                                     .desired_width(125.),
                             );
-                            if ui
-                                .add_enabled(self.editing.is_none(), egui::Button::new("Remove"))
-                                .clicked()
-                            {
-                                remove = Some(i);
-                            }
+                            // A saved vertex keeps its curve ID and place in the contour.
+                            ui.add_enabled(false, egui::Button::new("Remove"));
                         });
                     }
-                    if let Some(i) = remove {
-                        draft.points.remove(i);
-                        self.canvas.selected = None;
-                    }
                 });
-            if self.editing.is_none() {
-                ui.horizontal(|ui| {
-                    ui.label("Feature:");
-                    ui.selectable_value(&mut draft.feature, Feature::Extrude, "Extrude");
-                    ui.selectable_value(&mut draft.feature, Feature::Revolve, "Revolve 360°");
-                    ui.selectable_value(&mut draft.feature, Feature::RevolveAngle, "Revolve angle");
-                });
-            }
             if draft.feature == Feature::Extrude {
                 ui.horizontal(|ui| {
                     ui.label("Blind height mm");
                     ui.add_enabled(
-                        self.editing.is_none(),
+                        false,
                         egui::TextEdit::singleline(&mut draft.height)
                             .char_limit(64)
                             .desired_width(100.),
@@ -2213,25 +1800,16 @@ impl Editor {
                     // A saved sector's angle is shown, not edited here: the
                     // angle has its own edit (§27E).
                     ui.add_enabled(
-                        self.editing.is_none(),
+                        false,
                         egui::TextEdit::singleline(&mut draft.angle)
                             .char_limit(64)
                             .desired_width(100.),
                     );
                 });
-                if self.editing.is_some() {
-                    ui.label(
-                        "Revolve: the saved sector, right-handed about the sketch Y axis through \
+                ui.label(
+                    "Revolve: the saved sector, right-handed about the sketch Y axis through \
                          X = 0. Its angle is kept; change it with Edit Revolve angle.",
-                    );
-                } else {
-                    ui.label(format!(
-                        "Revolve: a sector from the profile, right-handed about the sketch Y axis \
-                         through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
-                        ferritecad_types::display_degrees(RevolveAngle::MIN_RADIANS),
-                        ferritecad_types::display_degrees(RevolveAngle::MAX_RADIANS)
-                    ));
-                }
+                );
             } else {
                 ui.label("Revolve: one full turn (360°) about the sketch Y axis, through X = 0.");
             }
@@ -2245,55 +1823,36 @@ impl Editor {
                 }
             }
         }
-        if self.editing.is_some() {
-            match self.edit_request() {
-                Ok(request) => {
-                    ui.horizontal(|ui| {
-                        // §30B: into the open document, no file name. The file on
-                        // disk changes only when you Save.
-                        if ui
-                            .add_enabled(
-                                self.can_apply && self.canvas.gesture.is_none(),
-                                egui::Button::new("Apply vertices"),
-                            )
-                            .clicked()
-                        {
-                            self.pending_apply = Some(request.clone());
-                        }
-                        if ui
-                            .add_enabled(
-                                !self.unsaved && self.canvas.gesture.is_none(),
-                                egui::Button::new("Save edited copy…"),
-                            )
-                            .clicked()
-                        {
-                            self.pending_edit = Some(request);
-                        }
-                    });
-                    if self.unsaved {
-                        ui.small(
-                            "Saving a copy as a new file is unavailable while the document has \
+        match self.edit_request() {
+            Ok(request) => {
+                ui.horizontal(|ui| {
+                    // §30B: into the open document, no file name. The file on
+                    // disk changes only when you Save.
+                    if ui
+                        .add_enabled(
+                            self.can_apply && self.canvas.gesture.is_none(),
+                            egui::Button::new("Apply vertices"),
+                        )
+                        .clicked()
+                    {
+                        self.pending_apply = Some(request.clone());
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.unsaved && self.canvas.gesture.is_none(),
+                            egui::Button::new("Save edited copy…"),
+                        )
+                        .clicked()
+                    {
+                        self.pending_edit = Some(request);
+                    }
+                });
+                if self.unsaved {
+                    ui.small(
+                        "Saving a copy as a new file is unavailable while the document has \
                              unsaved changes: Save or Undo them first. Apply changes this \
                              document; the file on disk changes only when you Save.",
-                        );
-                    }
-                }
-                Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-                }
-            }
-            return;
-        }
-        match self.content() {
-            Ok(content) => {
-                if ui
-                    .add_enabled(
-                        self.can_create && self.canvas.gesture.is_none(),
-                        egui::Button::new(CREATE_DRAWN),
-                    )
-                    .clicked()
-                {
-                    self.pending = Some(content);
+                    );
                 }
             }
             Err(error) => {
@@ -2456,9 +2015,6 @@ struct Canvas {
     /// guided point or drag, owned by this editor, never a constraint or a
     /// document value; a gesture reads it once, at its start.
     length: String,
-    /// The guide the hovering pointer last held over the open drawing and the anchor
-    /// it belongs to, so a click keeps the choice the hover showed. Frame state.
-    held_guide: Option<([f64; 2], usize)>,
     /// §31D-2: "From object": a gesture starts from a shown object point instead of
     /// the last vertex or the pressed one. Editor state beside the guides: off for a
     /// new editor, never persisted, and used only while Guides are on.
@@ -2517,8 +2073,6 @@ struct Anchored {
     settings: guide::Settings,
     /// The guide held so far.
     held: Option<usize>,
-    /// The gesture adds one vertex (a New drawing) instead of moving `vertex`.
-    adds: bool,
 }
 
 /// Preview frames do not enter history. Each changed release supplies one
@@ -2541,7 +2095,6 @@ impl Default for Canvas {
             object_snap: false,
             guides: guide::Mode::Off,
             length: String::new(),
-            held_guide: None,
             anchors: false,
             provisional: None,
             nav: navigation::Navigation::default(),
@@ -2659,97 +2212,10 @@ impl Canvas {
             self.document(rect, visible.right_top()),
         )
     }
-    /// The object snap under the pointer `at` for the contour as drawn now (a click
-    /// or hover; a drag uses what it froze at its press).
-    fn object_hit(
-        &self,
-        rect: egui::Rect,
-        visible: egui::Rect,
-        draft: &State,
-        at: egui::Pos2,
-    ) -> Option<object_snap::Candidate> {
-        let points = Self::points(draft)?;
-        let cursor = self.document(rect, at);
-        let points_per_mm = f64::from(self.scale);
-        let near =
-            object_snap::Window::around(cursor, object_snap::APERTURE_POINTS / points_per_mm);
-        object_snap::pick(
-            &object_snap::collect(&points, draft.closed, Some(near)),
-            &object_snap::Query {
-                cursor,
-                points_per_mm,
-                visible: self.visible_window(rect, visible),
-            },
-        )
-    }
-    /// §31D-1: the anchor a guide measures from when a point is added: the last
-    /// vertex of an open drawing that has room for another, if Guides are on and the
-    /// canvas shows it. No first-point anchor exists, and no hidden one is invented.
-    fn add_anchor(&self, rect: egui::Rect, visible: egui::Rect, draft: &State) -> Option<[f64; 2]> {
-        if self.guides == guide::Mode::Off
-            || draft.closed
-            || draft.points.len() >= PolygonExtrusion::MAX_POINTS
-        {
-            return None;
-        }
-        let last = Self::vertex(draft.points.last()?)?;
-        visible.contains(self.screen(rect, last)).then_some(last)
-    }
-    /// What a click (or the hover that previews it) at `at` would place on an open
-    /// drawing: the object point of §31C, the guide of §31D-1, or neither. One
-    /// function draws and writes, so the point shown is the point written. Also the
-    /// guide to hold next, with its anchor.
-    fn add_placement(
-        &self,
-        rect: egui::Rect,
-        visible: egui::Rect,
-        draft: &State,
-        at: egui::Pos2,
-    ) -> (guide::Outcome, Option<([f64; 2], usize)>) {
-        let object = if self.object_snap {
-            self.object_hit(rect, visible, draft, at)
-        } else {
-            None
-        };
-        let Some(anchor) = self.add_anchor(rect, visible, draft) else {
-            return (
-                object.map_or(guide::Outcome::Open, guide::Outcome::Object),
-                None,
-            );
-        };
-        let cursor = self.document(rect, at);
-        let reach = guide::Reach {
-            anchor,
-            offset: [cursor[0] - anchor[0], cursor[1] - anchor[1]],
-            points_per_mm: f64::from(self.scale),
-            held: self
-                .held_guide
-                .filter(|(held_at, _)| *held_at == anchor)
-                .map(|(_, heading)| heading),
-        };
-        let settings = guide::Settings {
-            mode: self.guides,
-            length: guide::Length::parse(&self.length),
-        };
-        let (outcome, held) = guide::resolve(settings, &reach, object);
-        (outcome, held.map(|heading| (anchor, heading)))
-    }
-    /// §31D-2: what a gesture from an anchor would change right now: the vertex a
-    /// click adds to an open New drawing with room, or the selected vertex of a saved
-    /// Sketch. None while the mode is off, Guides are off, a drawing is closed or
-    /// full, or no vertex is selected.
-    fn anchor_moves(&self, draft: &State, saved: bool) -> Option<anchor::Moves> {
-        if !self.anchors || self.guides == guide::Mode::Off {
-            return None;
-        }
-        if saved {
-            self.selected
-                .filter(|&vertex| vertex < draft.points.len())
-                .map(anchor::Moves::Vertex)
-        } else {
-            (!draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS)
-                .then_some(anchor::Moves::Adds(draft.points.len()))
-        }
+    /// The selected vertex that can be moved from an explicit guide anchor.
+    fn anchor_vertex(&self, draft: &State) -> Option<usize> {
+        self.selected
+            .filter(|&i| self.anchors && self.guides != guide::Mode::Off && i < draft.points.len())
     }
     /// §31D-2: the provisional anchor once the pointer is at `at` of the canvas
     /// `rect`; none when the pointer is not over it, nothing can be anchored, or no
@@ -2761,19 +2227,16 @@ impl Canvas {
         rect: egui::Rect,
         visible: egui::Rect,
         draft: &State,
-        saved: bool,
         at: Option<egui::Pos2>,
     ) {
         self.provisional = at.and_then(|at| {
-            let moves = self.anchor_moves(draft, saved)?;
+            let vertex = self.anchor_vertex(draft)?;
             let points = Self::points(draft)?;
             let cursor = self.document(rect, at);
             let points_per_mm = f64::from(self.scale);
             let near = object_snap::Window::around(cursor, anchor::RELEASE_POINTS / points_per_mm);
-            let mut candidates = object_snap::collect(&points, draft.closed, Some(near));
-            if let anchor::Moves::Vertex(vertex) = moves {
-                object_snap::drop_at(&mut candidates, points[vertex]);
-            }
+            let mut candidates = object_snap::collect(&points, true, Some(near));
+            object_snap::drop_at(&mut candidates, points[vertex]);
             anchor::track(
                 self.provisional,
                 &candidates,
@@ -2787,7 +2250,7 @@ impl Canvas {
     }
     /// §31D-2: the standing line's situation and the point count the anchor's words
     /// are numbered in, while the mode is on.
-    fn anchor_situation(&self, draft: &State, saved: bool) -> Option<(anchor::Situation, usize)> {
+    fn anchor_situation(&self, draft: &State) -> Option<(anchor::Situation, usize)> {
         use anchor::Situation;
         if !self.anchors {
             return None;
@@ -2798,22 +2261,15 @@ impl Canvas {
         if let Some(drag) = &self.gesture
             && let Some(anchored) = &drag.anchored
         {
-            let moves = if anchored.adds {
-                anchor::Moves::Adds(drag.vertex)
-            } else {
-                anchor::Moves::Vertex(drag.vertex)
-            };
             return Some((
-                Situation::Held(anchored.anchor, moves),
+                Situation::Held(anchored.anchor, drag.vertex),
                 drag.before.points.len(),
             ));
         }
-        let situation = match (self.anchor_moves(draft, saved), self.provisional) {
+        let situation = match (self.anchor_vertex(draft), self.provisional) {
             (Some(moves), Some(anchor)) => Situation::Provisional(anchor, moves),
             (Some(moves), None) => Situation::Looking(moves),
-            (None, _) if saved => Situation::SelectFirst,
-            (None, _) if draft.closed => Situation::Closed,
-            (None, _) => Situation::Full,
+            (None, _) => Situation::SelectFirst,
         };
         Some((situation, draft.points.len()))
     }
@@ -2882,19 +2338,11 @@ impl Canvas {
                     drag.guided = Some((outcome, at));
                     None
                 }
-                guide::Outcome::Open => Some(match (anchored.adds, drag.snap) {
-                    (true, Snap::Off) => [format!("{:.3}", cursor[0]), format!("{:.3}", cursor[1])],
-                    _ => [drag.snap.apply(cursor[0]), drag.snap.apply(cursor[1])],
-                }),
+                guide::Outcome::Open => Some(cursor.map(|n| drag.snap.apply(n))),
             }
         };
-        if anchored.adds {
-            draft.points.truncate(drag.before.points.len());
-            draft.points.extend(placed);
-        } else {
-            draft.points[drag.vertex] =
-                placed.unwrap_or_else(|| drag.before.points[drag.vertex].clone());
-        }
+        draft.points[drag.vertex] =
+            placed.unwrap_or_else(|| drag.before.points[drag.vertex].clone());
     }
     fn preview(&mut self, draft: &mut State, at: egui::Pos2, visible: object_snap::Window) {
         if let Some(drag) = &mut self.gesture {
@@ -2976,13 +2424,7 @@ impl Canvas {
             }
         }
     }
-    fn draw(
-        &mut self,
-        ui: &mut egui::Ui,
-        draft: &mut State,
-        saved: bool,
-        queued: bool,
-    ) -> CanvasEdit {
+    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State, queued: bool) -> CanvasEdit {
         let points = Self::points(draft);
         let events = ui.input(|i| i.events.clone());
         let mut snap_changes = Vec::new();
@@ -3156,23 +2598,14 @@ impl Canvas {
                         // including a move earlier in this frame. It cannot acquire
                         // an unseen anchor after a tab/focus reset.
                         if self.provisional.is_some() {
-                            self.track_anchor(rect, visible_rect, draft, saved, Some(pos));
+                            self.track_anchor(rect, visible_rect, draft, Some(pos));
                         }
-                        if let Some(moves) = self.anchor_moves(draft, saved)
+                        if let Some(vertex) = self.anchor_vertex(draft)
                             && let Some(anchor) = self.provisional.take()
                         {
                             self.claimed_press = true;
                             change = CanvasEdit::Gesture;
-                            let adds = matches!(moves, anchor::Moves::Adds(_));
-                            let (vertex, mut objects) = match moves {
-                                anchor::Moves::Adds(vertex) => {
-                                    (vertex, object_snap::collect(&points, draft.closed, None))
-                                }
-                                anchor::Moves::Vertex(vertex) => (
-                                    vertex,
-                                    object_snap::frozen(&points, draft.closed, points[vertex]),
-                                ),
-                            };
+                            let mut objects = object_snap::frozen(&points, true, points[vertex]);
                             // The anchor is where the guide starts, never a target.
                             object_snap::drop_at(&mut objects, anchor.at);
                             self.gesture = Some(VertexDrag {
@@ -3194,7 +2627,6 @@ impl Canvas {
                                         length: guide::Length::parse(&self.length),
                                     },
                                     held: None,
-                                    adds,
                                 }),
                             });
                         } else if let Some(vertex) = self.hit(rect, visible_rect, &points, pos) {
@@ -3208,9 +2640,9 @@ impl Canvas {
                                 start: points[vertex],
                                 before: draft.clone(),
                                 snap: self.snap,
-                                objects: self.object_snap.then(|| {
-                                    object_snap::frozen(&points, draft.closed, points[vertex])
-                                }),
+                                objects: self
+                                    .object_snap
+                                    .then(|| object_snap::frozen(&points, true, points[vertex])),
                                 hit: None,
                                 guide: (self.guides != guide::Mode::Off).then(|| {
                                     (
@@ -3233,7 +2665,7 @@ impl Canvas {
                     // finds the anchor it moved onto.
                     if self.gesture.is_none() {
                         let over = pointer_over(ui, visible_rect, pos).then_some(pos);
-                        self.track_anchor(rect, visible_rect, draft, saved, over);
+                        self.track_anchor(rect, visible_rect, draft, over);
                     }
                 }
                 egui::Event::PointerButton {
@@ -3293,7 +2725,7 @@ impl Canvas {
         // belong to PointerMoved, so a cleared anchor cannot reappear on another
         // tab or after Escape/focus loss without a fresh pointer movement.
         if let Some(held) = self.provisional {
-            self.track_anchor(rect, visible_rect, draft, saved, resting);
+            self.track_anchor(rect, visible_rect, draft, resting);
             if self.provisional != Some(held) {
                 self.provisional = None;
             }
@@ -3304,69 +2736,16 @@ impl Canvas {
                 .as_ref()
                 .and_then(|points| self.hit(rect, visible_rect, points, pos))
         });
-        // What the pointer would place (hovering over an open drawing) or is placing
-        // (a held drag): the object point of §31C or the guide of §31D-1, with the
-        // pointer that found it. A hover also keeps the guide it holds for a click.
-        let (marker, guided) = if let Some(drag) = &self.gesture {
-            self.held_guide = None;
-            (drag.hit, drag.guided.clone())
-        } else if self.provisional.is_some() {
-            // §31D-2: a press here starts from the shown anchor; it adds no point, so
-            // neither the click's marker nor its guide is previewed.
-            self.held_guide = None;
-            (None, None)
-        } else if hover.is_none()
-            && !draft.closed
-            && draft.points.len() < PolygonExtrusion::MAX_POINTS
-            && let Some(at) = response.hover_pos()
-        {
-            let (outcome, held) = self.add_placement(rect, visible_rect, draft, at);
-            self.held_guide = held;
-            match outcome {
-                guide::Outcome::Object(hit) => (Some((hit, at)), None),
-                guide::Outcome::Open => (None, None),
-                shown => (None, Some((shown, at))),
-            }
-        } else {
-            self.held_guide = None;
-            (None, None)
-        };
+        let (marker, guided) = self
+            .gesture
+            .as_ref()
+            .map_or((None, None), |drag| (drag.hit, drag.guided.as_ref()));
         if matches!(change, CanvasEdit::Ordinary)
             && !pan_click
             && response.clicked_by(egui::PointerButton::Primary)
+            && let Some(vertex) = hover
         {
-            if let Some(vertex) = hover {
-                self.selected = Some(vertex);
-            } else if !draft.closed
-                && draft.points.len() < PolygonExtrusion::MAX_POINTS
-                && let Some(pos) = response.interact_pointer_pos()
-            {
-                let offset = to_document(pos, rect.left_bottom(), self.scale);
-                let at = [self.minimum[0] + offset[0], self.minimum[1] + offset[1]];
-                // An object point beats a guide and the grid and is taken as it is;
-                // a guide beats the grid, which is not applied to its point.
-                match self.add_placement(rect, visible_rect, draft, pos).0 {
-                    guide::Outcome::Object(hit) => {
-                        draft.points.push(hit.at.map(object_snap::coordinate));
-                    }
-                    guide::Outcome::Guide(guided) => {
-                        let anchor = draft
-                            .points
-                            .last()
-                            .expect("a guide has an anchor, the last vertex")
-                            .clone();
-                        draft
-                            .points
-                            .push(guide::strings(guided.heading, guided.at, &anchor));
-                    }
-                    // A typed length that cannot be used places nothing.
-                    guide::Outcome::Refused { .. } => {}
-                    guide::Outcome::Open => draft.points.push(match self.snap {
-                        Snap::Off => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
-                        snap => [snap.apply(at[0]), snap.apply(at[1])],
-                    }),
-                }
-            }
+            self.selected = Some(vertex);
         }
         if !pointer.primary_down() {
             self.claimed_press = false;
@@ -3427,7 +2806,7 @@ impl Canvas {
                     (2., egui::Color32::LIGHT_BLUE),
                 );
             }
-            if draft.closed && points.len() > 1 {
+            if points.len() > 1 {
                 painter.line_segment(
                     [screen(points[points.len() - 1]), screen(points[0])],
                     (2., egui::Color32::LIGHT_BLUE),
@@ -3460,7 +2839,7 @@ impl Canvas {
         if let Some((hit, pointer)) = marker {
             paint_object_snap(&painter, rect, screen(hit.at), hit.kind, pointer);
         }
-        if let Some((situation, vertices)) = self.anchor_situation(draft, saved) {
+        if let Some((situation, vertices)) = self.anchor_situation(draft) {
             paint_standing(&painter, rect, &anchor::status(situation, vertices));
         }
         if let Some(anchor) = self.provisional {
@@ -3474,48 +2853,32 @@ impl Canvas {
         }
         // §31D-1: the anchor is drawn apart from the target point, and so are the
         // guide held and its words; all of it for the frame only.
-        let (anchor, role) = if let Some(drag) = &self.gesture {
-            match &drag.anchored {
-                Some(anchored) => {
-                    let (source, vertices) = (anchored.anchor, drag.before.points.len());
-                    (
-                        Some(anchored.anchor.at),
-                        if anchored.adds {
-                            guide::Role::AddFrom { source, vertices }
-                        } else {
-                            guide::Role::DragFrom {
-                                source,
-                                vertices,
-                                vertex: drag.vertex,
-                            }
-                        },
-                    )
-                }
-                None => (
-                    drag.guide.is_some().then_some(drag.start),
-                    guide::Role::Drag {
+        if let Some((anchor, role)) = self.gesture.as_ref().and_then(|drag| {
+            if let Some(anchored) = &drag.anchored {
+                Some((
+                    anchored.anchor.at,
+                    guide::Role::DragFrom {
+                        source: anchored.anchor,
+                        vertices: drag.before.points.len(),
                         vertex: drag.vertex,
                     },
-                ),
+                ))
+            } else {
+                drag.guide.as_ref().map(|_| {
+                    (
+                        drag.start,
+                        guide::Role::Drag {
+                            vertex: drag.vertex,
+                        },
+                    )
+                })
             }
-        } else {
-            (
-                // A shown provisional anchor is the one ring: a press starts from it.
-                self.provisional
-                    .is_none()
-                    .then(|| self.add_anchor(rect, visible_rect, draft))
-                    .flatten(),
-                guide::Role::Add {
-                    after: draft.points.len().saturating_sub(1),
-                },
-            )
-        };
-        if let Some(anchor) = anchor {
+        }) {
             paint_guide(
                 &painter,
                 rect,
                 screen(anchor),
-                guided.as_ref().map(|(outcome, pointer)| {
+                guided.map(|(outcome, pointer)| {
                     (outcome, role, *pointer, outcome_target(outcome).map(screen))
                 }),
             );
@@ -3689,12 +3052,6 @@ pub(crate) fn number(s: &str) -> Result<f64> {
         .parse()
         .map_err(|_| CadError::input(format!("Not a number: {s:?}")))
 }
-fn to_document(pos: egui::Pos2, origin: egui::Pos2, scale: f32) -> [f64; 2] {
-    [
-        f64::from((pos.x - origin.x) / scale),
-        f64::from((origin.y - pos.y) / scale),
-    ]
-}
 
 #[cfg(test)]
 #[allow(clippy::panic)]
@@ -3731,7 +3088,7 @@ pub(crate) mod tests {
                 },
                 |ui| {
                     crate::in_tab_scope(ui, "tab-forms", tab, |ui| {
-                        editor.draw(ui, false, false, "");
+                        editor.draw(ui, false, "");
                     });
                 },
             );
@@ -3810,31 +3167,6 @@ pub(crate) mod tests {
         frame(&ctx, e, vec![]);
         let out = frame(&ctx, e, vec![]);
         click(&ctx, e, text_at(&out, label));
-    }
-
-    /// §30P: the drawing window for a new document, open as its button opens it.
-    pub(crate) fn begin_drawing(e: &mut Editor) {
-        e.begin();
-    }
-
-    /// §30T: a triangle in the drawing for a new document, without history, so a
-    /// vertex can be pressed on the canvas.
-    pub(crate) fn fill_drawing(e: &mut Editor) {
-        e.draft.as_mut().expect("a drawing").points = [["0", "0"], ["20", "0"], ["20", "10"]]
-            .map(|p| p.map(str::to_owned))
-            .to_vec();
-    }
-
-    /// §30T: two changes to the drawing for a new document, literal text and all,
-    /// then one Undo: a draft with history in both directions, as typed.
-    pub(crate) fn scribble_drawing(e: &mut Editor) -> (Vec<[String; 2]>, usize, usize) {
-        for text in ["1e999x", " 33.0 "] {
-            let before = e.draft.clone().expect("a drawing");
-            e.draft.as_mut().expect("a drawing").points[0][0] = text.to_owned();
-            e.record(before);
-        }
-        e.undo();
-        vertex_draft(e).expect("a drawing")
     }
 
     /// §30P: the vertex draft as typed, and the depth of its Undo and Redo.
@@ -4043,47 +3375,18 @@ pub(crate) mod tests {
         e.finish_session_change();
         assert!(!e.active(), "a form about the replaced version survived");
         assert!(e.take_apply_request().is_none());
-        // ...a drawing for a new document is not about it.
-        let mut drawing = Editor::default();
-        drawing.begin();
-        drawing.finish_session_change();
-        assert!(drawing.active(), "a New drawing was discarded");
+        let mut creates = crate::creates::Creates::default();
+        let mut input = ferritecad_ui::ViewportInput::new();
+        assert!(crate::ask_new(
+            &mut creates,
+            &crate::Loads::default(),
+            &crate::exports::Exports::default(),
+            &mut input,
+        ));
+        creates.form().expect("open New").width = "32.50".into();
+        creates.sketch.finish_session_change();
+        assert_eq!(creates.form().expect("New is still open").width, "32.50");
         drop(root);
-    }
-
-    #[test]
-    fn draft_undo_redo_closure_and_shared_validity() {
-        let mut e = Editor::default();
-        e.begin();
-        let initial = e.draft.clone().expect("draft");
-        e.draft.as_mut().expect("draft").points = vec![
-            ["0".into(), "0".into()],
-            ["60".into(), "0".into()],
-            ["0".into(), "40".into()],
-        ];
-        e.record(initial.clone());
-        assert!(e.content().is_err());
-        let open = e.draft.clone().expect("draft");
-        e.draft.as_mut().expect("draft").closed = true;
-        e.record(open.clone());
-        assert!(e.content().is_ok());
-        e.undo();
-        assert_eq!(e.draft, Some(open));
-        e.redo();
-        assert!(e.content().is_ok());
-        e.undo();
-        e.undo();
-        assert_eq!(e.draft, Some(initial));
-        e.redo();
-        e.redo();
-        e.draft.as_mut().expect("draft").points[2] = ["60".into(), "0".into()];
-        assert!(e.content().is_err());
-        e.dismiss();
-        assert!(!e.active());
-        assert_eq!(
-            to_document(egui::pos2(90., 60.), egui::pos2(10., 100.), 4.),
-            [20., 10.]
-        );
     }
 
     pub(super) fn frame(
@@ -4095,54 +3398,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_dirty_document_can_open_a_new_drawing_without_enabling_copy_workflows() {
-        let ctx = egui::Context::default();
-        let mut editor = Editor::default();
-        let render = |editor: &mut Editor, permitted: bool, events| {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1000., 900.),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                // New uses the window's permission, independently of whether a
-                // saved Sketch form can be opened (e.g. during a camera gesture).
-                |ui| editor.draw(ui, permitted, false, ""),
-            );
-            output.textures_delta.clear();
-            // §30Q: as the window does with nothing of a tab's to set aside.
-            if editor.take_drawing_request() {
-                editor.begin();
-            }
-            output
-        };
-        for permitted in [false, true] {
-            // Even with saved-form permission, a held window must disable New.
-            // A dirty document still permits it when the window can be left.
-            editor.set_session(true, false, true);
-            editor.set_create(permitted);
-            let out = render(&mut editor, permitted, vec![]);
-            let at = text_at(&out, "Create sketch + Extrude…");
-            render(&mut editor, permitted, vec![egui::Event::PointerMoved(at)]);
-            for pressed in [true, false] {
-                render(
-                    &mut editor,
-                    permitted,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    }],
-                );
-            }
-            assert_eq!(editor.active(), permitted, "drawing availability");
-            assert!(editor.unsaved, "opening a drawing must not enable copies");
-            assert!(editor.take_request().is_none(), "opening is not creation");
-        }
+    fn a_dirty_document_offers_new_without_the_retired_creation_section() {
+        use crate::sessions::tests::tabs::{Drawn, Window};
+        use ferritecad_ui::{NewChoice, PointerButton, ViewportEvent};
+        let (_root, path, _) = crate::fillets::tests::plate();
+        let mut w = Window::new(Drawn::Mock, None);
+        w.open(&path);
+        w.apply(18.);
+        let current = w.sessions.export_path().expect("dirty model");
+        let reading = crate::sketch_facts::read(&current).expect("read");
+        let id = reading.sketches[0].sketch;
+        assert!(w.creates.sketch.begin_edit(&current, &reading, id));
+        w.creates.sketch.set_session(true, true, w.sessions.dirty());
+        let out = frame(&egui::Context::default(), &mut w.creates.sketch, vec![]);
+        assert!(!painted(&out, "Create sketch + Extrude…"));
+        w.input
+            .handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        assert!(!w.begin_new(), "New must wait for the gesture");
+        w.input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert!(w.begin_new());
+        assert!(w.creates.form().is_some());
+        assert!(!w.creates.running(), "opening New does not start creation");
+        assert!(w.answer_new(NewChoice::Cancel).is_none());
+        assert!(w.sessions.dirty() && w.creates.sketch.unsaved);
+        assert!(w.creates.sketch.take_edit_request().is_none());
     }
     pub(super) fn frame_running(
         ctx: &egui::Context,
@@ -4159,13 +3441,9 @@ pub(crate) mod tests {
                 events,
                 ..Default::default()
             },
-            |ui| e.draw(ui, true, running, ""),
+            |ui| e.draw(ui, running, ""),
         );
         output.textures_delta.clear();
-        // §30Q: as the window does with nothing of a tab's to set aside.
-        if e.take_drawing_request() {
-            e.begin();
-        }
         output
     }
     pub(super) fn text_at(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
@@ -4244,123 +3522,6 @@ pub(crate) mod tests {
         }
         frame(ctx, e, events);
     }
-    /// Real egui widgets and pointer input, without winit/GPU or modal panels.
-    fn draw_l_through_widgets(e: &mut Editor) -> NewDocument {
-        let ctx = egui::Context::default();
-        let out = frame(&ctx, e, vec![]);
-        let at = text_at(&out, "Create sketch + Extrude…");
-        click(&ctx, e, at);
-        frame(&ctx, e, vec![]); // let the new window choose its initial position
-        for [x, y] in [
-            [0., 0.],
-            [60., 0.],
-            [60., 20.],
-            [20., 20.],
-            [20., 40.],
-            [0., 40.],
-        ] {
-            let out = frame(&ctx, e, vec![]);
-            let rect = out
-                .shapes
-                .iter()
-                .find_map(|c| match &c.shape {
-                    egui::Shape::Rect(r)
-                        if (r.rect.width() - 510.).abs() < 1.
-                            && (r.rect.height() - 250.).abs() < 1. =>
-                    {
-                        Some(r.rect)
-                    }
-                    _ => None,
-                })
-                .expect("visible drawing canvas");
-            click(
-                &ctx,
-                e,
-                rect.left_bottom() + egui::vec2(35. + 4. * x, -30. - 4. * y),
-            );
-        }
-        assert!(!e.draft.as_ref().expect("draft").closed);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Close contour"));
-        assert!(e.draft.as_ref().expect("draft").closed);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        assert!(!e.draft.as_ref().expect("draft").closed);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Redo draft"));
-        assert!(e.draft.as_ref().expect("draft").closed);
-        replace_field(&ctx, e, "10", "12");
-        assert_eq!(e.draft.as_ref().expect("draft").height, "12");
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").height, "10");
-        replace_field(&ctx, e, "60.000", "NaN");
-        assert!(e.content().is_err());
-        assert!(e.take_request().is_none());
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        assert!(e.content().is_ok());
-        let out = frame(&ctx, e, vec![]);
-        // §30L: the window's create predicate is off: the press asks nothing.
-        click(&ctx, e, text_at(&out, CREATE_DRAWN));
-        assert!(e.take_request().is_none(), "a disabled Create asked");
-        e.set_create(true);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, CREATE_DRAWN));
-        e.take_request().expect("real button submitted one request")
-    }
-    #[test]
-    fn draft_widgets_submit_exact_mouse_coordinates_with_explicit_closure() {
-        let mut e = Editor::default();
-        let NewDocument::SketchExtrude(p) = draw_l_through_widgets(&mut e) else {
-            panic!("wrong request")
-        };
-        assert_eq!(
-            p.points().iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(),
-            [
-                [0., 0.],
-                [60., 0.],
-                [60., 20.],
-                [20., 20.],
-                [20., 40.],
-                [0., 40.]
-            ]
-        );
-        assert_eq!(p.height_mm(), 10.);
-        assert!(e.take_request().is_none());
-    }
-    /// Opens the window, switches it to Circle and fills the four numbers in
-    /// through real widgets, leaving whatever the polygon half held alone.
-    fn draw_circle_through_widgets(
-        e: &mut Editor,
-        center: [&str; 2],
-        radius: &str,
-        height: &str,
-    ) -> egui::Context {
-        let ctx = egui::Context::default();
-        if !e.active() {
-            let out = frame(&ctx, e, vec![]);
-            click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
-        }
-        // A context that has not drawn this window yet has to lay it out
-        // before anything inside it can be found and pressed.
-        for _ in 0..3 {
-            frame(&ctx, e, vec![]);
-        }
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Circle"));
-        for (label, value) in [
-            ("Center X", center[0]),
-            ("Center Y", center[1]),
-            ("Radius", radius),
-            ("Blind height", height),
-        ] {
-            let out = frame(&ctx, e, vec![]);
-            type_into_grid_row(&ctx, e, &out, label, value);
-        }
-        ctx
-    }
-
     /// Types into the box on one row of the circle grid.
     ///
     /// The grid's first column is as wide as its widest label, so every box
@@ -4442,733 +3603,6 @@ pub(crate) mod tests {
                 },
                 egui::Event::Text(value.into()),
             ],
-        );
-    }
-
-    /// Opens the window, switches it to the annular profile and fills its five
-    /// numbers in through real widgets, leaving the other two drafts alone.
-    fn draw_annulus_through_widgets(
-        e: &mut Editor,
-        center: [&str; 2],
-        outer: &str,
-        inner: &str,
-        height: &str,
-    ) -> egui::Context {
-        let ctx = egui::Context::default();
-        if !e.active() {
-            let out = frame(&ctx, e, vec![]);
-            click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
-        }
-        for _ in 0..3 {
-            frame(&ctx, e, vec![]);
-        }
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Circle with hole"));
-        for (label, value) in [
-            ("Center X", center[0]),
-            ("Center Y", center[1]),
-            ("Outer radius", outer),
-            ("Inner radius", inner),
-            ("Blind height", height),
-        ] {
-            let out = frame(&ctx, e, vec![]);
-            type_into_annulus_row(&ctx, e, &out, label, value);
-        }
-        ctx
-    }
-
-    #[test]
-    fn circle_widgets_submit_exact_numbers_and_keep_the_polygon_draft() {
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
-        frame(&ctx, &mut e, vec![]);
-        // A polygon half-drawn before anyone asked for a circle.
-        let points = vec![
-            ["0".to_owned(), "0".to_owned()],
-            ["60".to_owned(), "0".to_owned()],
-            ["0".to_owned(), "40".to_owned()],
-        ];
-        e.draft.as_mut().expect("draft").points = points.clone();
-
-        let ctx = draw_circle_through_widgets(&mut e, ["12", "-7"], "10", "15");
-        assert_eq!(
-            e.draft.as_ref().expect("draft").points,
-            points,
-            "switching mode threw away the polygon draft"
-        );
-        assert_eq!(e.circle.center, ["12".to_owned(), "-7".to_owned()]);
-        assert_eq!(e.circle.radius, "10");
-        assert_eq!(e.circle.height, "15");
-
-        // A refusal is shown in the form and submits nothing.
-        for bad in ["0", "-4", "banana", ""] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_grid_row(&ctx, &mut e, &out, "Radius", bad);
-            let out = frame(&ctx, &mut e, vec![]);
-            assert!(e.circle_content().is_err(), "radius {bad:?} was accepted");
-            assert!(
-                !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == CREATE_CIRCLE)),
-                "radius {bad:?} still offered Save"
-            );
-            assert!(e.take_request().is_none());
-        }
-
-        let ctx = draw_circle_through_widgets(&mut e, ["12", "-7"], "10", "15");
-        let out = frame(&ctx, &mut e, vec![]);
-        // §30L: the window's create predicate is off: the press asks nothing.
-        click(&ctx, &mut e, text_at(&out, CREATE_CIRCLE));
-        assert!(e.take_request().is_none(), "a disabled Create asked");
-        e.set_create(true);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, CREATE_CIRCLE));
-        let NewDocument::CircleExtrude(c) = e.take_request().expect("one request") else {
-            panic!("the circle form asked for something else")
-        };
-        assert_eq!((c.center().x, c.center().y), (12., -7.));
-        assert_eq!((c.radius_mm(), c.height_mm()), (10., 15.));
-        assert!(e.take_request().is_none(), "one press, one request");
-
-        // While the submitted request is saving, only the toolbar can cancel
-        // the job. Draft actions must not discard the recovery state or change
-        // which form will reappear if the worker refuses the publication.
-        let before_circle = e.circle.clone();
-        for label in ["Cancel draft", "Line polygon", CREATE_CIRCLE] {
-            let out = frame_running(&ctx, &mut e, vec![], true);
-            let at = text_at(&out, label);
-            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
-            for pressed in [true, false] {
-                frame_running(
-                    &ctx,
-                    &mut e,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    }],
-                    true,
-                );
-            }
-            assert!(e.active(), "{label} discarded a saving circle draft");
-            assert_eq!(e.mode, Mode::Circle, "{label} changed a saving profile");
-            assert_eq!(e.circle, before_circle);
-            assert_eq!(e.draft.as_ref().expect("draft").points, points);
-            assert!(e.take_request().is_none(), "{label} submitted twice");
-        }
-
-        // Back to the polygon: the points are still there, and so is its own
-        // action. Neither draft was ever the other's.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Line polygon"));
-        assert_eq!(e.draft.as_ref().expect("draft").points, points);
-        let out = frame(&ctx, &mut e, vec![]);
-        text_at(&out, "Close contour");
-        // Cancel ends both, and leaves nothing pending.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
-        assert!(!e.active());
-        assert!(e.take_request().is_none());
-    }
-
-    #[test]
-    fn annulus_widgets_submit_exact_numbers_and_keep_the_other_drafts() {
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
-        frame(&ctx, &mut e, vec![]);
-        // A polygon half-drawn, and a circle typed, before anyone asked for a
-        // hole. Neither may be disturbed by the third form.
-        let points = vec![
-            ["0".to_owned(), "0".to_owned()],
-            ["60".to_owned(), "0".to_owned()],
-            ["0".to_owned(), "40".to_owned()],
-        ];
-        e.draft.as_mut().expect("draft").points = points.clone();
-        draw_circle_through_widgets(&mut e, ["1", "2"], "3", "4");
-        let circle = e.circle.clone();
-
-        let ctx = draw_annulus_through_widgets(&mut e, ["12", "-7"], "10", "4", "15");
-        assert_eq!(e.mode, Mode::Annulus);
-        assert_eq!(e.draft.as_ref().expect("draft").points, points);
-        assert_eq!(
-            e.circle, circle,
-            "the circle draft is not the annulus draft"
-        );
-        assert_eq!(e.annulus.center, ["12".to_owned(), "-7".to_owned()]);
-        assert_eq!(e.annulus.outer_radius, "10");
-        assert_eq!(e.annulus.inner_radius, "4");
-        assert_eq!(e.annulus.height, "15");
-
-        // Every refusal is shown in the form and submits nothing: a hole as
-        // big as its boundary, a hole bigger than it, a wall thinner than the
-        // policy allows, and a number that is not one.
-        for (field, bad) in [
-            ("Inner radius", "0"),
-            ("Inner radius", "-4"),
-            ("Inner radius", "banana"),
-            ("Outer radius", "0"),
-            ("Blind height", "0"),
-        ] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(&ctx, &mut e, &out, field, bad);
-            let out = frame(&ctx, &mut e, vec![]);
-            assert!(e.annulus_content().is_err(), "{field} {bad:?} was accepted");
-            assert!(
-                !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == CREATE_ANNULUS)),
-                "{field} {bad:?} still offered Save"
-            );
-            assert!(e.take_request().is_none());
-            // Put the form back to something that submits before the next one.
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(
-                &ctx,
-                &mut e,
-                &out,
-                field,
-                match field {
-                    "Inner radius" => "4",
-                    "Outer radius" => "10",
-                    _ => "15",
-                },
-            );
-        }
-
-        // An empty box cannot be reached by selecting and replacing, so it is
-        // emptied directly. The form has to refuse it like any other
-        // non-number rather than reading it as a zero.
-        e.annulus.inner_radius.clear();
-        assert!(e.annulus_content().is_err(), "an empty radius was accepted");
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(
-            !out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == CREATE_ANNULUS)),
-            "an empty radius still offered Save"
-        );
-        assert!(e.take_request().is_none());
-
-        let ctx = draw_annulus_through_widgets(&mut e, ["12", "-7"], "10", "4", "15");
-        let out = frame(&ctx, &mut e, vec![]);
-        // §30L: the window's create predicate is off: the press asks nothing.
-        click(&ctx, &mut e, text_at(&out, CREATE_ANNULUS));
-        assert!(e.take_request().is_none(), "a disabled Create asked");
-        e.set_create(true);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, CREATE_ANNULUS));
-        let NewDocument::AnnularExtrude(a) = e.take_request().expect("one request") else {
-            panic!("the annular form asked for something else")
-        };
-        assert_eq!((a.center().x, a.center().y), (12., -7.));
-        assert_eq!(a.outer_radius_mm(), 10.);
-        assert_eq!(a.inner_radius_mm(), 4.);
-        assert_eq!(a.height_mm(), 15.);
-        assert!(e.take_request().is_none(), "one press, one request");
-
-        // While that request is saving, only the toolbar can cancel the job.
-        let before = e.annulus.clone();
-        for label in ["Cancel draft", "Circle", CREATE_ANNULUS] {
-            let out = frame_running(&ctx, &mut e, vec![], true);
-            let at = text_at(&out, label);
-            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
-            for pressed in [true, false] {
-                frame_running(
-                    &ctx,
-                    &mut e,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    }],
-                    true,
-                );
-            }
-            assert!(e.active(), "{label} discarded a saving annular draft");
-            assert_eq!(e.mode, Mode::Annulus, "{label} changed a saving profile");
-            assert_eq!(e.annulus, before);
-            assert_eq!(e.circle, circle);
-            assert_eq!(e.draft.as_ref().expect("draft").points, points);
-            assert!(e.take_request().is_none(), "{label} submitted twice");
-        }
-
-        // Back through the other two: both are still exactly as they were.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Circle"));
-        assert_eq!(e.circle, circle);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Line polygon"));
-        assert_eq!(e.draft.as_ref().expect("draft").points, points);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Circle with hole"));
-        assert_eq!(e.annulus, before);
-        // Cancel ends all three, and leaves nothing pending.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
-        assert!(!e.active());
-        assert!(e.take_request().is_none());
-    }
-
-    /// The window's worker and the shipped command publish the same part.
-    #[test]
-    fn native_annulus_draft_and_cli_publish_equivalent_models() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        use crate::creates::{
-            self,
-            tests::{ferritecad, read_semantics},
-        };
-        let d = tempfile::tempdir().expect("dir");
-        let ui = d.path().join("annulus-ui.fcad");
-        let cli = d.path().join("annulus-cli.fcad");
-        let input = d.path().join("annulus-request.json");
-        let mut creates = creates::Creates::default();
-        draw_annulus_through_widgets(&mut creates.sketch, ["12", "-7"], "10", "4", "15");
-        let content = creates
-            .sketch
-            .annulus_content()
-            .expect("the widgets describe an annulus");
-        let before = creates.sketch.annulus.clone();
-        let mut view = ferritecad_ui::ViewportInput::new();
-
-        creates::tests::drawn_through_the_window(
-            &mut creates,
-            &mut view,
-            content.clone(),
-            &ui,
-            |e| assert_eq!(e.annulus, before, "a refused picture restores the draft"),
-        );
-        creates.stop_all();
-
-        std::fs::write(
-            &input,
-            concat!(
-                r#"{"schema_version":1,"center_mm":[12.0,-7.0],"#,
-                r#""outer_radius_mm":10.0,"inner_radius_mm":4.0,"height_mm":15.0}"#
-            ),
-        )
-        .expect("request");
-        let run = std::process::Command::new(ferritecad())
-            .arg("create-annular-extrude")
-            .arg(input)
-            .arg("-o")
-            .arg(&cli)
-            .arg("--json")
-            .output()
-            .expect("peer CLI");
-        assert!(run.status.success(), "{run:?}");
-
-        // The same model, said in two independently minted sets of UUIDs.
-        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
-        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
-        let mut bytes = Vec::new();
-        for path in [&ui, &cli] {
-            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
-                let out = path.with_extension(extension);
-                let result = std::process::Command::new(ferritecad())
-                    .arg(op)
-                    .arg(path)
-                    .arg("-o")
-                    .arg(&out)
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                if extension == "stl" {
-                    bytes.push(std::fs::read(&out).expect("STL"));
-                } else if let Some(dir) = std::env::var_os("FCAD_ANNULUS_ARTIFACTS") {
-                    // Read by the pinned ufbx reader in the same CI job. FBX
-                    // identity properties carry each document's own UUIDs, so
-                    // these two files are read rather than compared.
-                    let dir = std::path::Path::new(&dir);
-                    std::fs::create_dir_all(dir).expect("artifact directory");
-                    std::fs::copy(&out, dir.join(out.file_name().expect("name")))
-                        .expect("artifact");
-                }
-            }
-        }
-        assert_eq!(bytes[0], bytes[1], "one geometry, two documents");
-    }
-
-    /// §27A: the stepped bushing drawn on the real canvas, turned a full turn.
-    ///
-    /// Clicks put the six vertices down, Close contour closes them, and the
-    /// Feature choice is a draft change Undo and Redo move. The axis refusal
-    /// comes from the document's own policy, with no request made.
-    fn draw_stepped_revolve_through_widgets(e: &mut Editor) -> egui::Context {
-        let ctx = egui::Context::default();
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
-        frame(&ctx, e, vec![]);
-        for [x, y] in [
-            [4., 0.],
-            [10., 0.],
-            [10., 5.],
-            [7., 5.],
-            [7., 15.],
-            [4., 15.],
-        ] {
-            let out = frame(&ctx, e, vec![]);
-            let rect = out
-                .shapes
-                .iter()
-                .find_map(|c| match &c.shape {
-                    egui::Shape::Rect(r)
-                        if (r.rect.width() - 510.).abs() < 1.
-                            && (r.rect.height() - 250.).abs() < 1. =>
-                    {
-                        Some(r.rect)
-                    }
-                    _ => None,
-                })
-                .expect("visible drawing canvas");
-            click(
-                &ctx,
-                e,
-                rect.left_bottom() + egui::vec2(35. + 4. * x, -30. - 4. * y),
-            );
-        }
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Close contour"));
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Revolve 360°"));
-        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-        let out = frame(&ctx, e, vec![]);
-        assert!(
-            out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "axis (Y) at X = 0 · radius X →")),
-            "the axis is named on the canvas"
-        );
-        assert!(
-            !out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "Blind height mm")),
-            "a revolution has no height"
-        );
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Extrude);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-        // Axis contact is decided by the kernel when building, not by this form.
-        replace_field(&ctx, e, "4.000", "0");
-        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
-        let out = frame(&ctx, e, vec![]);
-        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
-            egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
-        ctx
-    }
-
-    #[test]
-    fn revolve_draft_widgets_name_the_axis_and_defer_contact_to_the_kernel() {
-        let mut e = Editor::default();
-        let ctx = draw_stepped_revolve_through_widgets(&mut e);
-        let out = frame(&ctx, &mut e, vec![]);
-        // §30L: the window's create predicate is off: the press asks nothing.
-        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
-        assert!(e.take_request().is_none(), "a disabled Create asked");
-        e.set_create(true);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
-        let Some(NewDocument::SketchRevolve(revolution)) = e.take_request() else {
-            panic!("one Revolve request")
-        };
-        assert_eq!(
-            revolution
-                .points()
-                .iter()
-                .map(|p| [p.x, p.y])
-                .collect::<Vec<_>>(),
-            [
-                [4., 0.],
-                [10., 0.],
-                [10., 5.],
-                [7., 5.],
-                [7., 15.],
-                [4., 15.]
-            ]
-        );
-        assert!((revolution.volume_mm3() - 750. * std::f64::consts::PI).abs() < 1e-9);
-        assert!(e.take_request().is_none(), "one press, one request");
-    }
-
-    /// The window's worker and the shipped command publish the same Revolve.
-    #[test]
-    fn native_revolve_draft_worker_and_cli_publish_equivalent_models() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        use crate::creates::{
-            self,
-            tests::{ferritecad, read_semantics},
-        };
-        let d = tempfile::tempdir().expect("dir");
-        let ui = d.path().join("revolve-ui.fcad");
-        let cli = d.path().join("revolve-cli.fcad");
-        let input = d.path().join("revolve-request.json");
-        let mut creates = creates::Creates::default();
-        draw_stepped_revolve_through_widgets(&mut creates.sketch);
-        let content = creates.sketch.content().expect("a Revolve");
-        let before = creates.sketch.draft.clone();
-        let mut view = ferritecad_ui::ViewportInput::new();
-
-        creates::tests::drawn_through_the_window(
-            &mut creates,
-            &mut view,
-            content.clone(),
-            &ui,
-            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
-        );
-        creates.stop_all();
-
-        std::fs::write(
-            &input,
-            concat!(
-                r#"{"request_version":1,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
-                r#""axis":"sketch_y","angle":"full_turn"}"#
-            ),
-        )
-        .expect("request");
-        let run = std::process::Command::new(ferritecad())
-            .arg("create-sketch-revolve")
-            .arg(input)
-            .arg("-o")
-            .arg(&cli)
-            .arg("--json")
-            .output()
-            .expect("peer CLI");
-        assert!(run.status.success(), "{run:?}");
-
-        // The same model under two independently minted sets of UUIDs.
-        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
-        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
-        let mut bytes = Vec::new();
-        for path in [&ui, &cli] {
-            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
-                let out = path.with_extension(extension);
-                let result = std::process::Command::new(ferritecad())
-                    .arg(op)
-                    .arg(path)
-                    .arg("-o")
-                    .arg(&out)
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                bytes.push(std::fs::read(&out).expect("export bytes"));
-            }
-        }
-        assert_eq!(bytes[0], bytes[2], "worker/CLI STL bytes");
-        assert_eq!(
-            bytes[1].len(),
-            bytes[3].len(),
-            "FBX carries each document's own UUIDs, so only its size is compared here"
-        );
-    }
-
-    /// §27D: the stepped profile turned through the angle typed in the same
-    /// window. The choice and the typed angle are part of the draft, so Undo
-    /// and Redo step through them; an angle the document refuses shows the
-    /// refusal in place of the button and keeps the draft.
-    fn draw_partial_revolve_through_widgets(e: &mut Editor) -> egui::Context {
-        let ctx = draw_stepped_revolve_through_widgets(e);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Revolve angle"));
-        assert_eq!(
-            e.draft.as_ref().expect("draft").feature,
-            Feature::RevolveAngle
-        );
-        let out = frame(&ctx, e, vec![]);
-        for shown in [
-            "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody",
-            "Angle °",
-            "axis (Y) at X = 0 · radius X →",
-        ] {
-            assert!(
-                out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == shown)),
-                "{shown}"
-            );
-        }
-        assert!(matches!(
-            e.content(),
-            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.radians().to_degrees() == 90.
-        ));
-        // Each value is one no other field of the draft shows, because the
-        // field is found by the text it currently holds.
-        for (typed, refusal) in [
-            ("360", "full turn"),
-            ("0.001", "minimum"),
-            ("359.995", "within"),
-            ("-45", "not positive"),
-            ("0.00", "not positive"),
-            ("abc", ""),
-        ] {
-            let current = e.draft.as_ref().expect("draft").angle.clone();
-            replace_field(&ctx, e, &current, typed);
-            assert_eq!(e.draft.as_ref().expect("draft").angle, typed);
-            let error = e.content().expect_err("not a sector angle").to_string();
-            assert!(error.contains(refusal), "{typed}: {error}");
-            let out = frame(&ctx, e, vec![]);
-            assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == CREATE_DRAWN)));
-        }
-        // An emptied field is not an angle either (set directly: typing
-        // nothing over a selection sends no event to clear it with).
-        e.draft.as_mut().expect("draft").angle.clear();
-        assert!(e.content().is_err(), "an empty angle");
-        e.draft.as_mut().expect("draft").angle = "abc".into();
-        // Undo walks back through every typed angle to 90°, Redo forward again.
-        while e.draft.as_ref().expect("draft").angle != "90" {
-            let out = frame(&ctx, e, vec![]);
-            click(&ctx, e, text_at(&out, "Undo draft"));
-        }
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").angle, "360");
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Undo draft"));
-        replace_field(&ctx, e, "90", "137.5");
-        assert!(matches!(
-            e.content(),
-            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.radians().to_degrees() == 137.5
-        ));
-        // The other features keep their own forms, and the angle survives a
-        // switch away and back.
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Revolve 360°"));
-        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Revolve angle"));
-        assert_eq!(e.draft.as_ref().expect("draft").angle, "137.5");
-        ctx
-    }
-
-    #[test]
-    fn partial_revolve_draft_widgets_state_the_angle_and_refuse_others() {
-        let mut e = Editor::default();
-        let ctx = draw_partial_revolve_through_widgets(&mut e);
-        let out = frame(&ctx, &mut e, vec![]);
-        // §30L: the window's create predicate is off: the press asks nothing.
-        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
-        assert!(e.take_request().is_none(), "a disabled Create asked");
-        e.set_create(true);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, CREATE_DRAWN));
-        let Some(NewDocument::SketchPartialRevolve { profile, angle }) = e.take_request() else {
-            panic!("one partial Revolve request")
-        };
-        assert_eq!(angle.radians().to_degrees(), 137.5);
-        assert_eq!(
-            profile
-                .points()
-                .iter()
-                .map(|p| [p.x, p.y])
-                .collect::<Vec<_>>(),
-            [
-                [4., 0.],
-                [10., 0.],
-                [10., 5.],
-                [7., 5.],
-                [7., 15.],
-                [4., 15.]
-            ]
-        );
-        assert!(e.take_request().is_none(), "one press, one request");
-    }
-
-    /// §27D: the window's worker and the shipped command publish the same
-    /// sector. STL bytes are equal; the FBX files are equal byte for byte once
-    /// the two documents' own Body identities — the only ones minted apart —
-    /// are mapped to one name.
-    #[test]
-    fn native_partial_revolve_draft_worker_and_cli_publish_equivalent_models() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        use crate::creates::{
-            self,
-            tests::{ferritecad, read_semantics},
-        };
-        let d = tempfile::tempdir().expect("dir");
-        let ui = d.path().join("sector-ui.fcad");
-        let cli = d.path().join("sector-cli.fcad");
-        let input = d.path().join("sector-request.json");
-        let mut creates = creates::Creates::default();
-        draw_partial_revolve_through_widgets(&mut creates.sketch);
-        let content = creates.sketch.content().expect("a sector");
-        let before = creates.sketch.draft.clone();
-        let mut view = ferritecad_ui::ViewportInput::new();
-        creates::tests::drawn_through_the_window(
-            &mut creates,
-            &mut view,
-            content.clone(),
-            &ui,
-            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
-        );
-        creates.stop_all();
-
-        std::fs::write(
-            &input,
-            concat!(
-                r#"{"request_version":2,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
-                r#""axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}"#
-            ),
-        )
-        .expect("request");
-        let run = std::process::Command::new(ferritecad())
-            .arg("create-sketch-revolve")
-            .arg(input)
-            .arg("-o")
-            .arg(&cli)
-            .arg("--json")
-            .output()
-            .expect("peer CLI");
-        assert!(run.status.success(), "{run:?}");
-        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
-        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
-        let export = |path: &std::path::Path| {
-            let mut bytes = Vec::new();
-            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
-                let out = path.with_extension(extension);
-                let p = std::process::Command::new(ferritecad())
-                    .arg(op)
-                    .arg(path)
-                    .arg("-o")
-                    .arg(&out)
-                    .output()
-                    .expect("export");
-                assert!(p.status.success(), "{p:?}");
-                bytes.push(std::fs::read(&out).expect("bytes"));
-            }
-            bytes
-        };
-        let (a, b) = (export(&ui), export(&cli));
-        assert_eq!(a[0], b[0], "worker/CLI STL bytes");
-        let mapped_fbx = |path: &std::path::Path, bytes: &[u8]| {
-            let document = ferritecad_document::Document::open_read_only(path).expect("document");
-            let body = document
-                .objects()
-                .expect("objects")
-                .into_iter()
-                .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
-                .expect("Body");
-            let text = std::str::from_utf8(bytes).expect("ASCII FBX");
-            assert_eq!(text.matches(&body.id.to_string()).count(), 3);
-            let mapped = text.replace(&body.id.to_string(), "same-body");
-            document.close().expect("close");
-            mapped
-        };
-        assert_eq!(
-            mapped_fbx(&ui, &a[1]),
-            mapped_fbx(&cli, &b[1]),
-            "all FBX bytes agree after mapping the two created Body identities"
         );
     }
 
@@ -6558,138 +4992,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn native_circle_draft_and_cli_publish_equivalent_models() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        use crate::creates::{
-            self,
-            tests::{ferritecad, read_semantics},
-        };
-        let d = tempfile::tempdir().expect("dir");
-        let ui = d.path().join("circle-ui.fcad");
-        let cli = d.path().join("circle-cli.fcad");
-        let input = d.path().join("circle-request.json");
-        let mut creates = creates::Creates::default();
-        draw_circle_through_widgets(&mut creates.sketch, ["12", "-7"], "10", "15");
-        let content = creates
-            .sketch
-            .circle_content()
-            .expect("the widgets describe a circle");
-        let before = creates.sketch.circle.clone();
-        let mut view = ferritecad_ui::ViewportInput::new();
-
-        creates::tests::drawn_through_the_window(
-            &mut creates,
-            &mut view,
-            content.clone(),
-            &ui,
-            |e| assert_eq!(e.circle, before, "a refused picture restores the draft"),
-        );
-        creates.stop_all();
-
-        std::fs::write(
-            &input,
-            r#"{"schema_version":1,"center_mm":[12.0,-7.0],"radius_mm":10.0,"height_mm":15.0}"#,
-        )
-        .expect("request");
-        let run = std::process::Command::new(ferritecad())
-            .arg("create-circle-extrude")
-            .arg(input)
-            .arg("-o")
-            .arg(&cli)
-            .arg("--json")
-            .output()
-            .expect("peer CLI");
-        assert!(run.status.success(), "{run:?}");
-
-        // The same model, said in two independently minted sets of UUIDs.
-        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
-        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
-        let mut bytes = Vec::new();
-        for path in [&ui, &cli] {
-            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
-                let out = path.with_extension(extension);
-                let result = std::process::Command::new(ferritecad())
-                    .arg(op)
-                    .arg(path)
-                    .arg("-o")
-                    .arg(&out)
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                if extension == "stl" {
-                    bytes.push(std::fs::read(&out).expect("STL"));
-                } else if let Some(dir) = std::env::var_os("FCAD_CIRCLE_ARTIFACTS") {
-                    // Read by the pinned ufbx reader in the same CI job. FBX
-                    // identity properties carry each document's own UUIDs, so
-                    // these two files are read rather than compared.
-                    let dir = std::path::Path::new(&dir);
-                    std::fs::create_dir_all(dir).expect("artifact directory");
-                    std::fs::copy(&out, dir.join(out.file_name().expect("name")))
-                        .expect("artifact");
-                }
-            }
-        }
-        assert_eq!(bytes[0], bytes[1], "one geometry, two documents");
-    }
-
-    #[test]
-    fn native_sketch_draft_and_cli_publish_equivalent_models() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        use crate::creates::{
-            self,
-            tests::{ferritecad, read_semantics},
-        };
-        let d = tempfile::tempdir().expect("dir");
-        let ui = d.path().join("ui.fcad");
-        let cli = d.path().join("cli.fcad");
-        let input = d.path().join("request.json");
-        let mut creates = creates::Creates::default();
-        let content = draw_l_through_widgets(&mut creates.sketch);
-        let before = creates.sketch.draft.clone();
-        let mut view = ferritecad_ui::ViewportInput::new();
-        creates::tests::drawn_through_the_window(
-            &mut creates,
-            &mut view,
-            content.clone(),
-            &ui,
-            |e| assert_eq!(e.draft, before, "a refused picture restores the draft"),
-        );
-        creates.stop_all();
-        std::fs::write(&input,r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#).expect("request");
-        let run = std::process::Command::new(ferritecad())
-            .arg("create-sketch-extrude")
-            .arg(input)
-            .arg("-o")
-            .arg(&cli)
-            .arg("--json")
-            .output()
-            .expect("peer CLI");
-        assert!(run.status.success(), "{run:?}");
-        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
-        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
-        // Independent UUIDs must not leak into the geometric comparison.
-        let mut bytes = Vec::new();
-        for path in [&ui, &cli] {
-            let out = path.with_extension("stl");
-            let result = std::process::Command::new(ferritecad())
-                .arg("export-stl")
-                .arg(path)
-                .arg("-o")
-                .arg(&out)
-                .output()
-                .expect("export");
-            assert!(result.status.success(), "{result:?}");
-            bytes.push(std::fs::read(out).expect("STL"));
-        }
-        assert_eq!(bytes[0], bytes[1]);
-    }
     fn document_frame(
         ctx: &egui::Context,
         e: &mut Editor,
@@ -6722,7 +5024,7 @@ pub(crate) mod tests {
                     Some(source),
                     &accepted::Accepted::default(),
                 );
-                e.draw(ui, true, false, "");
+                e.draw(ui, false, "");
                 crate::edits::Edits::default().draw(ui, true, source.unavailable_reason());
             },
         );
@@ -7429,6 +5731,25 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
+    fn assert_closing_edge(ctx: &egui::Context, editor: &mut Editor) {
+        let out = frame(ctx, editor, vec![]);
+        let rect = super::drag_tests::canvas(&out);
+        let points = Canvas::points(editor.draft.as_ref().expect("saved contour")).expect("points");
+        let closing = [
+            editor
+                .canvas
+                .screen(rect, *points.last().expect("last vertex")),
+            editor.canvas.screen(rect, points[0]),
+        ];
+        assert!(
+            out.shapes.iter().any(|drawn| matches!(
+                drawn.shape, egui::Shape::LineSegment { points, stroke } if points == closing
+                    && stroke.color == egui::Color32::LIGHT_BLUE
+            )),
+            "the restored contour must join its last vertex to the first"
+        );
+    }
+
     pub(crate) fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
         let out = frame(ctx, e, vec![]);
         click(ctx, e, text_at(&out, label));
@@ -7530,7 +5851,6 @@ pub(crate) mod tests {
         assert!(e.redo.is_empty(), "a real edit clears Redo");
         assert!(e.edit_request().is_err(), "the draft need not parse");
         assert!(e.take_edit_request().is_none());
-        assert!(e.take_request().is_none());
 
         click_label(&ctx, &mut e, "Restore saved vertices");
         assert_eq!(
@@ -7548,7 +5868,7 @@ pub(crate) mod tests {
             e.draft.as_ref().map(|d| d.angle.as_str()),
             Some(opened.angle.as_str())
         );
-        assert_eq!(e.draft.as_ref().map(|d| d.closed), Some(true));
+        assert_closing_edge(&ctx, &mut e);
         assert_eq!(e.canvas.selected, Some(0));
         assert_eq!((e.canvas.minimum, e.canvas.scale), view);
         let (request, kept_choice) = e.editing.as_ref().expect("still editing");
@@ -7594,7 +5914,6 @@ pub(crate) mod tests {
             e.take_edit_request().is_none(),
             "Restore does not ask to save"
         );
-        assert!(e.take_request().is_none());
         assert_eq!(std::fs::read(&path).expect("source"), bytes);
         let out = frame(&ctx, &mut e, vec![]);
         assert!(painted(&out, "Rounded by Fillet"));
@@ -7810,7 +6129,7 @@ pub(crate) mod tests {
             e.draft.as_ref().map(|d| d.angle.as_str()),
             Some(opened.angle.as_str())
         );
-        assert!(e.draft.as_ref().expect("draft").closed);
+        assert_closing_edge(&ctx, &mut e);
         let built = e.edit_request().expect("snapshot");
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
@@ -7860,7 +6179,7 @@ pub(crate) mod tests {
             e.draft.as_ref().map(|d| d.height.as_str()),
             Some(opened.height.as_str())
         );
-        assert!(e.draft.as_ref().expect("draft").closed);
+        assert_closing_edge(&ctx, &mut e);
         let built = e.edit_request().expect("snapshot");
         assert_eq!(built.source, path);
         assert_eq!(built.expected, reading.version);
@@ -7930,26 +6249,6 @@ pub(crate) mod tests {
     /// The control belongs only to a saved Line sketch.
     #[test]
     fn restore_saved_vertices_is_absent_from_other_forms() {
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Add point"));
-        assert!(painted(&out, "Undo draft"));
-        assert!(!painted(&out, "Restore saved vertices"));
-        click(&ctx, &mut e, text_at(&out, "Circle"));
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, CREATE_CIRCLE));
-        assert!(!painted(&out, "Restore saved vertices"));
-        click(&ctx, &mut e, text_at(&out, "Circle with hole"));
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, CREATE_ANNULUS));
-        assert!(!painted(&out, "Restore saved vertices"));
-
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("sector.fcad");
         crate::constraints::tests::revolve::write_sector(

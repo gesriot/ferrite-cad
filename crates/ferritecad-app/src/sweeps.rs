@@ -234,4 +234,4 @@ impl Editor {
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests;
+pub(crate) mod tests;

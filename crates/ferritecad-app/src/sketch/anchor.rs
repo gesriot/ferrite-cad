@@ -64,40 +64,18 @@ pub(super) fn track(
     object_snap::pick(candidates, query)
 }
 
-/// What a gesture from an anchor changes, named before it starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Moves {
-    /// An open New drawing with room: one new vertex, with this 0-based index.
-    Adds(usize),
-    /// A saved Sketch: its selected vertex, with this 0-based index.
-    Vertex(usize),
-}
-
-impl Moves {
-    pub(super) fn effect(self) -> String {
-        match self {
-            Self::Adds(i) => format!("adds vertex {}", i + 1),
-            Self::Vertex(v) => format!("moves vertex {}", v + 1),
-        }
-    }
-}
-
 /// Where the explicit mode stands, for the standing words painted on the canvas.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Situation {
     /// The mode is on but Guides are Off: nothing is offered.
     NeedsGuides,
-    /// A closed New drawing: a gesture would add no point.
-    Closed,
-    /// A New drawing that holds as many points as a profile may.
-    Full,
     /// A saved Sketch with no selected vertex: there is nothing to move.
     SelectFirst,
-    Looking(Moves),
+    Looking(usize),
     /// Acquired by hovering; a press now confirms it.
-    Provisional(Candidate, Moves),
+    Provisional(Candidate, usize),
     /// Confirmed by the press that is still held: fixed until release.
-    Held(Candidate, Moves),
+    Held(Candidate, usize),
 }
 
 /// The anchor in words: its kind, its source and where it is.
@@ -120,27 +98,23 @@ pub(super) fn status(situation: Situation, vertices: usize) -> String {
         Situation::NeedsGuides => "From object: choose Orthogonal or Polar 45° first;\n\
                                    it is unavailable while Guides are Off."
             .into(),
-        Situation::Closed => {
-            "From object: this drawing is closed;\na gesture would add no point.".into()
-        }
-        Situation::Full => "From object: the drawing holds as many points as it may.".into(),
         Situation::SelectFirst => "From object: select the vertex to move first\n\
                                    (press it), then press another shown point."
             .into(),
-        Situation::Looking(moves) => format!(
+        Situation::Looking(vertex) => format!(
             "From object: hover an endpoint, midpoint or crossing,\npress it, drag and release; \
-             it {}.",
-            moves.effect()
+             it moves vertex {}.",
+            vertex + 1
         ),
-        Situation::Provisional(anchor, moves) => format!(
-            "From object: {}\npress to start; it {}.",
+        Situation::Provisional(anchor, vertex) => format!(
+            "From object: {}\npress to start; it moves vertex {}.",
             describe(&anchor, vertices),
-            moves.effect()
+            vertex + 1
         ),
-        Situation::Held(anchor, moves) => format!(
-            "From object: from {}\nfixed until release; it {}.",
+        Situation::Held(anchor, vertex) => format!(
+            "From object: from {}\nfixed until release; it moves vertex {}.",
             describe(&anchor, vertices),
-            moves.effect()
+            vertex + 1
         ),
     }
 }
@@ -382,17 +356,16 @@ mod tests {
                 Situation::NeedsGuides,
                 &["Orthogonal or Polar 45°", "Guides are Off"][..],
             ),
-            (Situation::Closed, &["closed", "add no point"]),
             (Situation::SelectFirst, &["select the vertex to move first"]),
             (
-                Situation::Looking(Moves::Adds(3)),
+                Situation::Looking(3),
                 &[
                     "hover an endpoint, midpoint or crossing",
-                    "it adds vertex 4",
+                    "it moves vertex 4",
                 ],
             ),
             (
-                Situation::Provisional(end, Moves::Vertex(0)),
+                Situation::Provisional(end, 0),
                 &[
                     "Endpoint · vertex 2 at (60, 0) mm",
                     "press to start",
@@ -400,11 +373,11 @@ mod tests {
                 ],
             ),
             (
-                Situation::Held(middle, Moves::Adds(3)),
+                Situation::Held(middle, 3),
                 &[
                     "from Midpoint · edge 3>1",
                     "fixed until release",
-                    "it adds vertex 4",
+                    "it moves vertex 4",
                 ],
             ),
         ] {

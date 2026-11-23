@@ -1,5 +1,9 @@
 # §31I — A visible canvas for the Circle and Circle-with-hole forms
 
+The canvas controls described here remain available for a saved sketch. To create a sketch,
+use **New sketch…** in the viewport, then **Finish** and **Extrude…** or **Revolve…**.
+The dated verification sections record the interface used for those runs. [Sketch mode](sketch-mode.md)
+
 Status: implemented and independently reviewed, including a macOS window check and the
 corrections below. Remote checks are recorded with the pull request. The sections up to
 "Not in this slice" are the design note written before the
@@ -14,15 +18,12 @@ pointer gestures on it; nothing else.
 
 ## What a person can do
 
-In **New → Circle** and **New → Circle with hole**, and in **Edit saved Circle** /
-**Edit saved annulus**, a canvas (XY, mm, +X right, +Y up) sits above the number
+In **Edit circle…** and **Edit annulus…**, a canvas (XY, mm, +X right, +Y up) sits above the number
 fields. It shows the draft those fields hold: one analytic circle, or the bounding
 circle and the bore with their common centre. Three handles are drawn and can be
 dragged: the **centre**, the **outer radius** (on the bounding circle, east of the
 centre) and the **bore radius** (on the bore, north of the centre). The numbers stay
-the exact input; the canvas writes the same strings a person could type. Only the old
-explicit buttons publish: **Create circle document** / **Create annular document**,
-**Apply circle** / **Apply annulus**, **Save edited … copy…**. A pointer movement
+the exact input; the canvas writes the same strings a person could type. The explicit buttons publish: **Apply circle** / **Apply annulus**, **Save edited … copy…**. A pointer movement
 starts no job, no rebuild and no file write.
 
 ## Who owns what
@@ -257,24 +258,8 @@ saved and exported with the CLI. Work on copies; run the viewer only through
 `tools/watch-viewer-memory.py --limit-mib 1536 --seconds <limit>`, pressure normal; logs
 into `target/analytic-canvas-check/` of the checkout under review.
 
-1. **New → Circle.** **Create sketch + Extrude…** → **Circle**: the canvas shows a blue
-   circle of radius 10 about (0, 0), centred, with a cross at the centre and a square on the
-   east side. Hover each: a ring and `Centre (0, 0) mm` / `Radius 10 mm`. Press a few points
-   off the cross and drag diagonally: the circle follows the hand, the cross keeps its offset
-   from the pointer, Center X/Y change, Radius does not. Release: one **Undo draft** puts the
-   strings back exactly, **Redo draft** returns them. Drag the square diagonally: Radius is
-   the distance from the centre (not the horizontal movement). Press and release without
-   moving: nothing changes, Redo stays. Press, move, **Escape**: back as it was. Type `-` in
-   Radius: the canvas says `Not drawn: Radius: "-" is not a number` and draws nothing, the
-   form shows its own error; a drag starts nothing; type a number back. **Fit profile**.
-2. **Switch profiles.** Choose **Circle with hole**: its own canvas (blue boundary, orange
-   bore, square and diamond handles); drag the outer, then the bore, then the centre: each
-   writes only its own fields. Go to **Line polygon** and back to **Circle** and **Circle
-   with hole**: each kept its numbers, view and history. Drag the diamond outward past the
-   blue circle: the bore is drawn larger, still orange; the form says the inner radius must
-   be smaller and offers no Create; Undo recovers. **Create annular document**: a new
-   Untitled tab holds exactly the shown numbers. **Save** opens a dialog: **Cancel** writes
-   nothing and the tab stays unsaved; **Save** again to a new file outside the checkout.
+1. Open the saved Circle and annulus inputs in separate tabs. Check their handles on the saved forms.
+2. Use **New sketch…** to create new geometry as described in [Sketch mode](sketch-mode.md).
 3. **Saved Circle.** Open a copy of `circle.fcad`, **Edit circle …**. Type `12.50` in
    Center X (do not confirm), then drag the radius handle. **Undo draft** → Center X reads
    exactly `12.50` and Radius `10.5`; **Undo draft** again → the stored numbers; **Redo** twice.

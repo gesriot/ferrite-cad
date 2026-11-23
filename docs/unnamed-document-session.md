@@ -5,9 +5,9 @@ Verification and the real-window recipe: [unnamed-document-session-verification.
 
 ## What a person can do
 
-**New** (Empty or sample plate) and the drawing forms (**Create sketch + Extrude**,
-the Circle and annulus Extrudes, **Revolve** and **Revolve by angle**) make a new
-document without any file dialog. It is shown as **Untitled** with the unsaved mark.
+**New…** creates an empty document or a sample plate. Its tab shows **Untitled** with the unsaved mark.
+For a custom solid, create an empty document, draw with **New sketch…**, press **Finish**,
+and apply **Extrude…** or **Revolve…** to the accepted sketch.
 Height, vertices, constraints, Circle/annulus, angle, Cut, Fillet and Chamfer Apply
 and Add, Undo/Redo and STL/FBX export work before the first Save, wherever the
 document's own catalogue offers them. **Save** (or **Save As**) asks where to put the
@@ -28,7 +28,7 @@ and a Recover add a tab and ask nothing; closing a tab and Quit ask
    model-content comparison, no-op and Redo rules and the in-place version guard apply.
 3. Creation runs on a worker inside the candidate session's own private directory
    through the existing `create_document_with_kernel` (Empty and the sample plate need
-   no kernel and no solver; drawn profiles are cold-checked as before). The candidate
+   no kernel and no solver for document creation). The candidate
    is accepted only with its successfully prepared picture (`Bind::Open`). A refusal,
    cancellation, stale answer or scene/GPU failure keeps the previous session, picture,
    history and typed draft, and removes the candidate's directory.

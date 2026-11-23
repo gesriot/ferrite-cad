@@ -2420,7 +2420,7 @@ Temporary/Keep publication и cancellation существующего create; co
 UI имеет отдельный черновик с мышью, точными координатами, явным замыканием,
 undo/redo и Save через адаптер §23D; создание/открытие остаются асинхронными.
 CLI `create-sketch-extrude` принимает request JSON v1 и opt-in report JSON v1.
-[Контракт и рецепт](sketch-extrude-create.md), [проверки](sketch-extrude-verification.md).
+[Контракт и рецепт](sketch-extrude-create.md), [проверки](https://github.com/gesriot/ferrite-cad/blob/9a0b0fbbe5f7215b7db944b8b4a16e5c56d05dd9/docs/sketch-extrude-verification.md).
 
 §25A — частичная реализация §9/§10: создание unconstrained Line Sketch. Правка
 сохранённого эскиза добавлена в §25B ниже; constraints solver UI и persistent undo
@@ -2758,7 +2758,7 @@ Circle constraints, отверстия, смешанные профили, mouse
 правка радиуса, live solver, booleans и in-place Save в срез не входят; прежние
 Line-редакторы окружность по-прежнему отказывают.
 [Контракт и рецепт](circle-sketch-extrude.md),
-[локальные доказательства и ограничения](circle-sketch-extrude-verification.md).
+[локальные доказательства и ограничения](https://github.com/gesriot/ferrite-cad/blob/9a0b0fbbe5f7215b7db944b8b4a16e5c56d05dd9/docs/circle-sketch-extrude-verification.md).
 Независимое ревью исправило потерю circle-черновика при Cancel во время
 сохранения, добавило C++/Rust проверки offsets ABI, сравнение всех SQL-ячеек
 и проверку cache miss/hit в разных сессиях. CI head и merge учитывается по
@@ -2992,7 +2992,7 @@ Miss/Hit с изменённым внутренним радиусом, замк
 несколько отверстий, неконцентрическое отверстие, смешанные профили, несколько
 тел, circle constraints и boolean Cut в срез не входят.
 [Контракт и рецепт](annular-sketch-extrude.md),
-[локальные доказательства и ограничения](annular-sketch-extrude-verification.md).
+[локальные доказательства и ограничения](https://github.com/gesriot/ferrite-cad/blob/9a0b0fbbe5f7215b7db944b8b4a16e5c56d05dd9/docs/annular-sketch-extrude-verification.md).
 Независимое ревью исправило ложный отказ на граничной толщине, проверку
 концентричности по двум осям вместо расстояния и потерю черновика после
 публикации при отказе Open. Все три дефекта подтверждены failing-first тестами.

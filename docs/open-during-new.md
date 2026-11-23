@@ -10,8 +10,8 @@ verification record of the slice.
 
 ## What a person can do
 
-Press **New** (the form, or **Create sketch + Extrude…**), type, even while the document
-is being made, and press **Open…**. Cancelling the system file dialog changes nothing.
+Press **New…**, choose Empty or Sample plate, then press **Open…**. Open is also available
+while the creation worker is running. Cancelling the system file dialog changes nothing.
 Choosing a file makes the window ask, in its own words, under the New form:
 
 > **New is not finished.** You chose *b.fcad* while a new document is still being
@@ -20,9 +20,8 @@ Choosing a file makes the window ask, in its own words, under the New form:
 > changes, are not touched.
 > **[Discard New and open]** **[Back to New]**
 
-The clause names what is lost: the choices and sizes of the form, the sketch that was
-drawn, or the document being made (nothing of it is kept). *Back to New* withdraws the
-question; New keeps every typed string, choice and drawing Undo/Redo exactly. *Discard
+The clause names what is lost: the choices and sizes of the form or the document being made (nothing of it is kept). *Back to New* withdraws the
+question; New keeps every typed string and choice exactly. *Discard
 New and open* is the only moment New's draft is thrown away: the file is then opened by
 the ordinary Open, beside the tab that was shown, whose unsaved model, history, crash
 copy and any form it had are as they were. If New turns into a tab of its own before the
@@ -31,23 +30,22 @@ beside that tab by the ordinary Open, and that tab is an ordinary unsaved docume
 
 ## Decided before implementation: events and owners
 
-New belongs to `creates::Creates` (its form, the drawing in `sketch::Editor`, the
-creation workers) with the shown tab's forms set aside in `tabs::Tabs::aside` (§30Q).
+New belongs to `creates::Creates` (its form and creation workers) with the shown tab's forms set aside in `tabs::Tabs::aside` (§30Q).
 The question is one typed value, `creates::AskedOpen { path, over: NewGeneration }`,
-held by `Creates`: `NewGeneration` numbers one opening of New (a form or a drawing) from
+held by `Creates`: `NewGeneration` numbers one opening of New from
 its press to its end, so a question can never be answered against a later New. It is a
 file name and a number: no document, tab or session is made to hold it.
 
 | Event | Owner of the decision | Result |
 |---|---|---|
-| New form / drawing idle | `Creates.form`, `Editor::drawing_new`; A's forms in `Tabs::aside` | **Open…** offered (`can_open` drops only `!making_new`) |
+| New form idle | `Creates.form`; A's forms in `Tabs::aside` | **Open…** offered (`can_open` drops only `!making_new`) |
 | Create running | `Creates` (`Running{g}`, worker in `running`) | Open… offered; the question says a document is being made |
 | Result queued | worker finished, `AppEvent::Created{g}` waits; `Creates` still `Running{g}` | a decision sees `Running`; the late answer is judged by `Creates::answered` against `current` |
 | Picture acceptance | `Created` handler: `answered` → `show`/`Bind::Open` → `shown`, one statement on the event loop | nothing interleaves; success makes New a tab and settles the question |
 | Open… chosen | `choose_open`: `can_open`, then New in progress? | New unfinished → `Creates::ask_open`; otherwise the ordinary `read_document` |
 | Dialog Cancel / Failed | `Dialogs::receive` | `None`: no path, no question; model and New untouched |
 | Back to New | `Creates::keep_new` | question withdrawn, nothing else changes |
-| Discard New and open | `stop_new_for_open`: every check first (`can_open`, `Tabs::opening`), then `Creates::stop_new`, `end_new`, `read_document` | New's form, drawing and creation end; A's forms return; the file is read |
+| Discard New and open | `stop_new_for_open`: every check first (`can_open`, `Tabs::opening`), then `Creates::stop_new`, `end_new`, `read_document` | New's form and creation end; A's forms return; the file is read |
 | Late Create success / failure | `Creates::answered` (`current` is `None` after the stop) | candidate dropped by its owner; status, `Loads`, `Sessions`, a newer generation untouched |
 | New ends otherwise (its Cancel, accepted as a tab) | `Creates::new_ended` from `App::end_new` and the `Created` handler | the chosen file opens by the ordinary Open beside what is shown; nothing is destroyed |
 | Second Open… | `choose_open` again | replaces the question's file; a newer reading retires an older one as before |
@@ -69,8 +67,7 @@ file name and a number: no document, tab or session is made to hold it.
    and `Tabs::opening` again before it ends anything; a refusal leaves the question or
    withdraws it, with New as typed. The decision is made against the state then,
    whatever a worker answered while a dialog or the question was up.
-3. **What Discard ends, and what it keeps.** New's form (`Creates.form`), its drawing
-   (`Editor::dismiss`) and its creation: the workers are told to stop, `current` becomes
+3. **What Discard ends, and what it keeps.** New's form (`Creates.form`) and its creation: the workers are told to stop, `current` becomes
    `None`, the status is *Stopped*, and the workers stay in `Creates.running` until they
    end — never joined on the event loop (`stop_all` at exit is the one wait). The
    decision removes nothing a worker uses; a candidate and its scratch folder are dropped

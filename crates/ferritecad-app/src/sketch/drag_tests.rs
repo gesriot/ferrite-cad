@@ -5,26 +5,8 @@ use super::{
     tests::{click, frame, replace_field, text_at},
     *,
 };
+use ferritecad_jobs::PolygonExtrusion;
 
-fn setup() -> (egui::Context, Editor) {
-    let ctx = egui::Context::default();
-    let mut e = Editor::default();
-    e.begin();
-    e.draft.as_mut().expect("draft").points = [
-        ["0", "0"],
-        ["60", "0"],
-        ["60", "20"],
-        ["20", "20"],
-        ["20", "40"],
-        ["0", "40"],
-    ]
-    .map(|p| p.map(str::to_owned))
-    .to_vec();
-    e.draft.as_mut().expect("draft").closed = true;
-    frame(&ctx, &mut e, vec![]);
-    frame(&ctx, &mut e, vec![]);
-    (ctx, e)
-}
 pub(super) fn canvas(output: &egui::FullOutput) -> egui::Rect {
     output
         .shapes
@@ -105,212 +87,11 @@ fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
     click(ctx, e, text_at(&out, label));
 }
 
-#[test]
-fn pointer_drag_is_one_precise_undo_step_and_selects_only_its_vertex() {
-    let (ctx, mut e) = setup();
-    // Strings and coordinates on every untouched axis must survive pixel input.
-    e.draft.as_mut().expect("draft").points[0][0] = "0.0000000000000001".into();
-    e.draft.as_mut().expect("draft").points[1][1] = "0.0000".into();
-    let before = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1) + egui::vec2(3., -2.); // retain grab offset, no jump
-    click(&ctx, &mut e, at);
-    assert_eq!(e.canvas.selected, Some(1));
-    assert_eq!(e.draft, before, "click does not round or edit");
-    assert!(e.undo.is_empty());
-    press(&ctx, &mut e, at);
-    for dx in [8., 24., 56., 80.] {
-        move_to(&ctx, &mut e, at + egui::vec2(dx, 0.));
-        assert!(
-            e.undo.is_empty(),
-            "preview must not create per-frame history"
-        );
-    }
-    let preview = e.draft.clone();
-    let p = &preview.as_ref().expect("draft").points;
-    assert_eq!(p[1], ["80".to_owned(), "0.0000".to_owned()]);
-    for i in [0, 2, 3, 4, 5] {
-        assert_eq!(p[i], before.as_ref().expect("draft").points[i]);
-    }
-    button(&ctx, &mut e, at + egui::vec2(80., 0.), false);
-    assert_eq!(e.draft, preview);
-    assert_eq!(e.undo.len(), 1);
-    assert!(e.gesture_finished());
-    let out = frame(&ctx, &mut e, vec![]);
-    click(&ctx, &mut e, text_at(&out, "Undo draft"));
-    assert_eq!(e.draft, before);
-    assert_eq!(e.redo.len(), 1);
-    let out = frame(&ctx, &mut e, vec![]);
-    click(&ctx, &mut e, text_at(&out, "Redo draft"));
-    assert_eq!(e.draft, preview);
-    // A second gesture on another vertex is a second checkpoint.
-    let at = vertex(&ctx, &mut e, 2);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(80., 0.));
-    button(&ctx, &mut e, at + egui::vec2(80., 0.), false);
-    assert_eq!(e.undo.len(), 2);
-    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "80");
-    replace_field(&ctx, &mut e, "80", "81.125");
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "81.125");
-    let history = e.undo.len();
-    let exact = e.draft.clone();
-    let out = frame(&ctx, &mut e, vec![]);
-    click(&ctx, &mut e, text_at(&out, "Fit drawing"));
-    assert_eq!(e.draft, exact);
-    assert_eq!(e.undo.len(), history);
-    let at = vertex(&ctx, &mut e, 1);
-    click(&ctx, &mut e, at + egui::vec2(7., 0.));
-    assert_eq!(e.canvas.selected, Some(1));
-    assert_eq!(e.draft, exact);
-    assert_eq!(e.undo.len(), history);
-    let out = frame(&ctx, &mut e, vec![]);
-    click(&ctx, &mut e, text_at(&out, "Reset view"));
-    assert_eq!(e.draft, exact);
-    assert_eq!(e.undo.len(), history);
-}
-
 // No production test-only query API; inspect the draft and the two bounded states.
 impl Editor {
     fn gesture_finished(&self) -> bool {
         self.canvas.gesture.is_none() && !self.canvas.claimed_press
     }
-}
-
-#[test]
-fn pointer_escape_focus_and_outside_release_have_explicit_outcomes() {
-    for event in [
-        key(egui::Key::Escape),
-        egui::Event::WindowFocused(false),
-        egui::Event::PointerGone,
-    ] {
-        let (ctx, mut e) = setup();
-        let before = e.draft.clone();
-        let at = vertex(&ctx, &mut e, 1);
-        press(&ctx, &mut e, at);
-        move_to(&ctx, &mut e, at + egui::vec2(24., 5.));
-        assert_ne!(e.draft, before);
-        frame(&ctx, &mut e, vec![event]);
-        assert_eq!(e.draft, before);
-        assert!(e.undo.is_empty());
-        button(&ctx, &mut e, at + egui::vec2(24., 5.), false);
-        assert_eq!(e.draft, before);
-        assert!(e.undo.is_empty());
-        assert!(e.gesture_finished());
-        // A fresh press after cancel really edits, with one new history entry.
-        press(&ctx, &mut e, at);
-        move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
-        button(&ctx, &mut e, at + egui::vec2(40., 0.), false);
-        assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "70");
-        assert_eq!(e.undo.len(), 1);
-    }
-    let (ctx, mut e) = setup();
-    let before = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1);
-    let rect = canvas(&frame(&ctx, &mut e, vec![]));
-    let outside = egui::pos2(rect.right() + 24., at.y);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, outside);
-    button(&ctx, &mut e, outside, false);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[1][0],
-        (60. + f64::from(outside.x - at.x) / 4.).to_string()
-    );
-    assert_eq!(e.undo.len(), 1);
-    assert!(e.gesture_finished());
-    e.undo();
-    assert_eq!(e.draft, before);
-    // Moving away and back is a no-op, including exact strings and redo.
-    let redo = e.redo.clone();
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
-    move_to(&ctx, &mut e, at);
-    button(&ctx, &mut e, at, false);
-    assert_eq!(e.draft, before);
-    assert!(e.undo.is_empty());
-    assert_eq!(e.redo, redo);
-}
-
-#[test]
-fn pointer_hit_ties_free_add_and_invalid_preview_use_existing_draft_policy() {
-    let (ctx, mut e) = setup();
-    e.draft.as_mut().expect("draft").closed = false;
-    // Two nearby screen-space candidates: nearest, then stored order on a tie.
-    e.draft.as_mut().expect("draft").points[2] = ["62".into(), "0".into()];
-    let at = vertex(&ctx, &mut e, 1);
-    let before = e.draft.clone();
-    click(&ctx, &mut e, at + egui::vec2(4., 0.));
-    assert_eq!(e.canvas.selected, Some(1));
-    click(&ctx, &mut e, at + egui::vec2(5., 0.));
-    assert_eq!(e.canvas.selected, Some(2));
-    assert_eq!(e.draft, before);
-    assert!(e.undo.is_empty());
-    let rect = canvas(&frame(&ctx, &mut e, vec![]));
-    let free = e.canvas.screen(rect, [90., 30.]);
-    click(&ctx, &mut e, free);
-    assert_eq!(e.draft.as_ref().expect("draft").points.len(), 7);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[6],
-        ["90.000".to_owned(), "30.000".to_owned()]
-    );
-    assert_eq!(e.undo.len(), 1);
-    let (ctx, mut e) = setup();
-    let at = vertex(&ctx, &mut e, 1);
-    let other = vertex(&ctx, &mut e, 0);
-    press(&ctx, &mut e, at);
-    let output = move_to(&ctx, &mut e, other);
-    assert!(e.content().is_err());
-    assert!(output.shapes.iter().any(
-        |c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text().contains("repeated vertices"))
-    ));
-    button(&ctx, &mut e, other, false);
-    assert!(e.content().is_err());
-    assert_eq!(e.undo.len(), 1);
-    assert!(e.pending.is_none());
-    let out = frame(&ctx, &mut e, vec![]);
-    assert!(!out.shapes.iter().any(
-        |c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()==crate::sketch::CREATE_DRAWN)
-    ));
-    e.undo();
-    assert!(e.content().is_ok());
-}
-
-#[test]
-fn snap_change_after_a_coalesced_drag_does_not_rewrite_that_gesture() {
-    let (ctx, mut e) = setup();
-    choose(&ctx, &mut e, "1 mm");
-    let at = vertex(&ctx, &mut e, 1);
-    let target = at + egui::vec2(24., 0.); // 60 -> 66 mm
-    let ten = text_at(&frame(&ctx, &mut e, vec![]), "10 mm");
-    let mut events = Vec::new();
-    for (press, release) in [(at, target), (ten, ten)] {
-        events.extend([
-            egui::Event::PointerMoved(press),
-            egui::Event::PointerButton {
-                pos: press,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerMoved(release),
-            egui::Event::PointerButton {
-                pos: release,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ]);
-    }
-    frame(&ctx, &mut e, events);
-    assert_eq!(
-        e.canvas.snap,
-        Snap::Ten,
-        "the later control click was accepted"
-    );
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[1][0],
-        "66",
-        "a later Snap change cannot rewrite an earlier gesture"
-    );
-    assert_eq!(e.undo.len(), 1);
 }
 
 #[test]
@@ -354,17 +135,13 @@ fn snap_preserves_invalid_coordinate_refusals_without_panicking() {
             f64::MAX,
             -f64::MAX,
         ] {
-            let mut e = Editor::default();
-            e.begin();
-            let d = e.draft.as_mut().expect("draft");
-            d.closed = true;
-            // Replacing NaN with zero would make this rectangle valid.
-            d.points = [["0", "0"], ["60", "0"], ["60", "40"], ["0", "40"]]
-                .map(|p| p.map(str::to_owned))
-                .to_vec();
-            d.points[0][0] = snap.apply(value);
+            let coordinate = snap.round(value);
             assert!(
-                e.content().is_err(),
+                PolygonExtrusion::new(
+                    vec![[coordinate, 0.], [60., 0.], [60., 40.], [0., 40.]],
+                    10.,
+                )
+                .is_err(),
                 "{snap:?} must not make {value} publishable"
             );
         }
@@ -382,139 +159,6 @@ fn snap_step_rounds_pointer_input_without_changing_fields_or_off_precision() {
     assert_eq!(Snap::Tenth.apply(-0.05), "-0.1");
     assert_eq!(Snap::Five.apply(-7.5), "-10");
     assert_eq!(Snap::Ten.apply(15.), "20");
-
-    let (ctx, mut e) = setup();
-    assert_eq!(e.canvas.snap, Snap::Off);
-    let out = frame(&ctx, &mut e, vec![]);
-    assert!(
-        out.shapes
-            .iter()
-            .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Off"))
-    );
-    assert!(out.shapes.iter().any(
-        |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().contains("snap: Off"))
-    ));
-    let at = vertex(&ctx, &mut e, 1);
-    let slop = at + egui::vec2(81.4, 0.);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, slop);
-    button(&ctx, &mut e, slop, false);
-    let off = e.draft.as_ref().expect("draft").points[1][0].clone();
-    assert_ne!(off, "80");
-    assert!(off.starts_with("80."), "{off}");
-    assert_eq!(e.undo.len(), 1);
-    e.undo();
-    let before = e.draft.clone();
-    choose(&ctx, &mut e, "1 mm");
-    assert_eq!(e.canvas.snap, Snap::One);
-    assert_eq!(e.draft, before);
-    assert!(e.undo.is_empty(), "toggling Snap is not an undo step");
-    choose(&ctx, &mut e, "Fit drawing");
-    assert_eq!(e.canvas.snap, Snap::One);
-    assert_eq!(e.draft, before);
-
-    e.draft.as_mut().expect("draft").points[1][1] = "0.37".into();
-    let before = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1) + egui::vec2(3., -2.);
-    click(&ctx, &mut e, at);
-    assert_eq!(e.canvas.selected, Some(1));
-    assert_eq!(
-        e.draft, before,
-        "press without movement keeps off-grid strings"
-    );
-    let dx = 20. * e.canvas.scale + 1.25;
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(dx, 0.));
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[1],
-        ["80".to_owned(), "0.37".to_owned()],
-        "zero-delta axis keeps its off-grid string"
-    );
-    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
-    assert_eq!(e.undo.len(), 1);
-    let at = vertex(&ctx, &mut e, 1);
-    let six = 6. * e.canvas.scale;
-    press(&ctx, &mut e, at);
-    e.canvas.snap = Snap::Ten;
-    move_to(&ctx, &mut e, at + egui::vec2(six, 0.));
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[1][0],
-        "86",
-        "the step is the one frozen at press, not the later control value"
-    );
-    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
-    button(&ctx, &mut e, at, false);
-    e.canvas.snap = Snap::One;
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-    assert_eq!(e.undo.len(), 1);
-    assert!(e.gesture_finished());
-    for i in [0, 2, 3, 4, 5] {
-        assert_eq!(
-            e.draft.as_ref().expect("draft").points[i],
-            before.as_ref().expect("draft").points[i]
-        );
-    }
-    let kept = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(dx, 0.));
-    move_to(&ctx, &mut e, at);
-    button(&ctx, &mut e, at, false);
-    assert_eq!(e.draft, kept);
-    assert_eq!(e.undo.len(), 1, "return to press is a no-op");
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft, before);
-    choose(&ctx, &mut e, "Redo draft");
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-    replace_field(&ctx, &mut e, "80", "80.25");
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80.25");
-
-    let (ctx, mut e) = setup();
-    e.draft.as_mut().expect("draft").closed = false;
-    choose(&ctx, &mut e, "0.1 mm");
-    let rect = canvas(&frame(&ctx, &mut e, vec![]));
-    let added = e.canvas.screen(rect, [90.34, 30.15]);
-    click(&ctx, &mut e, added);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points.last(),
-        Some(&["90.3".to_owned(), "30.2".to_owned()])
-    );
-    choose(&ctx, &mut e, "5 mm");
-    let at = vertex(&ctx, &mut e, 0);
-    let left = -7.5 * e.canvas.scale;
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(left, 0.));
-    button(&ctx, &mut e, at + egui::vec2(left, 0.), false);
-    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "-10");
-
-    let (ctx, mut e) = setup();
-    choose(&ctx, &mut e, "1 mm");
-    let at = vertex(&ctx, &mut e, 1);
-    let before = e.draft.clone();
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
-    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
-    button(&ctx, &mut e, at + egui::vec2(40., 0.), false);
-    assert_eq!(e.draft, before);
-    let other = vertex(&ctx, &mut e, 0);
-    press(&ctx, &mut e, at);
-    let output = move_to(&ctx, &mut e, other);
-    assert!(e.content().is_err());
-    assert!(output.shapes.iter().any(
-        |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().contains("repeated vertices"))
-    ));
-    button(&ctx, &mut e, other, false);
-    assert!(e.content().is_err());
-    assert!(e.take_request().is_none());
-    e.undo();
-    assert!(e.content().is_ok());
-    e.dismiss();
-    e.begin();
-    assert_eq!(
-        e.canvas.snap,
-        Snap::Off,
-        "a new editor starts with Snap Off"
-    );
 }
 
 pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
@@ -837,306 +481,12 @@ fn native_dragged_sketch_worker_and_cli_preserve_identity_and_geometry() {
     super::tests::saved_sketch_and_cli(true);
 }
 
-#[test]
-fn coalesced_pointer_events_keep_press_target_and_history_stays_bounded() {
-    let (ctx, mut e) = setup();
-    let before = e.draft.clone().expect("draft");
-    e.undo = vec![before.clone(); 128];
-    let at = vertex(&ctx, &mut e, 1);
-    let to = at + egui::vec2(20., -20.);
-    frame(
-        &ctx,
-        &mut e,
-        vec![
-            egui::Event::PointerMoved(at),
-            egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerMoved(to),
-        ],
-    );
-    button(&ctx, &mut e, to, false);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[1],
-        ["65".to_owned(), "5".to_owned()]
-    );
-    for i in [0, 2, 3, 4, 5] {
-        assert_eq!(e.draft.as_ref().expect("draft").points[i], before.points[i]);
-    }
-    assert_eq!(e.undo.len(), 128);
-    e.undo();
-    assert_eq!(e.draft, Some(before));
-    let mut idle = frame(&ctx, &mut e, vec![]);
-    for _ in 0..30 {
-        idle = frame(&ctx, &mut e, vec![]);
-    }
-    assert!(
-        idle.viewport_output[&egui::ViewportId::ROOT].repaint_delay > std::time::Duration::ZERO,
-        "settled canvas must not request a perpetual idle repaint"
-    );
-}
-
-#[test]
-fn table_scroll_and_numeric_escape_do_not_start_canvas_gestures() {
-    let (ctx, mut e) = setup();
-    e.draft.as_mut().expect("draft").points = (0..20)
-        .map(|i| [(i * 10).to_string(), (i * 2).to_string()])
-        .collect();
-    let before = e.draft.clone();
-    let out = frame(&ctx, &mut e, vec![]);
-    let at = text_at(&out, "2  X mm");
-    let visible = |out: &egui::FullOutput, label: &str| {
-        out.shapes.iter().any(|c| matches!(&c.shape,egui::Shape::Text(t) if t.galley.text()==label && c.clip_rect.contains_rect(t.visual_bounding_rect())))
-    };
-    assert!(visible(&out, "1  X mm"));
-    frame(
-        &ctx,
-        &mut e,
-        vec![
-            egui::Event::PointerMoved(at),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0., -140.),
-                phase: egui::TouchPhase::Move,
-                modifiers: Default::default(),
-            },
-        ],
-    );
-    let mut out = frame(&ctx, &mut e, vec![]);
-    for _ in 0..12 {
-        out = frame(&ctx, &mut e, vec![]);
-    }
-    assert!(!visible(&out, "1  X mm"), "table scrolled");
-    assert_eq!(e.draft, before);
-    assert!(e.undo.is_empty());
-    assert!(e.gesture_finished());
-    let (ctx, mut e) = setup();
-    replace_field(&ctx, &mut e, "60", "61.125");
-    let before = e.draft.clone();
-    let history = e.undo.len();
-    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
-    assert_eq!(e.draft, before);
-    assert_eq!(e.undo.len(), history);
-    assert!(e.gesture_finished());
-    assert!(e.canvas.selected.is_none());
-}
-
-#[test]
-fn single_frame_drag_uses_press_and_release_even_after_later_hover() {
-    for outside in [false, true] {
-        let (ctx, mut e) = setup();
-        let before = e.draft.clone().expect("draft");
-        let at = vertex(&ctx, &mut e, 1);
-        let dx = if outside { 400. } else { 80. };
-        let to = at + egui::vec2(dx, 0.);
-        frame(&ctx, &mut e, vec![egui::Event::PointerMoved(at)]);
-        frame(
-            &ctx,
-            &mut e,
-            vec![
-                egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                },
-                egui::Event::PointerMoved(to),
-                egui::Event::PointerButton {
-                    pos: to,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                },
-                egui::Event::PointerMoved(at + egui::vec2(0., 30.)),
-            ],
-        );
-        assert_eq!(
-            e.draft.as_ref().expect("draft").points[1],
-            [(60. + f64::from(dx) / 4.).to_string(), "0".into()]
-        );
-        for i in [0, 2, 3, 4, 5] {
-            assert_eq!(e.draft.as_ref().expect("draft").points[i], before.points[i]);
-        }
-        assert_eq!(e.canvas.selected, Some(1));
-        assert_eq!(e.undo.len(), 1);
-        assert!(e.gesture_finished());
-        e.undo();
-        assert_eq!(e.draft, Some(before));
-    }
-}
-
-#[test]
-fn release_then_next_press_in_one_frame_keeps_the_next_drag_active() {
-    let (ctx, mut e) = setup();
-    let first = vertex(&ctx, &mut e, 1);
-    let second = vertex(&ctx, &mut e, 2);
-    let event = |pos, pressed| egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: Default::default(),
-    };
-    press(&ctx, &mut e, first);
-    frame(
-        &ctx,
-        &mut e,
-        vec![
-            egui::Event::PointerMoved(first + egui::vec2(80., 0.)),
-            event(first + egui::vec2(80., 0.), false),
-            egui::Event::PointerMoved(second),
-            event(second, true),
-        ],
-    );
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-    assert!(e.canvas.gesture.is_some(), "next press starts its own drag");
-    move_to(&ctx, &mut e, second + egui::vec2(80., 0.));
-    button(&ctx, &mut e, second + egui::vec2(80., 0.), false);
-    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "80");
-    assert_eq!(e.undo.len(), 2);
-    e.undo();
-    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "60");
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-}
-
-#[test]
-fn several_gestures_in_one_frame_keep_changed_checkpoints_in_order() {
-    let (ctx, mut e) = setup();
-    let original = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1);
-    let moved = at + egui::vec2(80., 0.);
-    let mut events = Vec::new();
-    // A no-op, then A -> B -> A. Comparing only the frame's final draft
-    // would discard both changed gestures (or record the no-op incorrectly).
-    for (press, release) in [(at, at), (at, moved), (moved, at)] {
-        events.extend([
-            egui::Event::PointerMoved(press),
-            egui::Event::PointerButton {
-                pos: press,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerMoved(release),
-            egui::Event::PointerButton {
-                pos: release,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ]);
-    }
-    frame(&ctx, &mut e, events);
-    assert_eq!(e.draft, original);
-    assert_eq!(e.undo.len(), 2);
-    assert!(e.gesture_finished());
-    e.undo();
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-    e.undo();
-    assert_eq!(e.draft, original);
-    assert!(e.undo.is_empty());
-    e.redo();
-    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-    e.redo();
-    assert_eq!(e.draft, original);
-}
-
-#[test]
-fn cancellation_before_release_in_one_frame_does_not_publish_a_gesture() {
-    for cancel in [
-        key(egui::Key::Escape),
-        egui::Event::PointerGone,
-        egui::Event::WindowFocused(false),
-    ] {
-        let (ctx, mut e) = setup();
-        let original = e.draft.clone();
-        let at = vertex(&ctx, &mut e, 1);
-        press(&ctx, &mut e, at);
-        let moved = at + egui::vec2(80., 0.);
-        frame(
-            &ctx,
-            &mut e,
-            vec![
-                egui::Event::PointerMoved(moved),
-                cancel,
-                egui::Event::PointerButton {
-                    pos: moved,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
-        assert_eq!(e.draft, original);
-        assert!(e.undo.is_empty());
-        assert!(e.gesture_finished());
-    }
-}
-
-#[test]
-fn completed_pointer_gesture_does_not_edit_through_an_overlapping_window() {
-    let (ctx, mut e) = setup();
-    let before = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1);
-    let to = at + egui::vec2(80., 0.);
-    let mut draw = |events| {
-        ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1000., 900.),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                e.draw(ui, true, false, "");
-                egui::Area::new(egui::Id::new("cover-canvas"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(at - egui::vec2(20., 20.))
-                    .show(ui.ctx(), |ui| {
-                        ui.allocate_exact_size(
-                            egui::vec2(150., 60.),
-                            egui::Sense::click_and_drag(),
-                        );
-                    });
-            },
-        )
-    };
-    let _ = draw(vec![]);
-    let _ = draw(vec![]);
-    let _ = draw(vec![
-        egui::Event::PointerMoved(at),
-        egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerMoved(to),
-        egui::Event::PointerButton {
-            pos: to,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ]);
-    assert_eq!(e.draft, before);
-    assert_eq!(e.canvas.selected, None);
-    assert!(e.undo.is_empty());
-}
-
 /// §27C: a solid cylinder drawn on the real canvas and published by the
 /// window's worker and the peer CLI alike, then reopened and reshaped into a
 /// frustum by one drag, with the saved axis Line held on the axis.
 #[test]
 fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
-    use crate::creates::{
-        self,
-        tests::{ferritecad, read_semantics},
-    };
+    use crate::creates::tests::{ferritecad, read_semantics};
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
     if !ferritecad_occt::is_available() {
@@ -1147,69 +497,26 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     let root = tempfile::tempdir().expect("directory");
     let ui = root.path().join("cylinder-ui.fcad");
     let cli = root.path().join("cylinder-cli.fcad");
-    let mut creates = creates::Creates::default();
     let ctx = egui::Context::default();
-    {
-        let e = &mut creates.sketch;
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
-        frame(&ctx, e, vec![]);
-        for [x, y] in [[0., 0.], [10., 0.], [10., 15.], [0., 15.]] {
-            let rect = canvas(&frame(&ctx, e, vec![]));
-            click(
-                &ctx,
-                e,
-                rect.left_bottom() + egui::vec2(35. + 4. * x, -30. - 4. * y),
-            );
-        }
-        choose(&ctx, e, "Close contour");
-        choose(&ctx, e, "Revolve 360°");
-        let Ok(NewDocument::SketchRevolve(cylinder)) = e.content() else {
-            panic!("a solid cylinder is a Revolve")
-        };
-        assert_eq!(
-            cylinder
-                .points()
-                .iter()
-                .map(|p| [p.x, p.y])
-                .collect::<Vec<_>>(),
-            [[0., 0.], [10., 0.], [10., 15.], [0., 15.]]
-        );
-        assert!((cylinder.volume_mm3() - 1500. * pi).abs() < 1e-9);
-        let out = frame(&ctx, e, vec![]);
-        let texts: Vec<String> = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
-                _ => None,
-            })
-            .collect();
-        assert!(texts.iter().any(|t| t == "axis (Y) at X = 0 · radius X →"));
-        assert!(
-            !texts
-                .iter()
-                .any(|t| t.contains("put exactly one whole edge on X = 0"))
-        );
-        // The form preserves axis contact/crossing edits for the kernel to assess.
-        let valid = e.draft.clone();
-        for to in ["4", "-1"] {
-            replace_field(&ctx, e, "0.000", to);
-            assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
-            let out = frame(&ctx, e, vec![]);
-            assert!(out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == crate::sketch::CREATE_DRAWN)));
-            click(&ctx, e, text_at(&out, "Undo draft"));
-            assert_eq!(e.draft, valid);
-        }
-    }
-    let content = creates.sketch.content().expect("a Revolve");
-    let before = creates.sketch.draft.clone();
-    let mut view = ferritecad_ui::ViewportInput::new();
-    creates::tests::drawn_through_the_window(&mut creates, &mut view, content.clone(), &ui, |e| {
-        assert_eq!(e.draft, before, "a refused picture restores the draft")
-    });
-    creates.stop_all();
+    crate::sweeps::tests::window::creation::solid_cylinder(&ui, root.path());
+    let independent = root.path().join("cli.fcad");
+    assert_eq!(read_semantics(&ui).0, read_semantics(&independent).0);
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let cylinder = Document::open_read_only(&ui).expect("cylinder");
+    let built = ferritecad_eval::rebuild_cold(&cylinder, &mut kernel, &Default::default())
+        .expect("solid cylinder");
+    let body = cylinder
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+        .expect("Body");
+    let (_, volume) = kernel
+        .shape_stats(built.shape(body.id).expect("shape"))
+        .expect("volume");
+    assert!((volume - 1500. * pi).abs() < 1e-9);
+    built.release_all(&mut kernel);
+    cylinder.close().expect("close");
 
     let input = root.path().join("cylinder.json");
     std::fs::write(
@@ -1226,7 +533,6 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
         .output()
         .expect("peer CLI");
     assert!(p.status.success(), "{p:?}");
-    assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
     let export = |path: &std::path::Path| {
         let mut bytes = Vec::new();
         for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
@@ -1243,7 +549,8 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
         }
         bytes
     };
-    let (a, b) = (export(&ui), export(&cli));
+    let (a, b) = (export(&ui), export(&independent));
+    assert_eq!(a[0], export(&cli)[0], "original cylinder STL");
     assert_eq!(a[0], b[0], "worker/CLI STL bytes");
     let mapped_fbx = |path: &std::path::Path, bytes: &[u8]| {
         let document = Document::open_read_only(path).expect("document");
@@ -1261,7 +568,7 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     };
     assert_eq!(
         mapped_fbx(&ui, &a[1]),
-        mapped_fbx(&cli, &b[1]),
+        mapped_fbx(&independent, &b[1]),
         "all FBX bytes agree after mapping the two created Body identities"
     );
 

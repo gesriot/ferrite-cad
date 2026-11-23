@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §30Q: New's drawing and New's form opened over a tab's floating form share no
+//! §30Q: New's form opened over a tab's floating form share no
 //! keyboard focus or text with it, either way — real egui widgets and input,
 //! drawn where the window draws them, and the window's own `open_new`/`end_new`.
 
@@ -32,7 +32,7 @@ fn window_frame(
         |ui| {
             let (form, sketch) = creates.forms();
             crate::in_tab_scope(ui, "tab-forms", key, |ui| {
-                sketch.draw(ui, true, false, "");
+                sketch.draw(ui, false, "");
             });
             choice = ferritecad_ui::new_document_form(ui, form);
         },
@@ -101,84 +101,8 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
         creates.sketch.circle_undo.clone(),
         creates.sketch.circle_redo.clone(),
     );
-    let a_back = |creates: &Creates| {
-        assert!(creates.sketch.editing_analytic());
-        assert_eq!(creates.sketch.circle, a_typed, "A's text as typed");
-        assert_eq!(
-            (
-                creates.sketch.circle_undo.clone(),
-                creates.sketch.circle_redo.clone()
-            ),
-            a_history
-        );
-    };
-
-    // New's drawing, by its button beside A's form, through the window's route.
     let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(
-        &ctx,
-        key,
-        &mut creates,
-        text_at(&out, "Create sketch + Extrude…"),
-    );
-    assert!(creates.sketch.take_drawing_request(), "asked of the window");
-    assert!(
-        creates.sketch.editing_analytic(),
-        "not opened over A's form"
-    );
-    assert!(crate::open_new(
-        &mut tabs,
-        &mut sessions,
-        &mut edits,
-        &mut creates,
-        &mut input,
-        |creates, _| {
-            creates.begin_drawing();
-            true
-        },
-    ));
-    assert!(tabs.has_aside() && creates.sketch.drawing_new());
-    assert_eq!(creates.sketch.circle, CircleState::default());
-    // Keys typed now reach none of New's fields: A's focus did not come along.
-    for _ in 0..3 {
-        window_frame(&ctx, key, &mut creates, vec![]);
-    }
-    typed(&ctx, key, &mut creates, "9");
-    typed(&ctx, key, &mut creates, "9");
-    assert_eq!(creates.sketch.circle, CircleState::default());
-    assert_eq!(creates.sketch.next, ["0", "0"]);
-    // New's own Circle: its Center X takes typing as A's did.
-    let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(&ctx, key, &mut creates, text_at(&out, "Circle"));
-    for _ in 0..2 {
-        window_frame(&ctx, key, &mut creates, vec![]);
-    }
-    let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(&ctx, key, &mut creates, text_at(&out, "0"));
-    typed(&ctx, key, &mut creates, "7");
-    assert!(creates.sketch.circle.center[0].contains('7'), "New's field");
-    // Cancel: A's form comes back as left, and New's focus does not edit it.
-    let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(&ctx, key, &mut creates, text_at(&out, "Cancel draft"));
-    crate::end_new(&mut tabs, &mut sessions, &mut edits, &mut creates);
-    assert!(!tabs.has_aside());
-    a_back(&creates);
-    for _ in 0..2 {
-        window_frame(&ctx, key, &mut creates, vec![]);
-    }
-    typed(&ctx, key, &mut creates, "3");
-    a_back(&creates);
-
-    // The same with New's form: its fields take nothing typed for A's.
-    let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(&ctx, key, &mut creates, text_at(&out, "-7"));
-    typed(&ctx, key, &mut creates, "1");
-    let a_typed = creates.sketch.circle.clone();
-    assert_ne!(a_typed.center[1], "-7", "A's field took the keyboard");
-    let a_history = (
-        creates.sketch.circle_undo.clone(),
-        creates.sketch.circle_redo.clone(),
-    );
+    assert!(!painted(&out, "Create sketch + Extrude…"));
     assert!(crate::open_new(
         &mut tabs,
         &mut sessions,

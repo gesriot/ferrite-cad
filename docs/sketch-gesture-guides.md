@@ -1,5 +1,9 @@
 # §31D-1 — Gesture guides and a temporary Length in the Sketch editor
 
+The canvas controls described here remain available for a saved sketch. To create a sketch,
+use **New sketch…** in the viewport, then **Finish** and **Extrude…** or **Revolve…**.
+The dated verification sections record the interface used for those runs. [Sketch mode](sketch-mode.md)
+
 Status at the author handoff: implemented, **unstaged and uncommitted** on branch
 `sketch-gesture-guides`; no window was run; the diff has no CI of its own. Base:
 `687a65e9296ec1eabbb221f83ff0b12700444688` (merge of PR #106; HEAD = main =
@@ -14,18 +18,17 @@ The one Sketch canvas draws a **Line contour**. A new row under the grid step re
 explanation under it. It is editor state beside the grid step and Object snap: it
 lives in the editor (so it travels with its tab and ends with its form, exactly like
 them), is **Off and blank by default** so every earlier input keeps its exact
-behaviour, and nothing is persisted. Typed X/Y and Next X/Y still bypass every snap
+behaviour, and nothing is persisted. Typed X/Y still bypass every snap
 and keep their exact text.
 
-Two anchors, both explicit and both drawn (a ring, apart from the target point):
+The guide starts at the original position of the vertex, marked by a ring:
 
 | Gesture | Anchor |
 | --- | --- |
-| Click that adds a point (open New drawing) | the last vertex already entered; none before the first point, so nothing is offered there |
-| Drag of a vertex (New or saved Line contour) | **the vertex's position at the press**, frozen for the gesture. The label says `vertex 3 moved 12.5 mm from its start`: the length is a movement from that anchor, never the length of a neighbouring edge |
+| Drag of a saved vertex | **the vertex's position at the press**, frozen for the gesture. The label says `vertex 3 moved 12.5 mm from its start`: the length is a movement from that anchor, never the length of a neighbouring edge |
 
-An anchor the canvas does not show (scrolled out of view), one whose text is not a
-number, a closed New drawing (a click adds nothing) and a full drawing offer no
+An anchor the canvas does not show (scrolled out of view), or one whose text is not a
+number offers no
 guide. The anchor never follows the pointer and is not released by distance:
 a drag 260 points along its guide still holds it.
 
@@ -81,7 +84,7 @@ a drag 260 points along its guide still holds it.
   nothing saved, no Undo step`) and ends with the form. There is no hidden active
   dimension: while the box holds a number, the preview of every gesture shows it.
 * **Gestures.** The guide choice, the length as typed, the anchor and the candidate set
-  are frozen at the press (at the click for a new point), like the grid step and the
+  are frozen at the press, like the grid step and the
   object candidates. A toggle of the row is replayed at the event that made it, so in a
   packed frame the earlier drag keeps its setting and only the next gesture changes. The
   row and the box are inert while a gesture is held, while a job runs and while Guides are
@@ -241,12 +244,7 @@ foot with a 20-wide column to y = 40, height 10; `shasum -a 256` is recorded in
    SQL cells, UUIDs and references, `export-stl` and `export-fbx` bytes; independent STL
    should be 14500 mm³ and strict ufbx should accept the FBX. Negative control: leave one
    vertex at (60, 20).
-6. New drawing: click three points, choose **Polar 45°**; a ring marks the last vertex;
-   hover along a diagonal and click: the point lies exactly on it; with `Length 7.5`
-   the next click is exactly 7.5 mm away. Turn on **Object snap**: near an endpoint on
-   the guide the object wins; with a length that does not reach it the label names the
-   conflict. Try a window over the canvas and a running job: nothing is offered.
-7. Observe memory pressure and exit status; do not call the OOM investigation closed.
+6. Observe memory pressure and exit status; do not call the OOM investigation closed.
 
 ## Independent review
 

@@ -860,9 +860,6 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     let mut new = crate::creates::Creates::default();
     assert!(crate::creates::open_form(&mut new, &mut w.input));
     assert!(!leave(&new, &w.edits, &w), "the New form holds the window");
-    let mut drawing = crate::creates::Creates::default();
-    crate::sketch::tests::begin_drawing(&mut drawing.sketch);
-    assert!(!leave(&drawing, &w.edits, &w), "a drawing for New holds it");
     let mut copying = crate::edits::Edits::default();
     let request = {
         let current = w.sessions.export_path().expect("A");

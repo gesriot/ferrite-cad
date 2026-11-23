@@ -163,7 +163,6 @@ pub(in crate::sessions::tests::tabs) fn frame(
         edits: &mut w.edits,
         stl_form: None,
         can_edit: true,
-        can_new: true,
         height,
         held_back: content.loud,
         document_outcome: &outcome,
@@ -448,8 +447,9 @@ fn an_empty_window_and_an_empty_document_stay_controllable() {
             .open;
     }
     assert!(pressed, "Open… did not answer a press");
-    // The Actions panel offers New… and the Create routes with no document.
-    assert!(!texts(&laid.out, "Create sketch + Extrude…").is_empty());
+    // New is the entry point for creating a document in an empty window.
+    assert_eq!(texts(&laid.out, "New…").len(), 1);
+    assert!(texts(&laid.out, "Create sketch + Extrude…").is_empty());
 
     // Opening the first document does not move the viewport: a model framed for
     // the empty window's rectangle is still framed for the one with a tab in it.

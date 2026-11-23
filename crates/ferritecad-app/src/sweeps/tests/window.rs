@@ -11,6 +11,9 @@ use crate::{
 use ferritecad_document::{Document, Sketch};
 use ferritecad_ui::ModelEdit;
 
+#[path = "creation.rs"]
+pub(crate) mod creation;
+
 fn native() -> bool {
     ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")])
 }

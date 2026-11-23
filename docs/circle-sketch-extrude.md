@@ -1,12 +1,8 @@
 # §25J — аналитическая окружность → Sketch → Blind Extrude → новый FCAD
 
-[Локальные доказательства и ограничения](circle-sketch-extrude-verification.md).
-Тот же общий маршрут создания, что и у [Line polygon (§25A)](sketch-extrude-create.md):
-один unconstrained XY Sketch, один Blind Extrude, один NewBody, атомарная
-публикация после cold rebuild. Отличается только то, что Sketch держит: одну
-настоящую `SketchGeometry::Circle` вместо цепочки Line.
+В окне выберите **New… → Empty**, затем **New sketch…** на XY. Инструментом **Circle** укажите центр и точку на ободе. Завершите эскиз кнопкой **Finish**, выберите его и нажмите **Extrude…**. Подробности в [руководстве по режиму эскиза](sketch-mode.md).
 
-UI: `Create sketch + Extrude…` → `Profile: Circle`; CLI:
+Следующий шаблон CLI записывает одну аналитическую окружность и создаёт Blind Extrude в новом Body.
 
 ```text
 ferritecad create-circle-extrude <request.json> -o <new.fcad> [--json]
@@ -59,8 +55,7 @@ in-place Save в этом срезе нет. Сохранённая окружн
 
 ## Владельцы, сохранение и публикация
 
-`CircleExtrusion::new` в document — единственная проверка допустимости для обоих
-клиентов. `NewDocument::CircleExtrude(CircleExtrusion)` проходит через тот же
+`CircleExtrusion::new` в document — проверяет входные данные шаблона. `NewDocument::CircleExtrude(CircleExtrusion)` проходит через тот же
 `create_document_with_kernel`. Классификация одна:
 `NewDocument::needs_kernel()` истинно для любого нарисованного профиля, поэтому
 kernel-free `create_document` отказывает и circle, и polygon, а checked route

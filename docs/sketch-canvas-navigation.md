@@ -1,11 +1,15 @@
 # §31J — Zoom and pan on the Sketch canvases
 
+The canvas controls described here remain available for a saved sketch. To create a sketch,
+use **New sketch…** in the viewport, then **Finish** and **Extrude…** or **Revolve…**.
+The dated verification sections record the interface used for those runs. [Sketch mode](sketch-mode.md)
+
 Status: reviewed implementation. The independent macOS window check covered cursor zoom,
 dragging at the changed scale, Fit, draft/tab ownership and publication of saved Line, Circle
 and annular profiles. Native-window pan and pinch remain unobserved; their widget gates execute.
 The original design and author evidence below are retained separately. Plan entry: [§31J](implementation-plan.md). Base: `b4286163045b` (merge of
 PR #113, tree `e64d0c38ce0b`). The three canvases already exist: the Line polygon canvas
-(New and every saved Sketch base: Extrude, Revolve, Fillet, Cut, Chamfer histories), the Circle
+(saved Sketch bases: Extrude, Revolve, Fillet, Cut, Chamfer histories), the Circle
 canvas and the Circle-with-hole canvas
 ([analytic-sketch-canvas.md](analytic-sketch-canvas.md)). This slice moves their **view** and
 nothing else.
@@ -76,9 +80,7 @@ applied by itself.
 
 ## What a person can do
 
-On the Line polygon canvas (**Create sketch + Extrude…** → Line polygon, and **Edit saved
-Sketch** for every supported base), the Circle canvas and the Circle-with-hole canvas (New and
-saved), turn the wheel, scroll with two fingers or pinch to zoom about the cursor; hold the
+On a saved Line, Circle or annulus canvas, turn the wheel, scroll with two fingers or pinch to zoom about the cursor; hold the
 middle button, or Shift with the left button, and drag to pan; press **Fit drawing** /
 **Fit profile** (the Line also has **Reset view**) to see the whole drawing again. The lower right
 of the canvas says "Wheel or pinch: zoom · Shift+drag or middle-drag: pan", "Panning · Esc puts
@@ -90,7 +92,7 @@ valid or not.
 ## Who owns what
 
 * **The view** of each canvas is that canvas's own: the Line `Canvas.minimum` / `.scale` (one
-  canvas for New and every saved base), and `View` of `circle_canvas` and `annulus_canvas`. All three
+  canvas for every saved base), and `View` of `circle_canvas` and `annulus_canvas`. All three
   live in the `Editor`, so they go with the tab's form (`Forms::park`/`restore`), a New held for
   Quit, an Open over New and a given-back publication, and `dismiss` resets them. The document
   never sees a view; nothing is persisted.
@@ -367,16 +369,14 @@ right say so, and say "View locked while you drag" while a vertex or handle is h
 5. **Revolve** (`revolve.fcad`, the axis line follows the view) and the **Fillet history base**
    (`rounded.fcad`): zoom, pan, Fit, one vertex drag, **Apply**, export STL/FBX **before Save**,
    document Undo/Redo, **Save As…** → Cancel (nothing written), **Save**.
-6. **New → Line polygon**: click three points, zoom and pan between clicks (the next click lands
-   where the pointer is), **Create new document**: exactly the typed/clicked strings.
+6. On a saved Line sketch, zoom and pan between vertex selections and check the selected row.
 7. **Circle** (`circle.fcad`) and **Annulus** (`annulus.fcad`, **Edit …**): zoom in about the
    centre, pan, **Fit profile** (back to the opening view), zoom again, drag the centre and radius
    handles at that scale: the strings are the drag in points over the new scale. **Apply**,
    export before Save, **Save**. `tiny-annulus.fcad`: at Fit the bore handle sits on the centre
    (the cross and diamond coincide); zoom in about the centre until they part, then drag the
-   diamond. **New → Circle with hole**: type a bore of `0.01` and do the same.
-8. **Profiles and tabs.** In New, switch Line polygon / Circle / Circle with hole after zooming each:
-   each keeps its own view. Open `annulus.fcad` and `annulus-b.fcad` in two tabs, open the form in
+   diamond.
+8. **Profiles and tabs.** Open `annulus.fcad` and `annulus-b.fcad` in two tabs, open the form in
    each, zoom A, pan B, **Fit profile** in B, switch several times: each tab shows its own view.
    Hold a pan and try to switch tabs or press Cmd+Q: the window refuses (the status asks to wait);
    after the release it does not.

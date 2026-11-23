@@ -402,7 +402,7 @@ fn angle_range_refusal_status_and_accepted_scene_dismissal_are_visible() {
             )),
             ..Default::default()
         },
-        |ui| w.form().draw(ui, true, false, status),
+        |ui| w.form().draw(ui, false, status),
     );
     out.textures_delta.clear();
     assert!(painted(&out, status));

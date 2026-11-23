@@ -29,14 +29,11 @@ replaced from them without the question.
 * The window's create worker (`sessions::create_for_view`) makes the candidate and
   its picture; `AppEvent::Created` carries `Candidate { scene, session }`; `show`
   binds it with the same `Bind::Open` as Open. A refused, cancelled, stale or
-  unshowable candidate is dropped with its directory; the New form and the drawing
-  draft are kept (`draft_published` / `draft_load_finished`, `Creates::shown`).
-* One `can_create` predicate is written into the New form (`NewDocumentForm::can_create`,
-  **Create document**) and the drawing forms (**Create new document**, **Create circle
-  document**, **Create annular document**) each frame and asked again by
-  `create_new`. The guard moved to `create_new` (`Continuation::Create`, the content
-  held as `pending_create` until the save is published; dropped otherwise). The New
-  button only opens the form.
+  unshowable candidate is dropped with its directory. The New form stays open
+  when its candidate cannot be shown.
+* **New…** opens the form. **Create document** checks whether the window can
+  create on every frame, and the worker checks again before starting. A new tab
+  appears only after its picture is accepted.
 * Save on an untitled session asks for a path (`save_then` → `choose_save_as_path`,
   `Untitled.fcad` in the dialog's folder) and runs the existing no-clobber Save As.
   Export and Save As suggestions use `Sessions::suggestion()` (the logical file, or
@@ -68,27 +65,28 @@ continuation once), `sessions::tests::new_document::stub_new_document_is_refused
 `tests::the_create_predicate_lets_open_forms_create_and_excludes_other_work`
 (idle-positive with the New form open, then a running creation, a load, an export,
 an edit form and a session operation each close it),
-`panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot`, and
-the drawing widgets now assert that a press asks nothing while the predicate is off.
+`panels::tests::new_form_create_asks_nothing_while_the_window_says_it_cannot`, which checks that a disabled press asks for nothing.
 The other `creates.rs` gates were rewritten for the candidate route (stale answer,
 cancel early/late, shutdown join, a size the document refuses, first-Save refusal of
 a taken name, both clients write the same plate/empty document).
 
 Native (`sessions::tests::new_document`):
 `native_every_new_document_variant_is_untitled_until_its_first_save_like_the_cli` —
-one parameterised matrix over Empty, the sample plate 83×47×13, an L polygon, a Circle,
-an annulus, a full-turn Revolve and a 137.5° partial Revolve. Each goes through the
-window's create worker and `Bind::Open`; is Untitled, dirty, with no Undo and no private
-path in the title or `shown_as`; equals `ferritecad create*` of the same content in
-every SQL cell (rowid, ordinals, raw payload hashes) except `meta.created_at`,
-`meta.modified_at` and a proved bijection of its identities (all new; positional,
-consistent, one-to-one, none shared, payload hashes excluded from the scan as derived);
-for the four with an Extrude a height Apply, Undo to the created version (byte-equal
-SQL, still unsaved) and Redo; unsaved STL byte-equal to the CLI's and FBX equal under
-the bijection; the first Save As writes exactly the current version (all cells, no
-remap) with the same document id; reopen is clean; `rebuild --cold` reports the same
-as the CLI document; exports from the saved file equal the unsaved ones; Redo history
-survives the first Save; the private folder is gone after stop.
+one matrix over Empty, the sample plate 83×47×13, an L polygon, a circle, an annulus,
+a full turn and a 137.5° partial turn. Each starts with an untitled document whose
+Undo and Redo histories are empty. The five custom solids then go through the
+viewport sketch and sweep commands. The title and `shown_as` keep the private path
+hidden. The CLI starts with `create` and applies versioned edits for custom solids.
+The comparison reads every SQL cell and rowid, checks raw payload hashes and
+establishes a one-to-one correspondence between independently generated IDs.
+It excludes `meta.created_at` and `meta.modified_at` from comparisons between
+documents. For each of the four extruded models, the test applies a height, undoes it,
+checks the original SQL and unsaved state, and redoes it. The unsaved STL matches
+the CLI output byte for byte. The FBX matches under the same identity mapping.
+The first Save As preserves every cell and the document ID. The reopened file is
+clean, its cold rebuild matches the CLI and its exports match those made before
+Save. The test also checks that Redo survives the first Save and that stopping the
+session removes its private directory.
 `mixed_new_documents_need_no_solver` runs the same matrix with OCCT and no PlaneGCS.
 Artifacts `new-{polygon,annulus}-{before,after}-save.{stl,fbx}` are read by the pinned
 strict ufbx reader and joined with oriented STL; runtime CI requires
@@ -146,12 +144,14 @@ The generator writes only `occupied.fcad`, its pristine copy `inputs/occupied.fc
    to `first-save.fcad`.
 6. **Undo** (title dirty) → Export STL → `undo.stl`. **Redo** (clean). **Undo** again.
 7. Quit (Cmd+Q) → **Cancel**: the window stays with the dirty plate.
-8. **Create sketch + Extrude…** → Profile *Circle with hole*: center 12, −7; outer 10;
-   inner 4; height 15 → **Create annular document** → **Cancel**: the plate stays, the
-   numbers stay. Press it again → **Save**: `plate.fcad` is saved in place, then the
-   annulus appears as `*Untitled`. Copy `plate.fcad` to `after-guard.fcad`.
-9. Export STL → `annulus.stl`, Export FBX → `annulus.fbx`.
-10. **New** → Empty → **Create document** → **Discard**: an empty `*Untitled`.
+8. Close the dirty plate tab and choose **Save**. Copy `plate.fcad` to
+   `after-guard.fcad`. Choose **New…** → **Empty**, open **New sketch…** on XY,
+   set the grid to 1 mm and draw two circles centred at (12, −7) through (22, −7)
+   and (16, −7). Press **Finish**. Select the sketch and use **Extrude…** with a
+   15 mm distance and a new body. Press **Apply**.
+9. Export STL to `annulus.stl` and FBX to `annulus.fbx`.
+10. Close the untitled annulus tab and choose **Discard**. Choose **New…** →
+    **Empty** → **Create document**.
 11. **Save** → `empty.fcad`. Quit (no question). Check the owned PID only.
 
 ```sh

@@ -86,9 +86,9 @@ impl Window {
         outcome
     }
 
-    /// `App::begin_new`: New's form (or, `drawing`, the drawing) over the shown
+    /// `App::begin_new`: New's form over the shown
     /// tab, after the predicate its buttons ask. Whether New opened.
-    pub(super) fn begin_new(&mut self, drawing: bool) -> bool {
+    pub(crate) fn begin_new(&mut self) -> bool {
         if !self.can_leave() {
             return false;
         }
@@ -98,14 +98,7 @@ impl Window {
             &mut self.edits,
             &mut self.creates,
             &mut self.input,
-            |creates, input| {
-                if drawing {
-                    creates.begin_drawing();
-                    true
-                } else {
-                    crate::ask_new(creates, &Loads::default(), &Exports::default(), input)
-                }
-            },
+            |creates, input| crate::ask_new(creates, &Loads::default(), &Exports::default(), input),
         )
     }
 
@@ -120,7 +113,7 @@ impl Window {
     }
 
     /// The New form answered (`creates::answer_form` and what follows it).
-    pub(super) fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
+    pub(crate) fn answer_new(&mut self, choice: ferritecad_ui::NewChoice) -> Option<NewDocument> {
         let content = crate::creates::answer_form(&mut self.creates, &mut self.input, choice);
         self.end_new();
         content
@@ -128,7 +121,7 @@ impl Window {
 
     /// `App::create_new` and the `Created` handler: the room check first, then
     /// the window's creation worker; the candidate is accepted with its picture.
-    pub(super) fn create_from_new(
+    pub(crate) fn create_from_new(
         &mut self,
         content: NewDocument,
         upload: Result<()>,
@@ -516,7 +509,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
         .sessions
         .begin_apply(|_, _, _| std::thread::spawn(|| {}))
         .expect("an Apply");
-    assert!(!w.begin_new(false) && !w.begin_new(true));
+    assert!(!w.begin_new());
     assert_eq!(
         w.sessions.finish_apply(running, Err(CadError::Cancelled)),
         Edited::Failed
@@ -525,10 +518,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
         .handle(ViewportEvent::PointerMoved { x: 10.0, y: 10.0 }, false);
     w.input
         .handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
-    assert!(
-        !w.begin_new(false) && !w.begin_new(true),
-        "a camera gesture"
-    );
+    assert!(!w.begin_new(), "a camera gesture");
     w.input.handle(ViewportEvent::GestureCancelled, false);
     let new_allowed = |w: &Window, exports: &Exports| {
         crate::can_leave_tab(
@@ -567,7 +557,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     a_back(&w);
 
     // New's form over A's forms: set aside; New starts on empty forms.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     set_aside(&w);
     assert!(w.creates.form().is_some());
     // New still holds tab changes and Recover; §30T Open asks, and §30W Quit
@@ -671,21 +661,15 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     assert!(w.creates.form().is_none());
     a_back(&w);
 
-    // The drawing: the same set-aside, and its own Cancel gives them back.
-    assert!(w.begin_new(true));
+    // Opening Empty and cancelling restores the same parked form and its history.
+    assert!(w.begin_new());
     set_aside(&w);
-    assert!(w.creates.sketch.drawing_new());
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
-        Some((Vec::new(), 0, 0)),
-        "New's drawing starts empty"
-    );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Cancel draft");
-    w.end_new();
+    w.creates.form().expect("New").content = NewContent::Empty;
+    assert!(w.answer_new(NewChoice::Cancel).is_none());
     a_back(&w);
 
     // Accepted: a separate Untitled tab; A hidden with its forms.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.creates.form().expect("New").content = NewContent::Empty;
     let content = w.answer_new(NewChoice::Create).expect("Empty");
     w.create_from_new(content, Ok(())).expect("a new tab");
@@ -724,7 +708,7 @@ fn new_over_unfinished_forms_sets_them_aside_and_gives_them_back_exactly() {
     let feature = w.feature();
     w.open_height_form();
     w.edits.type_height(feature, "x7");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.creates.form().expect("New").content = NewContent::Empty;
     let content = w.answer_new(NewChoice::Create).expect("Empty");
     let refusal = w.create_from_new(content, Ok(())).expect_err("full");
@@ -979,7 +963,7 @@ fn stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_i
     assert!(!w.deliver_load(&mut loads, reading, read, Ok(())));
     kept(&w);
 
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     let content = w.answer_new(NewChoice::Create).expect("Empty");
     assert!(produce(&mut w, content).is_none(), "refused at its picture");
     assert!(w.creates.form().is_some() && w.tabs.has_aside());
@@ -1030,7 +1014,7 @@ fn mixed_open_new_and_recover_beside_forms_with_occt_and_no_solver() {
     let feature_b = w.feature();
     w.open_height_form();
     w.edits.type_height(feature_b, "19");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     let content = w.answer_new(NewChoice::Create).expect("Empty");
     let candidate = produce(&mut w, content).expect("drawn by Open CASCADE");
     w.bind_candidate(candidate, Ok(())).expect("a new tab");
@@ -1131,17 +1115,16 @@ fn recipe_on_owners(root: &Path) {
     );
     w.creates.sketch = editor;
     let polygon = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
-    // 6: the drawing beside it, then its Cancel: A's form is back.
-    assert!(w.begin_new(true));
+    // 6: New beside it, then Cancel: A's form is back.
+    assert!(w.begin_new());
     assert!(w.tabs.has_aside());
-    crate::sketch::tests::press(&mut w.creates.sketch, "Cancel draft");
-    w.end_new();
+    assert!(w.answer_new(NewChoice::Cancel).is_none());
     assert_eq!(
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
         Some(polygon.clone())
     );
     // 7: New: a 50 × 30 × 7 plate in an Untitled tab.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     {
         let form = w.creates.form().expect("New");
         form.content = NewContent::SamplePlate;

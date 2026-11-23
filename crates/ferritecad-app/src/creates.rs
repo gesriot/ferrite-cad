@@ -23,7 +23,7 @@
 //! candidate is dropped with its directory. The document is **Untitled** until
 //! its first Save, which asks where its file goes.
 //!
-//! The New form and the drawing drafts stay on screen until the new document is
+//! The New form stays on screen until the new document is
 //! accepted, so nothing a person typed is lost to a failure.
 //!
 //! # Nothing here blocks the loop
@@ -87,7 +87,7 @@ fn not_a_number(field: &str, typed: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CreateGeneration(u64);
 
-/// Which New a question is about: one opening of the form or of the drawing, from
+/// Which New a question is about: one opening of the form, from
 /// its press to its end (its Cancel, a tab of its own, or a stop for an Open).
 ///
 /// Monotonic and never reused, on the same terms as a creation's generation. An
@@ -113,8 +113,7 @@ struct Creating {
 /// Whole idle New, held through the existing Quit pass. No worker moves here.
 struct HeldNew {
     id: crate::tabs::QuitNewId,
-    form: Option<NewDocumentForm>,
-    sketch: Box<crate::sketch::Editor>,
+    form: NewDocumentForm,
 }
 
 /// What the window says about the document it was last asked to make.
@@ -133,7 +132,7 @@ pub(crate) enum CreateStatus {
     Shown,
     /// Given up on. Nothing on screen changed.
     Cancelled,
-    /// New was stopped for an Open: its form, drawing and creation are gone.
+    /// New was stopped for an Open: its form and creation are gone.
     Stopped,
     /// Could not be made or shown. Nothing on screen changed.
     Failed { message: String },
@@ -197,7 +196,6 @@ impl Creates {
         if let Some(form) = self.form.as_mut() {
             form.can_create = can_create;
         }
-        self.sketch.set_create(can_create);
     }
 
     /// The form on screen, to be drawn and typed into.
@@ -221,11 +219,11 @@ impl Creates {
         self.running() || self.form.is_some() || self.sketch.active()
     }
 
-    /// §30P: New is under way — a creation running, the New form, or a drawing
-    /// for a new document. None of it belongs to a tab; idle New may enter the
+    /// §30P: New is under way — a creation running or the New form still open.
+    /// New belongs to the window; idle New may enter the
     /// separately addressed Quit question while other transitions stay held.
     pub(crate) fn making_new(&self) -> bool {
-        self.running() || self.form.is_some() || self.sketch.drawing_new()
+        self.running() || self.form.is_some()
     }
 
     /// Running, queued and handed-out-but-unaccepted candidates all hold Quit.
@@ -248,16 +246,15 @@ impl Creates {
         (self.idle_new() == Some(id.over)).then(|| self.losing())
     }
 
-    /// Validate before moving the shared Editor. Handles remain accounted here.
+    /// Validate before taking New's form. Handles remain accounted here.
     pub(crate) fn hold_new_for_quit(&mut self, id: crate::tabs::QuitNewId) -> bool {
         if self.idle_new() != Some(id.over) {
             return false;
         }
-        self.held_new = Some(HeldNew {
-            id,
-            form: self.form.take(),
-            sketch: Box::new(std::mem::take(&mut self.sketch)),
-        });
+        let Some(form) = self.form.take() else {
+            return false;
+        };
+        self.held_new = Some(HeldNew { id, form });
         true
     }
 
@@ -274,8 +271,7 @@ impl Creates {
             return false;
         };
         debug_assert_eq!(held.id.over, NewGeneration(self.opened));
-        self.form = held.form;
-        self.sketch = *held.sketch;
+        self.form = Some(held.form);
         true
     }
 
@@ -370,15 +366,6 @@ impl Creates {
         });
     }
 
-    /// Opens the drawing for a new document: another opening of New (§30T).
-    pub(crate) fn begin_drawing(&mut self) {
-        if self.has_held_new() {
-            return;
-        }
-        self.opened += 1;
-        self.sketch.begin();
-    }
-
     // --- Open while New is not finished (§30T) --------------------------------
 
     /// Whether the New numbered `over` is the one in progress now.
@@ -390,8 +377,6 @@ impl Creates {
     fn losing(&self) -> &'static str {
         if self.running() {
             "the new document being made will be thrown away, and nothing of it is kept"
-        } else if self.sketch.drawing_new() {
-            "the sketch you drew for the new document will be discarded"
         } else {
             "the choices and sizes typed in the New form will be discarded"
         }
@@ -428,9 +413,8 @@ impl Creates {
     }
 
     /// *Discard New and open*: the one moment New's draft may go. The New the
-    /// question was asked over, still in progress, ends: its form, its drawing and
-    /// its creation. The worker is told to stop and stays accounted until it ends,
-    /// and its answer, whenever it comes, is no longer anyone's. Returns the file
+    /// question names ends with its form and creation. The worker remains accounted for
+    /// until it stops, and its answer is discarded. Returns the file
     /// the question named. A question about a New that has ended is no decision
     /// about the one now in progress: nothing is stopped, and [`Self::new_ended`]
     /// hands the file back.
@@ -444,7 +428,6 @@ impl Creates {
         }
         let asked = self.asked.take()?;
         self.form = None;
-        self.sketch.dismiss();
         for creating in &self.running {
             creating.cancel.cancel();
         }
@@ -522,10 +505,6 @@ impl Creates {
             } if *waiting == generation && self.accepts(generation) => {
                 self.status = match outcome {
                     Ok(candidate) if !self.cancel_requested => {
-                        // The drawing draft is kept aside until the picture is
-                        // accepted, and comes back if it is not.
-                        self.sketch
-                            .draft_published(candidate.session.current().path());
                         show = Some(candidate);
                         CreateStatus::Made
                     }
@@ -952,43 +931,6 @@ pub(crate) mod tests {
             .run(&OperationContext::default())
             .expect("the first save is published");
         session.record_saved(&saved);
-    }
-
-    /// §30L: a drawing form's request through the window's route: the worker
-    /// makes a candidate, the draft is held aside while its picture is prepared,
-    /// a refused picture gives the draft back without resubmitting it
-    /// (`restored` inspects it then), and an accepted one retires it. The
-    /// accepted document is then saved for the first time at `destination`.
-    pub(crate) fn drawn_through_the_window(
-        creates: &mut Creates,
-        view: &mut ViewportInput,
-        content: NewDocument,
-        destination: &Path,
-        restored: impl FnOnce(&crate::sketch::Editor),
-    ) {
-        let sessions = tempfile::tempdir().expect("sessions");
-        let (_, candidate) = run_to_completion(creates, view, sessions.path(), content.clone());
-        let mut candidate = candidate.expect("a candidate");
-        // Another request while this one is held is not a second worker.
-        let shown = candidate.session.current().path().to_path_buf();
-        assert!(!creates.sketch.active(), "the draft is held aside");
-        creates
-            .sketch
-            .draft_load_finished(Path::new("unrelated.fcad"), false);
-        assert!(!creates.sketch.active());
-        creates.sketch.draft_load_finished(&shown, false);
-        assert!(
-            creates.sketch.active(),
-            "a refused picture restores the draft"
-        );
-        assert!(creates.sketch.take_request().is_none(), "no resubmission");
-        restored(&creates.sketch);
-        creates.sketch.draft_published(&shown);
-        creates.sketch.draft_load_finished(&shown, true);
-        assert!(!creates.sketch.active());
-        finish_shown(creates, view, Ok(()));
-        assert!(candidate.session.is_untitled());
-        save_first(&mut candidate.session, destination);
     }
 
     /// The whole of the window's route, from the button to the file, as one
@@ -1928,7 +1870,7 @@ pub(crate) mod tests {
         assert!(creates.new_ended().is_none());
     }
 
-    /// Discarding New is the one moment its draft goes: the form, the drawing and a
+    /// Discarding New is the one moment its draft goes: the form and a
     /// creation under way end together; the worker stays accounted until it ends and
     /// its scratch folder is removed only by whoever owns the candidate — never by
     /// the decision. Three timings of the same creation: still working, candidate

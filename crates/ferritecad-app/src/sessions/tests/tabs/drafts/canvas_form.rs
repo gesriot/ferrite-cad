@@ -109,7 +109,7 @@ fn the_drawing_the_target_and_the_picks_of_a_form_follow_its_tab() {
                 events,
                 ..Default::default()
             },
-            |ui| w.creates.sketch.draw(ui, true, false, ""),
+            |ui| w.creates.sketch.draw(ui, false, ""),
         );
         out.textures_delta.clear();
     };

@@ -711,6 +711,7 @@ dependencies = [
  "ferritecad-viewport-gpu",
  "rfd",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "wgpu",
  "winit",

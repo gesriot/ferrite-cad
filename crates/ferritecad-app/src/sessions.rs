@@ -2634,25 +2634,27 @@ pub(crate) mod tests {
         )
     }
 
-    fn peer_bytes(document: &Path, root: &Path, tag: &str) -> (Vec<u8>, Vec<u8>) {
+    fn peer_stl(document: &Path, root: &Path, tag: &str) -> Vec<u8> {
         let stl = root.join(format!("{tag}-peer.stl"));
-        let fbx = root.join(format!("{tag}-peer.fbx"));
         cli(&[
             "export-stl".as_ref(),
             document.as_os_str(),
             "-o".as_ref(),
             stl.as_os_str(),
         ]);
+        std::fs::read(stl).expect("stl")
+    }
+
+    fn peer_bytes(document: &Path, root: &Path, tag: &str) -> (Vec<u8>, Vec<u8>) {
+        let stl = peer_stl(document, root, tag);
+        let fbx = root.join(format!("{tag}-peer.fbx"));
         cli(&[
             "export-fbx".as_ref(),
             document.as_os_str(),
             "-o".as_ref(),
             fbx.as_os_str(),
         ]);
-        (
-            std::fs::read(stl).expect("stl"),
-            std::fs::read(fbx).expect("fbx"),
-        )
+        (stl, std::fs::read(fbx).expect("fbx"))
     }
 
     /// Open, Apply, Undo, Redo, export while unsaved and Save on `source`, each

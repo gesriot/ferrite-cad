@@ -945,7 +945,7 @@ fn a_pan_holds_the_window_and_ends_with_the_canvas_that_stops_being_drawn() {
                     events,
                     ..Default::default()
                 },
-                |ui| sketch.draw(ui, true, false, ""),
+                |ui| sketch.draw(ui, false, ""),
             );
             out.textures_delta.clear();
         };

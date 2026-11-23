@@ -1,14 +1,8 @@
 # §25L — аналитический круговой профиль с одним концентрическим отверстием
 
-[Локальные доказательства и ограничения](annular-sketch-extrude-verification.md).
-Тот же общий маршрут создания, что у
-[одной окружности (§25J)](circle-sketch-extrude.md): один typed request,
-`NewDocument`/jobs операция с kernel-checked построением, cold rebuild,
-проверка refs, освобождение handles, закрытие SQLite и атомарная no-clobber
-публикация. Новой схемы БД, второго writer, второго документного lifecycle,
-tessellated payload и boolean Cut здесь нет.
+В окне выберите **New… → Empty**, затем **New sketch…** на XY. Постройте две окружности с общим центром. Связь **Coincident** между центрами сохранит соосность при правке. Завершите эскиз кнопкой **Finish**, выберите его и нажмите **Extrude…**. Подробности в [руководстве по режиму эскиза](sketch-mode.md).
 
-UI: `Profile: Line polygon | Circle | Circle with hole`; CLI:
+Шаблон CLI создаёт концентрические окружности и публикует деталь после холодной перестройки.
 
 ```text
 ferritecad create-annular-extrude <request.json> -o <new.fcad> [--json]

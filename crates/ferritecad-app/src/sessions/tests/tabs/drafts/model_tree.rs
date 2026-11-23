@@ -191,7 +191,7 @@ fn accepted_snapshot_tab_identity_stale_actions_and_form_history_are_preserved()
     );
     w.creates.sketch.dismiss();
     // New keeps the same refusal.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     assert!(!open_action(&mut w, other));
     w.answer_new(ferritecad_ui::NewChoice::Cancel);
     let current = source(&w).clone();
@@ -291,7 +291,7 @@ fn navigation_open_uses_one_foreground_gesture_and_new_refusal() {
         .is_err()
     );
     loads.stop_all();
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     assert!(!open_action(&mut w, asked));
     w.answer_new(ferritecad_ui::NewChoice::Cancel);
     assert!(open_action(&mut w, asked));

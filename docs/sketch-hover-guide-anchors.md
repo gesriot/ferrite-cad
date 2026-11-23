@@ -1,5 +1,9 @@
 # §31D-2 — Guide anchors taken from visible geometry by hovering (Sketch editor, Line canvas)
 
+The canvas controls described here remain available for a saved sketch. To create a sketch,
+use **New sketch…** in the viewport, then **Finish** and **Extrude…** or **Revolve…**.
+The dated verification sections record the interface used for those runs. [Sketch mode](sketch-mode.md)
+
 Status at the author handoff: implemented, **unstaged and uncommitted** on branch
 `sketch-hover-guide-anchors`; no window was run; the diff has no CI of its own. Base:
 `853a6bf95a11430a6becfdbfcd12aaee3d015975` (merge of PR #110, §31G collinear Lines; HEAD =
@@ -11,30 +15,25 @@ Milestone 5C, the product and the OOM investigation stay open.
 
 ## The one gesture, and why it is reachable
 
-§31D-1 measures a guide from the last vertex (a click that adds a point) or from the
-position the dragged vertex had at the press. Neither can start from *another* shown point:
-a press on an end selects and drags that end, and a click in New adds a point. A hover
-anchor therefore cannot be added to a helper alone; it needs a press that means "start
-from this point". The chosen, explicit gesture is an **editor-only mode "From object"**, a
+Ordinary dragging measures from the position the vertex had at the press. To measure from another shown point, first select the vertex to move. The chosen, explicit gesture is an **editor-only mode "From object"**, a
 checkbox at the end of the Guides row (`Guides: Off | Orthogonal | Polar 45° | Length mm
 [ ] | ☐ From object`). It is **off by default**, available only while Guides are on, and
 nothing is persisted.
 
 | State | Event (egui) | Result | Strings / selection / history |
 | --- | --- | --- | --- |
-| Mode off, or Guides Off | anything | exactly the §31C/§31D-1 behaviour: a press on an end selects and drags it, a click in New adds a point | unchanged |
-| On, New open drawing with room, or saved Sketch with a **selected** vertex | `PointerMoved` within 12 logical points of an Endpoint, Midpoint or finite Intersection of the drawn Lines | **provisional**: a blue ring (radius 11) on the point, its words beside the pointer, standing words on the canvas | none changed |
+| Mode off, or Guides Off | anything | exactly the §31C/§31D-1 behaviour: a press on an end selects and drags it | unchanged |
+| On, saved Sketch with a **selected** vertex | `PointerMoved` within 12 logical points of an Endpoint, Midpoint or finite Intersection of the drawn Lines | **provisional**: a blue ring (radius 11) on the point, its words beside the pointer, standing words on the canvas | none changed |
 | provisional | pointer moves, anchor still ≤ 24 points away | held | none |
 | provisional | another candidate that would be offered on its own is nearer by **more than 1 point** | replaced (at exactly 1 point the held one stays) | none |
 | provisional | Escape, anchor > 24 points away, pointer off the canvas, `PointerGone`, focus lost, Guides Off, mode off, covered by another window, job running, vertex text unreadable, tab hidden, document changed, form closed | **cleared** | none |
 | provisional | `PointerButton` press | **confirmed**: anchor, mode, Length text, grid step, candidates and scale are frozen; the press is *not* a vertex press (nothing is selected or dragged) | selection untouched |
 | confirmed | pointer moves, any distance, past any other point | preview from the frozen anchor; never re-acquired or released by distance | no history |
-| confirmed | release (also outside the canvas) | **one** Undo step if the strings changed; the anchor is cleared | New: one vertex added; saved: the selected vertex moved |
-| confirmed | release without a movement | nothing; no duplicate of the anchor in New | unchanged |
+| confirmed | release (also outside the canvas) | **one** Undo step if the strings changed; the anchor is cleared | the selected vertex moved |
+| confirmed | release without a movement | no change | unchanged |
 | confirmed | Escape, window focus lost, `PointerGone` | the press-time strings come back; Undo/Redo exactly as they were | restored |
 | On, saved Sketch, **no selected vertex** | — | nothing is offered; the canvas says "select the vertex to move first"; a press on a vertex is the old press that selects it | — |
 | On, saved Sketch | press on the **selected vertex itself** (or a vertex stacked on it) | it is no anchor (excluded, as in §31C): the ordinary drag | as before |
-| On, New, closed or full | — | nothing is offered; the canvas says so | — |
 
 Only a press on a **shown ring** is taken by the mode. Without a ring every press and
 click is the old one. With the mode on and a vertex selected in a saved Sketch, a press on
@@ -48,13 +47,6 @@ Every anchor in `sketch/anchor_tests.rs` is reached by `PointerMoved`, and every
 starts with a `PointerButton` press on the ring the previous frame painted, through the
 production `Editor::draw` (no helper is called in place of the interface):
 
-* New, open L `(0,0) (40,0) (40,30)`, Orthogonal, mode on: hover 3 points from vertex 1 →
-  ring and words `From Endpoint · vertex 1 at (0, 0) mm`; press there; move to
-  `(0.5, 22.5)` mm → vertex 4 `["0","22.5"]` previewed, label `90° · 22.5 mm from
-  Endpoint · vertex 1 · adds vertex 4` and the confirmed ring on vertex 1 (not on the last
-  vertex `(40,30)`); release → history `(1,0)`; Undo/Redo restore and return it. The same
-  with a finite crossing (`Intersection · edges 1>2 × 3>4`) and a midpoint
-  (`Midpoint · edge 2→3`).
 * Saved L, mode on, vertex 3 selected by an ordinary press: hover vertex 5 → ring; press;
   move east with Length 15 → vertex 3 becomes `("35","40")`, vertex 5 untouched, selection
   still vertex 3, label `0° · Length 15 mm from Endpoint · vertex 5 · moves vertex 3`.
@@ -93,32 +85,26 @@ production `Editor::draw` (no helper is called in place of the interface):
   length within `OBJECT_MATCH_MM`; any other Length text keeps its text and, on an acquired
   guide, places nothing (an object cannot bypass it); off a guide the field is not used.
   The text of the other axis of an axis guide is the anchor's number in shortest decimal.
-* **New.** The draft is rebuilt from the press-time strings at every preview: `before` plus
-  one point when there is a target. A press that did not move has no target. Close contour,
-  Create and the shared polygon check are untouched; what leaves the form is the typed
-  polygon (a widget test compares the `NewDocument` with `PolygonExtrusion::new`).
 * **History.** Hover, a provisional anchor, its replacement and the standing words take no
   Undo step and change no string, selection or dirty flag. A finished gesture that changed
   the strings is one step; Escape, lost focus and a vanished pointer restore the press-time
-  strings with Undo and Redo as they were. Typed X/Y and Next X/Y bypass every snap.
+  strings with Undo and Redo as they were. Typed X/Y bypass every snap.
 * **Where the state lives.** The mode (`Canvas.anchors`) is the editor's setting beside
   Guides and travels with its tab. The provisional anchor (`Canvas.provisional`) is frame
   state: it is cleared when the pointer leaves, on `PointerGone`/focus loss, when Guides or
   the mode go off, when a tab's form is set aside (`Forms::park`) and when the document
   changes under the form (`Editor::finish_session_change`); `dismiss` resets everything.
 * **Words.** The ring and the words name the real anchor and the length from it
-  (`180° · Length 10 mm from Midpoint · edge 2→3 · adds vertex 5`, a conflict with a typed
+  (`180° · Length 10 mm from Midpoint · edge 2→3 · moves vertex 5`, a conflict with a typed
   Length appended). The standing words of the mode are painted on the canvas under its
-  caption (two short lines: the mode, the anchor and whether the gesture `adds vertex N` or
-  `moves vertex K`, or why nothing is offered), so the form is exactly as tall as with
+  caption (two short lines: the mode, the anchor and which vertex the gesture moves, or why nothing is offered), so the form is exactly as tall as with
   Guides on and the mode off. Words are frame state: not stored, not compared.
 * **Not offered:** under a modal or running job, through a window that covers the canvas,
-  outside the visible canvas, over geometry that cannot be read, in a closed or full New
-  drawing, in a saved Sketch without a selected vertex.
+  outside the visible canvas, over geometry that cannot be read, or in a saved Sketch without a selected vertex.
 
 ## Code
 
-`sketch/anchor.rs` (pure: `track`, `Moves`, `Situation`, `describe`, `status`; no egui, no
+`sketch/anchor.rs` (pure: `track`, `Situation`, `describe`, `status`; no egui, no
 state), the wiring in `sketch.rs` (`Canvas.anchors/provisional`, `VertexDrag.anchored`,
 `Anchored`, `anchor_moves`, `track_anchor`, `anchor_situation`, `preview_anchored`, the row's
 checkbox, `pointer_over`, `paint_standing`, `paint_provisional`), `object_snap.rs`
@@ -262,12 +248,6 @@ through `tools/watch-viewer-memory.py --limit-mib 1536 --seconds <limit>`, press
    bytes with the window's. An independent STL reader should find 20 triangles, bounds
    (0,0,0)–(60,40,10) and volume 17500 mm³ (the unchanged input is 16000 mm³: negative
    control); pinned ufbx must accept the FBX (`tools/check-fbx-complex.sh`'s hook lines).
-7. New drawing (a separate, disposable window, cancelled before Quit): click four points of
-   a zigzag whose first and last edges cross, roughly `(0,0)`, `(30,30)`, `(30,0)`, `(0,15)`
-   (the crossing is near `(10, 10)`); choose Orthogonal and tick **From object**. Hover the
-   crossing (`Intersection · edges 1>2 × 3>4` with its actual numbers), press, drag east: a
-   point is added; one Undo removes it. A click away from every ring is the old click; after
-   **Close contour** the canvas says `this drawing is closed`.
 8. Two tabs with two L copies: the mode and its Length follow their tab; hovering an anchor
    in tab A and switching to B and back shows no ring until the pointer moves again.
    Optionally a 2x display. Observe the memory pressure and the exit status; do not call

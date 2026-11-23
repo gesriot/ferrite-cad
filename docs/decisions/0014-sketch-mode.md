@@ -2,6 +2,9 @@
 
 **Status:** accepted design.
 
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form.
+The window creates sketches in the viewport and applies a sweep to the accepted sketch.
+
 The viewport sketch editor is a saved-object form owned by `sketch::Editor`.
 Its open state participates in `saved_object_open()`, so command availability,
 tab parking, stale-draft refusal, Close and Quit use their existing rules. An

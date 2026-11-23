@@ -170,7 +170,7 @@ fn open_over_an_unfinished_new_asks_first_and_discards_only_when_told() {
     a_is_as_left(&w);
 
     // New's form over A's form: A's form is set aside; New holds literal values.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("77x", " 33.0 ", "");
     let typed = w.typed_new();
     assert!(w.tabs.has_aside() && w.edits.typed().is_none());
@@ -237,63 +237,28 @@ fn open_over_an_unfinished_new_asks_first_and_discards_only_when_told() {
         "an unreadable file brings nothing back and creates nothing"
     );
 
-    // Round 2: New's drawing, with draft history both ways.
-    assert!(w.begin_new(true));
-    crate::sketch::tests::fill_drawing(&mut w.creates.sketch);
-    // A gesture on the drawing holds Open, as before: nothing is asked.
-    let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
-    assert!(w.creates.sketch.gesturing() && !can_open_here(&w, &restores));
+    // Cancelling the reading after discarding New restores A, including its forms.
+    assert!(w.begin_new());
+    w.fill_new(" 33.0 ", "invalid", "8");
+    let typed = w.typed_new().expect("New form");
     assert_eq!(w.choose_file(&restores, &b_file), None);
-    assert!(w.creates.asking().is_none(), "no question during a gesture");
-    crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
-    assert!(can_open_here(&w, &restores));
-    // §31I: so does a handle held on New's annular canvas; then back to the polygon.
-    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Circle with hole");
-    let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
-    assert!(!can_open_here(&w, &restores));
-    assert_eq!(w.choose_file(&restores, &b_file), None);
-    assert!(w.creates.asking().is_none(), "no question during a gesture");
-    crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
-    assert!(can_open_here(&w, &restores));
-    // §31J: so does a pan of its view.
-    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
-    assert!(!can_open_here(&w, &restores));
-    assert_eq!(w.choose_file(&restores, &b_file), None);
-    assert!(w.creates.asking().is_none(), "no question during a pan");
-    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
-    assert!(can_open_here(&w, &restores));
-    crate::sketch::analytic_tests::choose_profile(&mut w.creates.sketch, "Line polygon");
-    let (_, undo_before, _) =
-        crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("drawing");
-    let scribble = crate::sketch::tests::scribble_drawing(&mut w.creates.sketch);
-    assert!(scribble.1 == undo_before + 1 && scribble.2 == 1 && w.creates.sketch.drawing_new());
-    assert_eq!(w.choose_file(&restores, &b_file), None);
-    let (_, losing) = w.creates.asking().expect("the question");
-    assert!(losing.contains("sketch you drew"), "{losing}");
+    let (chosen, losing) = w.creates.asking().expect("the question");
+    assert_eq!(chosen, b_file);
+    assert!(losing.contains("typed in the New form"), "{losing}");
     w.creates.keep_new(&mut w.input);
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
-        Some(scribble.clone()),
-        "Back to New keeps the drawing and its Undo/Redo"
-    );
-    // Discard, then Cancel the reading: A shown, nothing brought back.
+    assert_eq!(w.typed_new(), Some(typed));
     assert_eq!(w.choose_file(&restores, &b_file), None);
     assert_eq!(w.discard_new(&restores).as_deref(), Some(&*b_file));
-    assert!(!w.creates.sketch.drawing_new() && w.typed_new().is_none());
+    assert!(w.typed_new().is_none());
     a_is_as_left(&w);
     let reading = w.read_file(&mut loads, &b_file).expect("a reading");
     assert!(crate::cancel_load(&mut loads, &mut w.input));
     assert!(!w.deliver_load(&mut loads, reading, w.read(&b_file), Ok(())));
     a_is_as_left(&w);
-    assert!(!w.creates.sketch.drawing_new() && !w.creates.making_new());
-    assert_ne!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
-        Some(scribble),
-        "the discarded drawing did not come back"
-    );
+    assert!(w.typed_new().is_none() && !w.creates.making_new());
 
     // Round 3: Discard, then a file that opens. A is hidden with its form.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("1e999x", "-", "0");
     assert_eq!(w.choose_file(&restores, &b_file), None);
     assert_eq!(w.discard_new(&restores).as_deref(), Some(&*b_file));
@@ -356,23 +321,18 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     let polygon = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A's draft");
     assert!(polygon.2 > 0, "a draft Redo to keep");
 
-    // New's drawing over it: A's editor is set aside, the drawing starts clean.
-    assert!(w.begin_new(true));
-    assert!(w.tabs.has_aside() && w.creates.sketch.drawing_new());
-    crate::sketch::tests::fill_drawing(&mut w.creates.sketch);
-    let drawing = crate::sketch::tests::scribble_drawing(&mut w.creates.sketch);
-    assert_ne!(drawing, polygon);
+    // New owns its literal inputs while A's editor and both histories are parked.
+    assert!(w.begin_new());
+    assert!(w.tabs.has_aside());
+    w.fill_new(" 33.0 ", "-", "8");
+    let typed = w.typed_new().expect("New form");
     assert_eq!(w.choose_file(&restores, &b_file), None);
-    // Back to New: the drawing and its history are New's, as typed.
     w.creates.keep_new(&mut w.input);
-    assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
-        Some(drawing)
-    );
-    // Discard: the drawing ends; A's editor is back exactly, before the file is read.
+    assert_eq!(w.typed_new(), Some(typed));
+    // Discard: New ends; A's editor is back exactly, before the file is read.
     assert_eq!(w.choose_file(&restores, &b_file), None);
     assert_eq!(w.discard_new(&restores).as_deref(), Some(&*b_file));
-    assert!(!w.creates.sketch.drawing_new() && !w.tabs.has_aside());
+    assert!(w.typed_new().is_none() && !w.tabs.has_aside());
     assert_eq!(
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
         Some(polygon.clone()),
@@ -384,7 +344,7 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     let reading = w.read_file(&mut loads, &b_file).expect("a reading");
     assert!(w.deliver_load(&mut loads, reading, w.read(&b_file), Ok(())));
     assert!(w.tabs.has_draft(a) && w.hidden(a).dirty());
-    assert!(!w.creates.sketch.saved_object_open() && !w.creates.sketch.drawing_new());
+    assert!(!w.creates.sketch.saved_object_open() && w.typed_new().is_none());
     w.switch(a);
     assert_eq!(
         crate::sketch::tests::vertex_draft(&w.creates.sketch),
@@ -423,7 +383,7 @@ fn a_creation_under_way_is_abandoned_and_its_late_answer_changes_nothing() {
         w.open_height_form();
         w.edits.type_height(feature, "2..6");
 
-        assert!(w.begin_new(false));
+        assert!(w.begin_new());
         w.fill_new("50", " 30 ", "7");
         let content = w.answer_new(NewChoice::Create).expect("a plate");
         let typed = w.typed_new();
@@ -539,7 +499,7 @@ fn a_creation_that_becomes_a_tab_first_is_never_discarded() {
     w.open_height_form();
     w.edits.type_height(feature, "2..6");
 
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("50", "30", "7");
     let content = w.answer_new(NewChoice::Create).expect("a plate");
     let held = hold_creation(&mut w.creates, &mut w.input, scratch.path(), content, true);
@@ -605,7 +565,7 @@ fn a_creation_that_becomes_a_tab_first_is_never_discarded() {
     );
 
     // A creation that became a tab before the file was even chosen: a plain Open.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("40", "20", "5");
     let content = w.answer_new(NewChoice::Create).expect("a plate");
     let held = hold_creation(&mut w.creates, &mut w.input, scratch.path(), content, false);
@@ -651,7 +611,7 @@ fn a_full_window_is_checked_before_anything_is_asked_or_discarded() {
     w.open_height_form();
     w.edits.type_height(feature, " 33.0 ");
 
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("77x", "", "-");
     let typed = w.typed_new();
     let ninth = user.path().join("ninth.fcad");
@@ -708,7 +668,7 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
     w.open(&a_file);
     w.open(&b_file);
     let (exports, recoveries) = (Exports::default(), Recoveries::default());
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("50", "30", "7");
 
     let leave_tab = |w: &Window| crate::may_leave_tab(&w.creates, &w.edits, &w.sessions, &w.input);
@@ -747,7 +707,7 @@ fn open_alone_leaves_an_unfinished_new_and_every_other_hold_stays() {
         &w.edits,
         &w.sessions
     ));
-    assert!(!w.begin_new(false) && !w.begin_new(true), "no second New");
+    assert!(!w.begin_new(), "no second New");
 
     // An operation, a gesture, a copy worker and a Reopen each hold Open as before.
     let running = w
@@ -845,7 +805,7 @@ fn stub_open_over_a_running_new_is_refused_at_the_picture_and_new_stays_gone() {
     w.open_height_form();
     w.edits.type_height(feature, "2..6");
 
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("50", "30", "7");
     let content = w.answer_new(NewChoice::Create).expect("a plate");
     // The production creation (`run_create`), held until the decision is made.
@@ -919,7 +879,7 @@ fn mixed_open_over_a_running_new_with_occt_and_no_solver() {
     let feature = w.feature();
     w.open_height_form();
     w.edits.type_height(feature, "18");
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("50", "30", "7");
     let content = w.answer_new(NewChoice::Create).expect("a plate");
     let held = hold_creation(&mut w.creates, &mut w.input, scratch.path(), content, true);
@@ -977,7 +937,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
     w.open_height_form();
     w.edits.type_height(feature, "2..6");
     // 3: New, making a 50 x 30 x 7 plate; its candidate is made and held.
-    assert!(w.begin_new(false));
+    assert!(w.begin_new());
     w.fill_new("50", "30", "7");
     let content = w.answer_new(NewChoice::Create).expect("a plate");
     let held = hold_creation(&mut w.creates, &mut w.input, scratch.path(), content, true);

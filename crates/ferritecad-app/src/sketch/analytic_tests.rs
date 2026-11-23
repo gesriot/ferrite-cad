@@ -56,7 +56,7 @@ fn key(key: egui::Key) -> egui::Event {
 
 /// Whether the form shows its annular canvas (else its circle canvas).
 fn annular(e: &Editor) -> bool {
-    e.mode == Mode::Annulus
+    e.editing_annulus.is_some()
 }
 
 /// The strings the canvas reads and writes, as the form holds them.
@@ -164,21 +164,6 @@ fn painted(out: &egui::FullOutput, text: &str) -> bool {
     })
 }
 
-/// The window's New → `profile` (Circle or Circle with hole), through its buttons.
-pub(crate) fn open_new(ctx: &egui::Context, e: &mut Editor, profile: &str) {
-    e.set_create(true);
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, "Create sketch + Extrude…"));
-    for _ in 0..3 {
-        frame(ctx, e, vec![]);
-    }
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, profile));
-    for _ in 0..2 {
-        frame(ctx, e, vec![]);
-    }
-}
-
 /// A saved Circle (`radii` of one) or annulus, read without a kernel, and its form
 /// opened as the window opens it for an idle, clean session.
 pub(crate) fn saved(radii: &[f64]) -> (tempfile::TempDir, egui::Context, Editor) {
@@ -256,180 +241,6 @@ fn moved(e: &Editor, from: egui::Pos2, to: egui::Pos2) -> [f64; 2] {
         (f64::from(to.x) - f64::from(from.x)) / scale(e),
         (f64::from(from.y) - f64::from(to.y)) / scale(e),
     ]
-}
-
-#[test]
-fn a_new_circle_moves_its_centre_and_radius_by_real_events_one_undo_step_each() {
-    let ctx = context();
-    let mut e = Editor::default();
-    open_new(&ctx, &mut e, "Circle");
-    let start = shown(&e);
-    assert_eq!(start, strings(["0", "0"], "10", None));
-    let out = frame(&ctx, &mut e, vec![]);
-    let rect = canvas_rect(&out);
-    // First open: the whole circle, centred, with margins.
-    let painted = circles(&out);
-    assert_eq!(painted.len(), 1, "{painted:?}");
-    assert!((painted[0].0 - rect.center()).length() < 0.01);
-    assert!((f64::from(painted[0].1) - 10. * scale(&e)).abs() < 1e-3);
-    assert!(rect.shrink(29.).contains_rect(egui::Rect::from_center_size(
-        painted[0].0,
-        egui::Vec2::splat(2. * painted[0].1)
-    )));
-
-    // The centre, pressed 3 points right of and 2 above it, dragged diagonally: it
-    // moves by the pointer's movement, not to the pointer.
-    let centre = handle(&ctx, &mut e, Handle::Centre);
-    let grab = centre + egui::vec2(3., -2.);
-    press(&ctx, &mut e, grab);
-    assert!(e.gesturing() && canvas(&e).held() == Some(Handle::Centre));
-    let to = grab + egui::vec2(37.5, -22.5);
-    move_to(&ctx, &mut e, to);
-    assert_eq!(depth(&e), (0, 0), "a preview is no step");
-    release(&ctx, &mut e, to);
-    assert!(!e.gesturing());
-    let d = moved(&e, grab, to);
-    assert!((d[0] * scale(&e) - 37.5).abs() < 1e-3 && (d[1] * scale(&e) - 22.5).abs() < 1e-3);
-    assert_eq!(e.circle.center, [d[0].to_string(), d[1].to_string()]);
-    let at = handle(&ctx, &mut e, Handle::Centre);
-    assert!(
-        ((at - to) - egui::vec2(-3., 2.)).length() < 1e-3,
-        "the centre jumped under the pointer: {at:?} against {to:?}"
-    );
-    assert_eq!(
-        (e.circle.radius.as_str(), e.circle.height.as_str()),
-        ("10", "10")
-    );
-    assert_eq!(depth(&e), (1, 0));
-    let centred = shown(&e);
-
-    // The radius handle, dragged diagonally: the Euclidean distance from the centre,
-    // never the X projection; the centre keeps its text.
-    let r_at = handle(&ctx, &mut e, Handle::Outer);
-    let r_to = r_at + egui::vec2(20., -15.);
-    drag(&ctx, &mut e, r_at, r_to);
-    let d = moved(&e, r_at, r_to);
-    let radius = (10. + d[0]).hypot(d[1]);
-    assert_eq!(e.circle.radius, radius.to_string());
-    assert!((radius - (10. + d[0])).abs() > 0.1, "an X projection");
-    assert_eq!(e.circle.center, centred.centre);
-    assert_eq!(depth(&e), (2, 0));
-    let resized = shown(&e);
-
-    // One Undo per gesture, back to the exact strings; Redo returns them.
-    press_button(&ctx, &mut e, "Undo draft");
-    assert_eq!((shown(&e), depth(&e)), (centred.clone(), (1, 1)));
-    press_button(&ctx, &mut e, "Undo draft");
-    assert_eq!((shown(&e), depth(&e)), (start.clone(), (0, 2)));
-    press_button(&ctx, &mut e, "Redo draft");
-    press_button(&ctx, &mut e, "Redo draft");
-    assert_eq!((shown(&e), depth(&e)), (resized.clone(), (2, 0)));
-
-    // A press that does not move is no step and keeps the Redo.
-    press_button(&ctx, &mut e, "Undo draft");
-    let at = handle(&ctx, &mut e, Handle::Outer);
-    press(&ctx, &mut e, at);
-    release(&ctx, &mut e, at);
-    assert_eq!((shown(&e), depth(&e)), (centred, (1, 1)));
-    press_button(&ctx, &mut e, "Redo draft");
-
-    // Create hands the job exactly the circle the canvas shows.
-    press_button(&ctx, &mut e, CREATE_CIRCLE);
-    let NewDocument::CircleExtrude(c) = e.take_request().expect("one request") else {
-        panic!("not a circle");
-    };
-    assert_eq!(
-        c,
-        CircleExtrusion::new(
-            [
-                resized.centre[0].parse().expect("x"),
-                resized.centre[1].parse().expect("y"),
-            ],
-            radius,
-            10.,
-        )
-        .expect("valid")
-    );
-}
-
-#[test]
-fn a_new_annulus_changes_each_radius_alone_and_every_profile_keeps_its_draft() {
-    let ctx = context();
-    let mut e = Editor::default();
-    open_new(&ctx, &mut e, "Circle with hole");
-    assert_eq!(shown(&e), strings(["0", "0"], "10", Some("4")));
-    let out = frame(&ctx, &mut e, vec![]);
-    let colours: Vec<_> = circles(&out).iter().map(|c| c.2).collect();
-    assert_eq!(colours.len(), 2, "the bounding circle and the bore");
-    assert_ne!(colours[0], colours[1], "the two roles look alike");
-
-    // Outer: only the outer radius.
-    let at = handle(&ctx, &mut e, Handle::Outer);
-    let to = at + egui::vec2(12.5, 7.5);
-    drag(&ctx, &mut e, at, to);
-    let d = moved(&e, at, to);
-    let outer = (10. + d[0]).hypot(d[1]).to_string();
-    assert_eq!(shown(&e), strings(["0", "0"], &outer, Some("4")));
-    // Bore: only the inner radius, measured from the same centre, north handle.
-    let at = handle(&ctx, &mut e, Handle::Bore);
-    let to = at + egui::vec2(-6.25, -10.);
-    drag(&ctx, &mut e, at, to);
-    let d = moved(&e, at, to);
-    let bore = d[0].hypot(4. + d[1]).to_string();
-    assert_eq!(shown(&e), strings(["0", "0"], &outer, Some(&bore)));
-    // Centre: both radii keep their text.
-    let at = handle(&ctx, &mut e, Handle::Centre);
-    let to = at + egui::vec2(-20., 12.5);
-    drag(&ctx, &mut e, at, to);
-    let d = moved(&e, at, to);
-    let annulus = strings([&d[0].to_string(), &d[1].to_string()], &outer, Some(&bore));
-    assert_eq!(shown(&e), annulus);
-    assert_eq!(depth(&e), (3, 0));
-    assert_eq!(e.annulus.height, "10");
-
-    // The other profiles keep their drafts, histories and views across switches.
-    press_button(&ctx, &mut e, "Line polygon");
-    assert!(e.draft.as_ref().expect("the polygon").points.is_empty());
-    press_button(&ctx, &mut e, "Circle");
-    assert_eq!(
-        (shown(&e), depth(&e)),
-        (strings(["0", "0"], "10", None), (0, 0))
-    );
-    let at = handle(&ctx, &mut e, Handle::Outer);
-    drag(&ctx, &mut e, at, at + egui::vec2(10., 0.));
-    let circle = shown(&e);
-    assert_eq!(depth(&e), (1, 0));
-    let circle_view = e.circle_canvas.view;
-    press_button(&ctx, &mut e, "Circle with hole");
-    assert_eq!((shown(&e), depth(&e)), (annulus.clone(), (3, 0)));
-    press_button(&ctx, &mut e, "Undo draft");
-    assert_eq!(shown(&e).centre, ["0", "0"], "Undo is the annulus's own");
-    assert_eq!(depth(&e), (2, 1));
-    press_button(&ctx, &mut e, "Circle");
-    assert_eq!((shown(&e), depth(&e)), (circle, (1, 0)));
-    assert_eq!(e.circle_canvas.view, circle_view);
-    press_button(&ctx, &mut e, "Circle with hole");
-    press_button(&ctx, &mut e, "Redo draft");
-    assert_eq!(shown(&e), annulus);
-
-    // Create gets the shown annulus; Cancel ends every draft and every canvas.
-    press_button(&ctx, &mut e, CREATE_ANNULUS);
-    let NewDocument::AnnularExtrude(a) = e.take_request().expect("one request") else {
-        panic!("not an annulus");
-    };
-    let n = |s: &str| s.parse::<f64>().expect("number");
-    assert_eq!(
-        a,
-        AnnularExtrusion::new(
-            [n(&annulus.centre[0]), n(&annulus.centre[1])],
-            n(&outer),
-            n(&bore),
-            10.
-        )
-        .expect("valid")
-    );
-    press_button(&ctx, &mut e, "Cancel draft");
-    assert!(!e.active() && e.annulus_canvas.view.is_none() && e.circle_canvas.view.is_none());
 }
 
 #[test]
@@ -571,19 +382,6 @@ fn typed_unconfirmed_text_comes_back_exactly_with_the_first_undo_after_a_drag() 
     type_into(&ctx, &mut e, "Center Y", "-8");
     press_button(&ctx, &mut e, "Confirm draft numbers");
     assert_eq!(depth(&e), (3, 0), "a different number is one step");
-
-    // New: the opening numbers are the first confirmed state.
-    let ctx = context();
-    let mut e = Editor::default();
-    open_new(&ctx, &mut e, "Circle with hole");
-    type_into(&ctx, &mut e, "Inner radius", "4.0");
-    let at = handle(&ctx, &mut e, Handle::Centre);
-    drag(&ctx, &mut e, at, at + egui::vec2(10., 10.));
-    assert_eq!(depth(&e), (2, 0));
-    press_button(&ctx, &mut e, "Undo draft");
-    assert_eq!(shown(&e), strings(["0", "0"], "10", Some("4.0")));
-    press_button(&ctx, &mut e, "Undo draft");
-    assert_eq!(shown(&e), strings(["0", "0"], "10", Some("4")));
 }
 
 #[test]
@@ -822,7 +620,7 @@ fn busy_queued_covered_and_outside_presses_start_nothing_and_held_fields_take_no
                 ..Default::default()
             },
             |ui| {
-                e.draw(ui, true, false, "");
+                e.draw(ui, false, "");
                 egui::Area::new(egui::Id::new("over the canvas"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(cover.min)
@@ -1160,7 +958,6 @@ fn the_view_fits_on_opening_and_on_fit_only_and_the_form_stays_within_768_points
             |ui| {
                 e.draw(
                     ui,
-                    true,
                     false,
                     "Could not apply the change: the document changed after this form was opened",
                 )
@@ -1200,15 +997,6 @@ pub(crate) fn hold_handle(e: &mut Editor) -> (egui::Context, egui::Pos2) {
 pub(crate) fn release_handle(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
     release(ctx, e, at);
     assert!(!e.gesturing());
-}
-
-/// §31I: the open New window switched to `profile` by its own button.
-pub(crate) fn choose_profile(e: &mut Editor, profile: &str) {
-    let ctx = context();
-    for _ in 0..3 {
-        frame(&ctx, e, vec![]);
-    }
-    press_button(&ctx, e, profile);
 }
 
 /// §31I: the saved Circle form, on a kernel-free file written in `root`.

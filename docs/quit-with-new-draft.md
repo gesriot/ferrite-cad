@@ -6,7 +6,7 @@ Base after fetch: `main = origin/main = eb54c46f3d187d0c6bc1dfd183ecbb5e9110b358
 (merge PR #102), tree `62fda5660e1812c21e1182643cd5daaf9b73a5eb`, clean.
 Local branch: `quit-with-new-draft`; changes stay unstaged and uncommitted.
 
-`Creates` owns the window's New form and drawing. The saved-object Editor under
+`Creates` owns the window's New form. The saved-object Editor under
 New belongs to its tab in `Tabs::aside`. The one §30V `QuitPass` in Tabs gains a
 New question addressed by its never-reused Quit generation and `NewGeneration`.
 No New tab/session, Editor copy, second Quit machine, GUI serialisation or Apply.
@@ -15,7 +15,7 @@ No New tab/session, Editor copy, second Quit machine, GUI serialisation or Apply
 |---|---|
 | Quit over idle New | Check all foreground/gesture/I/O guards first; start the existing QuitPass with its addressed New question. Nothing moves yet. |
 | Back to New | Validate both generations and the still-current New; abort the whole pass without changing New. |
-| Discard New and continue Quit | Validate transition before taking anything. Move the whole New form/Editor into Creates' held value; worker handles stay in Creates. Mark the addressed question confirmed once. Return A's aside form, then continue §30V's form/model/switch route. |
+| Discard New and continue Quit | Validate transition before taking anything. Move the whole New form into Creates' held value; worker handles stay in Creates. Mark the addressed question confirmed once. Return A's aside form, then continue §30V's form/model/switch route. |
 | Late Cancel or any refusal | Tabs aborts and returns every tab Draft. Restore the shown tab's form, then set it aside before moving New back from Creates. New is window-owned: on late Cancel at B it appears above B; A's form remains with hidden A, B's form is aside. No form is overwritten. |
 | First LastTabs error | Existing §30R abort policy, then exactly the same whole-New restoration. The next Quit asks again; the existing second-error exit policy is unchanged. |
 | Successful final Quit | LastTabs publication/announced second refusal precedes tab/recovery retirement and final destruction of held New. |
@@ -25,7 +25,7 @@ No New tab/session, Editor copy, second Quit machine, GUI serialisation or Apply
 | Empty window with New | Same question; Back returns New, confirmation can reach ordinary empty-window Exit. No fake tab. |
 
 The prompt says **Back to New / Discard New and continue Quit**, names the typed
-choices/sizes or drawn sketch being given up, explains that destruction waits for
+choices and sizes being given up, explains that destruction waits for
 successful Quit and that already published Saves stay saved. Nothing is created,
 applied or written from New by a Quit answer.
 
@@ -60,20 +60,19 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
 1. A: Apply height `18`, reopen height and leave literal ` 26x `. Open B;
    Apply its extrusion height `22`; Edit Circle → centre `-3.5`, `4.25`,
    radius `8`. Confirm draft numbers, Undo/Redo without Apply. Return to A.
-2. **Create sketch + Extrude…** over A's form. Line polygon: add `(0,0)`,
-   `(20,0)`, `(20,10)`, height `10`. In the first vertex X type `1e999x`,
-   then ` 33.0 `; Undo to the invalid value, leaving history both ways.
+2. Press **New…** over A's form. Choose **Sample plate**, enter width ` 50x `,
+   depth ` 30.0 ` and height ` 7e0 `, then switch to **Empty**.
 3. Cmd+Q → **Discard New and continue Quit** → confirm A's form → **Save**.
    B is shown; confirm its form → **Cancel** at B's dirty-model question.
    Require A clean at accepted 18, B still dirty at accepted 22, both tabs
-   present, New returned above B. Its Undo/Redo must work. A's hidden literal
-   form and B's set-aside form must remain owned. A fresh Cmd+Q → **Back to New**
-   cancels the whole attempt and changes no typed value.
-4. On returned New, Redo to ` 33.0 `, Undo back to `1e999x`, Undo back to `0`
-   (use as many history steps as the actual text entry made). Close contour →
-   **Create new document**. A third Untitled appears. Save As `n-created.fcad`;
-   Apply its extrusion height `7`; export `n-unsaved.stl` and `n-unsaved.fbx`
-   before Save; Save As `n.fcad`.
+   present, New returned above B. Switch to **Sample plate** to check the literal
+   fields, then back to **Empty**. A fresh Cmd+Q → **Back to New** returns to this form.
+4. Create the empty document. In the new tab choose **New sketch…**, select XY
+   and draw a closed triangle with **Line** and the 1 mm grid. Its points in order
+   are `(0,0)`, `(20,0)`, `(20,10)`, then `(0,0)`. Press **Finish**, select
+   the sketch and apply **Extrude…** at 10 mm. Save As `n-created.fcad`;
+   apply height `7`, export `n-unsaved.stl` and `n-unsaved.fbx` before Save,
+   then Save As `n.fcad`.
 5. Return to B: the exact pending Circle numbers and its own draft Undo/Redo
    remain. Return to A: literal ` 26x ` is back. Correct to `26` → Apply;
    export `a-unsaved.stl` and `a-unsaved.fbx` before Save. Reopen height and

@@ -2,6 +2,9 @@
 
 **Status:** accepted.
 
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form.
+The window creates sketches in the viewport and applies a sweep to the accepted sketch.
+
 ## Problem
 
 A viewport drawing can contain any supported sketch geometry, while the older
