@@ -12,6 +12,64 @@ fn native() -> bool {
     ])
 }
 
+#[test]
+#[cfg(not(feature = "planegcs"))]
+fn native_without_solver_saved_circle_has_no_radius_edit() {
+    if !ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
+        return;
+    }
+    assert!(!ferritecad_eval::solver_available());
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("circle.fcad");
+    crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
+    let before = std::fs::read(&path).expect("source bytes");
+    let mut w = open(&path, Drawn::Native);
+    let source = w.scene.edit_source.as_ref().expect("source");
+    let sketch = source.built_sketches[0];
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click(&mut w, point(23., -7.25), false);
+    let editor = &w.creates.sketch.viewport;
+    let draft = editor.draft.as_ref().expect("open draft");
+    let saved = draft.state.curves.clone();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].geometry,
+        SketchGeometry::Circle {
+            center: point(12.5, -7.25),
+            radius: 10.5,
+        }
+    );
+    assert_eq!(draft.state.selected, vec![Selection::Curve(saved[0].id)]);
+    assert!(draft.state.constraints.is_empty());
+    for button in [rules::Button::Radius, rules::Button::Diameter] {
+        assert_eq!(
+            button.rule(
+                &saved,
+                &draft.state.selected,
+                ferritecad_eval::solver_available()
+            ),
+            Err("This build has no sketch solver, so constraints cannot be added.".into())
+        );
+    }
+    for label in ["Radius", "Diameter"] {
+        ui.press(&mut w, label, false);
+        let draft = w
+            .creates
+            .sketch
+            .viewport
+            .draft
+            .as_ref()
+            .expect("open draft");
+        assert_eq!(draft.state.curves, saved);
+        assert!(draft.state.constraints.is_empty());
+        assert!(draft.undo.is_empty());
+    }
+    ui.press(&mut w, "Finish", false);
+    assert!(w.creates.sketch.viewport.take_request().is_none());
+    assert_eq!(std::fs::read(&path).expect("source bytes"), before);
+}
+
 const CORNERS: [[f64; 2]; 4] = [[-30., -20.], [30., -20.], [30., 20.], [-30., 20.]];
 const MIDS: [[f64; 2]; 4] = [[0., -20.], [30., 0.], [0., 20.], [-30., 0.]];
 fn constraint_count(w: &Window) -> usize {
