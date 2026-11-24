@@ -1045,68 +1045,6 @@ pub(crate) fn press_on_form(e: &mut Editor, label: &str) {
     press_button(&ctx, e, label);
 }
 
-/// §31I: the saved Circle form on `path`, its centre and radius dragged by real
-/// events (fractional, diagonal), then **Apply circle**: the form and its request,
-/// whose numbers are exactly the strings the canvas wrote.
-pub(crate) fn dragged_circle_apply(
-    path: &std::path::Path,
-    reading: &ExtrudeEditSource,
-    sketch: ferritecad_types::ObjectId,
-) -> (Editor, EditRequest) {
-    let mut e = Editor::default();
-    e.set_session(true, false, true);
-    e.set_analytic_apply(true);
-    assert!(e.begin_circle_edit(path, reading, sketch));
-    drag_role(&mut e, "centre", egui::vec2(-31.25, 18.75));
-    drag_role(&mut e, "outer", egui::vec2(-12.5, -9.75));
-    let typed = shown(&e);
-    press_on_form(&mut e, "Apply circle");
-    let request = e.take_apply_circle_request().expect("Apply circle asked");
-    let n = |s: &str| s.parse::<f64>().expect("a number");
-    assert_eq!(
-        (
-            crate::transaction_tests::circle(&request).center_mm,
-            crate::transaction_tests::circle(&request).radius_mm
-        ),
-        ([n(&typed.centre[0]), n(&typed.centre[1])], n(&typed.outer)),
-        "the request is not what the canvas wrote"
-    );
-    (e, request)
-}
-
-/// §31I: the same for a saved annulus: its centre, outer and bore radius dragged.
-pub(crate) fn dragged_annulus_apply(
-    path: &std::path::Path,
-    reading: &ExtrudeEditSource,
-    sketch: ferritecad_types::ObjectId,
-) -> (Editor, EditRequest) {
-    let mut e = Editor::default();
-    e.set_session(true, false, true);
-    e.set_analytic_apply(true);
-    assert!(e.begin_annulus_edit(path, reading, sketch));
-    drag_role(&mut e, "centre", egui::vec2(-31.25, 18.75));
-    drag_role(&mut e, "outer", egui::vec2(-12.5, -9.75));
-    drag_role(&mut e, "bore", egui::vec2(-7.25, 4.5));
-    let typed = shown(&e);
-    press_on_form(&mut e, "Apply annulus");
-    let request = e.take_apply_annulus_request().expect("Apply annulus asked");
-    let n = |s: &str| s.parse::<f64>().expect("a number");
-    assert_eq!(
-        (
-            crate::transaction_tests::annulus(&request).center_mm,
-            crate::transaction_tests::annulus(&request).outer_radius_mm,
-            crate::transaction_tests::annulus(&request).inner_radius_mm
-        ),
-        (
-            [n(&typed.centre[0]), n(&typed.centre[1])],
-            n(&typed.outer),
-            n(typed.bore.as_deref().expect("bore"))
-        ),
-        "the request is not what the canvas wrote"
-    );
-    (e, request)
-}
-
 /// §31I: the form drawn a few frames, as a window shows it: its canvas has fitted.
 pub(crate) fn settle_form(e: &mut Editor) {
     let ctx = context();

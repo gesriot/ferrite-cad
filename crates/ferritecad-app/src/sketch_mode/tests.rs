@@ -503,6 +503,7 @@ mod buttons;
 mod constraint_widgets;
 mod gpu;
 mod prediction;
+pub(crate) mod round_edits;
 pub(crate) mod widgets;
 pub(crate) mod window;
 

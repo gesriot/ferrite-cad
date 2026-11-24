@@ -41,7 +41,7 @@ fn event(w: &mut Window, event: E) {
         .viewport
         .route(&mut w.input, event, false, true, false);
 }
-fn movement(w: &mut Window, target: Point2) -> Point2 {
+pub(super) fn movement(w: &mut Window, target: Point2) -> Point2 {
     let frame = d(w).planes[d(w).plane].frame.expect("built plane");
     let pixel = geometry::screen(w.input.camera(), frame, target).expect("on screen");
     let window = w.input.region().window((pixel[0] as f32, pixel[1] as f32));
@@ -56,14 +56,14 @@ fn movement(w: &mut Window, target: Point2) -> Point2 {
     geometry::point_on_plane(w.input.camera(), [f64::from(x), f64::from(y)], frame)
         .expect("actual pointer on plane")
 }
-fn frame(w: &mut Window) {
+pub(super) fn frame(w: &mut Window) {
     assert!(w.creates.sketch.viewport.take_hover(&mut w.input));
 }
-fn press(w: &mut Window, target: Point2) {
+pub(super) fn press(w: &mut Window, target: Point2) {
     movement(w, target);
     event(w, E::PointerPressed(PointerButton::Primary));
 }
-fn release(w: &mut Window) {
+pub(super) fn release(w: &mut Window) {
     event(w, E::PointerReleased(PointerButton::Primary));
     frame(w);
 }

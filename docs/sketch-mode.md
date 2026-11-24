@@ -78,6 +78,9 @@ width; the stored rule is a radius. A dimension driven by an expression shows it
 source instead: edit it in **Parameters**. Click a marker to select a geometric rule.
 The selected marker or dimension is highlighted like a selected curve.
 
+To change a radius without retaining a dimension, set **Radius**, then delete the
+dimension before **Finish**; this requires the sketch solver.
+
 Each rule change solves the draft immediately. The panel reports remaining degrees of
 freedom and redundant rules. If the solver refuses, the message and any conflicting
 rules appear below the controls; the drawing and its Undo history stay as they were.

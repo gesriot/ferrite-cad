@@ -24,7 +24,7 @@ surviving commands.
 | --- | --- |
 | Repair a failed sketch from its stored rows without a drawing | Undo the breaking edit or remove the offending constraint through CLI `edit`. |
 | Type arbitrary unconstrained coordinates and radii | Use the grid for placement, Distance, Radius or Diameter for dimensions, and Fix for a point. |
-| Resize a saved circle by dragging its rim | Set a Radius or Diameter dimension. |
+| Resize a saved circle by dragging its rim | Set a Radius or Diameter dimension. Without the solver these dimensions are unavailable; until rim dragging is implemented, change the radius through CLI `edit`. |
 | Drag both ends at a polyline corner as one vertex | Select both endpoints and make them Coincident to move them together. |
 | Offset from a midpoint or intersection using a typed temporary length | Viewport guides start at the preceding vertex or the point at the press. |
 | Disable only snapping to objects | A nearby object takes priority over guides and grid. |

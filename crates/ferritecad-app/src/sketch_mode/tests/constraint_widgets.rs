@@ -70,6 +70,104 @@ fn native_without_solver_saved_circle_has_no_radius_edit() {
     assert_eq!(std::fs::read(&path).expect("source bytes"), before);
 }
 
+#[test]
+fn native_temporary_radius_matches_the_exact_cli_geometry_without_saved_constraints() {
+    if !native() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("circle.fcad");
+    crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
+    let mut w = open(&path, Drawn::Native);
+    let source = w.scene.edit_source.as_ref().expect("source");
+    let sketch = source.built_sketches[0];
+    let version = source.version;
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click(&mut w, point(23., -7.25), false);
+    let saved = w
+        .creates
+        .sketch
+        .viewport
+        .draft
+        .as_ref()
+        .expect("draft")
+        .state
+        .curves[0]
+        .clone();
+
+    // The peer writes its own literal, not a number copied from the solved draft.
+    let changes = vec![EditChange::SetCurveGeometry {
+        sketch,
+        curve: saved.id,
+        geometry: SketchGeometry::Circle {
+            center: point(12.5, -7.25),
+            radius: 6.75,
+        },
+    }];
+    let input = root.path().join("radius.json");
+    std::fs::write(
+        &input,
+        ferritecad_fixtures::edit_request_json(&changes).to_string(),
+    )
+    .expect("CLI request");
+    let peer = root.path().join("cli.fcad");
+    let output = std::process::Command::new(crate::creates::tests::ferritecad())
+        .arg("edit")
+        .arg(&path)
+        .args(["--expect-version", &version.content.to_string()])
+        .arg("--request")
+        .arg(&input)
+        .arg("-o")
+        .arg(&peer)
+        .output()
+        .expect("CLI edit");
+    assert!(output.status.success(), "{output:?}");
+    let peer_document = ferritecad_document::Document::open_read_only(&peer).expect("CLI document");
+    let ferritecad_document::ObjectPayload::Sketch(peer_sketch) = peer_document
+        .object(sketch)
+        .expect("object")
+        .expect("sketch")
+        .payload
+    else {
+        panic!("the CLI keeps the sketch");
+    };
+    assert!(peer_sketch.constraints.is_empty());
+    assert_eq!(peer_sketch.curves[0].id, saved.id);
+
+    press_rule(&mut ui, &mut w, "Radius");
+    ui.type_value(&mut w, "10.5", "6.75");
+    ui.press(&mut w, "Set", false);
+    let dimension = w
+        .creates
+        .sketch
+        .viewport
+        .draft
+        .as_ref()
+        .expect("draft")
+        .state
+        .constraints[0]
+        .id;
+    click_label(&mut w, &mut ui, dimension);
+    ui.key(&mut w, egui::Key::Delete);
+    let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+    assert!(draft.state.constraints.is_empty());
+    assert_eq!(draft.state.curves, peer_sketch.curves);
+    let request = finish(&mut w, &mut ui);
+    assert_eq!(request.changes, changes);
+    assert!(apply(&mut w, request));
+    let accepted = w.sessions.export_path().expect("accepted document");
+    let document = ferritecad_document::Document::open_read_only(&accepted).expect("document");
+    assert_eq!(
+        document
+            .object(sketch)
+            .expect("object")
+            .expect("sketch")
+            .payload,
+        ferritecad_document::ObjectPayload::Sketch(peer_sketch)
+    );
+}
+
 const CORNERS: [[f64; 2]; 4] = [[-30., -20.], [30., -20.], [30., 20.], [-30., 20.]];
 const MIDS: [[f64; 2]; 4] = [[0., -20.], [30., 0.], [0., 20.], [-30., 0.]];
 fn constraint_count(w: &Window) -> usize {
@@ -84,7 +182,7 @@ fn constraint_count(w: &Window) -> usize {
         .len()
 }
 
-fn press_rule(ui: &mut Ui, w: &mut Window, label: &str) {
+pub(super) fn press_rule(ui: &mut Ui, w: &mut Window, label: &str) {
     let n = constraint_count(w);
     ui.press(w, label, false);
     assert_eq!(
@@ -257,7 +355,7 @@ fn saved_distance_changes_the_width_to_eighty_through_the_value_field() {
     assert!(apply(&mut w, request));
 }
 
-fn click_label(w: &mut Window, ui: &mut Ui, id: StableEntityId) {
+pub(super) fn click_label(w: &mut Window, ui: &mut Ui, id: StableEntityId) {
     let editor = &mut w.creates.sketch.viewport;
     let camera = w.input.camera();
     let region = w.input.region();
