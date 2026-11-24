@@ -47,8 +47,11 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
 ```
 
 1. In A, Edit extrusion → height `18` → Apply. Reopen height and type ` 26x `,
-   including both spaces. Open B; Edit Circle → centre `-3.5`, `4.25`, radius `8`.
-   Use its draft Undo/Redo and leave the values unapplied. New → Empty → Create
+   including both spaces. Open B. Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet.
+   Use its draft Undo/Redo and leave it unfinished. New → Empty → Create
    makes C an Untitled tab while retaining B's form.
 2. Show A; Cmd+Q. The question names A and the unapplied values. **Discard form
    and continue Quit** → **Save** writes accepted 18. B is shown before its form

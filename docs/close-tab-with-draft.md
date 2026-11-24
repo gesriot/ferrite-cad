@@ -95,7 +95,7 @@ below record the original verification; current CI has no per-test gates.
 (`FCAD_30U_NATIVE_EXECUTED volume_a=83200.000 all_SQL_cells=true`). The native
 scenario applies 18 to A, keeps its separate invalid ` 26x ` form through Close
 and model Cancel, applies 26, exports, and saves/closes over a new ` 99x ` form.
-B keeps its own literal Circle form, original base, and unchanged file. Close
+B keeps its own circle drawing and draft history, original base, and unchanged file. Close
 happens after publication; only A's private files and recovery record disappear.
 
 The comparator checks every SQL cell except `meta.modified_at`, every original
@@ -181,7 +181,10 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
 
 1. In A, Edit extrusion → select its extrusion → height `18` → Apply. Open
    another height form and type ` 26x `, including the surrounding spaces.
-2. Open B. Edit Circle → centre `-3.5`, `4.25`, radius `8`; leave it unapplied.
+2. Open B. Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet. Leave the draft unfinished.
 3. Press × on hidden A. It is shown first, then the form question names A.
    **Back to form**: exact ` 26x ` returns. × again → **Discard form and continue
    Close** → **Cancel** on the unsaved-model question: exact ` 26x ` returns, A

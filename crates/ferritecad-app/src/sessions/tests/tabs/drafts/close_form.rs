@@ -388,8 +388,8 @@ pub(super) fn form_families(quit: bool) {
     let circle = root.path().join("circle.fcad");
     let annulus = root.path().join("annulus.fcad");
     let sector = root.path().join("sector.fcad");
-    crate::sketch::tests::analytic_apply::write_round(&circle, [1., 2.], &[10.], 12., false);
-    crate::sketch::tests::analytic_apply::write_round(&annulus, [1., 2.], &[10., 4.], 12., false);
+    crate::feature_tests::write_round(&circle, [1., 2.], &[10.], 12., false);
+    crate::feature_tests::write_round(&annulus, [1., 2.], &[10., 4.], 12., false);
     crate::constraints::tests::revolve::write_sector(
         &sector,
         &crate::sketch::tests::angle_apply::RADIAL,
@@ -426,12 +426,12 @@ pub(super) fn form_families(quit: bool) {
                 w.creates.sketch = crate::sketch::tests::typed_apply(
                     path,
                     &reading,
-                    reading.sketches[0].sketch,
+                    crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
                     "33",
                     " 41.25 ",
                 )
                 .0;
-                crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
+                crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
             }
             "constraints" => {
                 w.constraints_draft(1, 3);
@@ -440,7 +440,7 @@ pub(super) fn form_families(quit: bool) {
                 w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
                     path,
                     &reading,
-                    reading.circle_sketches[0].sketch,
+                    crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
                     [" 3.0 ", "-2"],
                     " 11.0 ",
                 )
@@ -450,7 +450,7 @@ pub(super) fn form_families(quit: bool) {
                 w.creates.sketch = crate::sketch::tests::analytic_apply::typed_annulus(
                     path,
                     &reading,
-                    reading.annulus_sketches[0].sketch,
+                    crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
                     ["-2", " 3.0 "],
                     " 11.0 ",
                     " 3.0 ",
@@ -812,7 +812,7 @@ fn close_recipe(root: &Path) {
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,
-        reading.circle_sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         ["-3.5", "4.25"],
         "8",
     )
@@ -1094,16 +1094,16 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     kept(&w);
     crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
     // §31J: and a pan of its view.
-    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
+    crate::sketch::navigation_tests::hold_camera(&mut w.input);
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
-    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
+    crate::sketch::navigation_tests::release_camera(&mut w.input);
     w.creates.sketch.dismiss();
-    assert!(
-        w.creates
-            .sketch
-            .begin_edit(&source, &reading, reading.sketches[0].sketch)
-    );
+    assert!(w.creates.sketch.begin_test_drawing(
+        &source,
+        &reading,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading)
+    ));
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);

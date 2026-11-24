@@ -34,7 +34,7 @@ Chamfer histories) and **one analytic Circle**. Not covered, and stated as such 
 The drawing is `SketchPresentation` — the curves, with their `StableEntityId`s, in the document's order,
 at the coordinates **the rebuild built the profile from** (solved when the Sketch has constraints, the
 stored ones when it has none) — produced by the same one rebuild as the picture
-(`LoadedScene.sketch_presentations`, [analytic-sketch-canvas.md](analytic-sketch-canvas.md) and the
+(`LoadedScene.sketch_presentations`, [sketch mode](sketch-mode.md) and the
 presentation module of `ferritecad-eval`). It is read through the type `ferritecad-scene` already
 re-exports; the app's dev-dependency on `ferritecad-eval` is not promoted. Nothing is re-read from the
 `.fcad`, no solver is asked, no arc or circle is rebuilt from a mesh.

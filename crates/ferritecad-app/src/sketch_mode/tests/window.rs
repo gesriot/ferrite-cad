@@ -668,6 +668,73 @@ fn mode_uses_existing_availability_tab_parking_close_and_quit_questions() {
 }
 
 #[test]
+fn saved_polygon_circle_and_annulus_offer_no_retired_editors_in_tree_menu_or_workspace() {
+    use ferritecad_ui::ModelEdit;
+    for curves in [
+        vec![
+            line([0., 0.], [10., 0.]),
+            line([10., 0.], [10., 10.]),
+            line([10., 10.], [0., 10.]),
+            line([0., 10.], [0., 0.]),
+        ],
+        vec![curve(SketchGeometry::Circle {
+            center: point(0., 0.),
+            radius: 10.,
+        })],
+        vec![
+            curve(SketchGeometry::Circle {
+                center: point(0., 0.),
+                radius: 10.,
+            }),
+            curve(SketchGeometry::Circle {
+                center: point(0., 0.),
+                radius: 5.,
+            }),
+        ],
+    ] {
+        let f = fixtures::Drawing::new(curves, false);
+        let mut w = open(&f.path, Drawn::Mock);
+        let source = w.scene.edit_source.as_ref().expect("source");
+        let row = (f.sketch, None, None);
+        assert_eq!(
+            commands::actions(source, row),
+            vec![
+                ModelEdit::Sketch,
+                ModelEdit::Extrude,
+                ModelEdit::Revolve,
+                ModelEdit::Constraints,
+            ]
+        );
+        // The tree buttons and context menu use this same catalogue.
+        let offers = commands::offers(source, row, Ok(commands::Access::Idle));
+        let retired = [
+            "Edit vertices…",
+            "Edit circle…",
+            "Edit annulus…",
+            "Restore saved vertices",
+            "Save edited copy…",
+        ];
+        for label in retired {
+            assert!(!offers.iter().any(|offer| offer.label == label), "{label}");
+        }
+        commands::select_row(source, w.tabs.model_navigation(w.sessions.tab()), row);
+        let mut ui = Ui::new(&mut w);
+        for label in retired {
+            assert!(
+                !text(&ui.settle(&mut w)).iter().any(|word| word == label),
+                "{label}"
+            );
+        }
+        enter(&mut w, f.sketch, ModelEdit::Sketch);
+        let labels = text(&ui.settle(&mut w));
+        assert!(labels.iter().any(|word| word == "Finish"));
+        for label in retired {
+            assert!(!labels.iter().any(|word| word == label), "{label}");
+        }
+    }
+}
+
+#[test]
 fn catalogue_offers_mode_only_for_accepted_drawings_and_new_sketch_only_for_planes() {
     for curves in [
         vec![],

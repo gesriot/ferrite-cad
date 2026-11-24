@@ -46,15 +46,13 @@ impl Window {
     }
     fn tell(&mut self) {
         self.creates.sketch.set_angle_apply(self.ready());
-        self.creates
-            .sketch
-            .set_session(true, false, self.sessions.dirty());
+        self.creates.sketch.set_session(true, self.sessions.dirty());
     }
     fn form(&mut self) -> &mut Editor {
         &mut self.creates.sketch
     }
 }
-fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
     crate::constraints::tests::revolve::write_sector(&path, &RADIAL, 137.5);
@@ -112,7 +110,7 @@ pub(crate) fn typed_angle(
     );
     assert!(ready, "the form's own Apply must be available in idle");
     creates.sketch.set_angle_apply(ready);
-    creates.sketch.set_session(true, false, sessions.dirty());
+    creates.sketch.set_session(true, sessions.dirty());
     let ctx = egui::Context::default();
     settle(&ctx, &mut creates.sketch);
     type_angle(&ctx, &mut creates.sketch, value);
@@ -321,8 +319,8 @@ fn angle_apply_requires_its_own_form_and_session_and_supported_kind() {
     let (_root, path, reading) = fixture();
     let mut w = Window::open(&path);
     assert!(!w.ready());
-    let sketch = reading.sketches[0].sketch;
-    assert!(w.form().begin_edit(&path, &reading, sketch));
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+    assert!(w.form().begin_test_drawing(&path, &reading, sketch));
     assert!(!w.ready());
     w.form().dismiss();
     assert!(

@@ -87,13 +87,13 @@ impl Window {
                 7.
             );
             assert_eq!(
-                reading.sketches[0]
-                    .vertices
-                    .as_ref()
-                    .expect("vertices")
-                    .iter()
-                    .map(|v| v.start_mm)
-                    .collect::<Vec<_>>(),
+                crate::transaction_tests::stored_vertices(
+                    &reading,
+                    crate::transaction_tests::line_sketch(&reading)
+                )
+                .iter()
+                .map(|v| v.start_mm)
+                .collect::<Vec<_>>(),
                 vec![[0., 0.], [50., 0.], [50., 30.], [0., 30.]]
             );
         } else {
@@ -217,13 +217,13 @@ fn finish_returned_triangle(w: &mut Window) {
     let reading =
         crate::sketch_facts::read(&w.sessions.export_path().expect("New model")).expect("read");
     assert_eq!(
-        reading.sketches[0]
-            .vertices
-            .as_ref()
-            .expect("vertices")
-            .iter()
-            .map(|v| v.start_mm)
-            .collect::<Vec<_>>(),
+        crate::transaction_tests::stored_vertices(
+            &reading,
+            crate::transaction_tests::line_sketch(&reading)
+        )
+        .iter()
+        .map(|v| v.start_mm)
+        .collect::<Vec<_>>(),
         vec![[0., 0.], [20., 0.], [20., 10.]]
     );
     assert_eq!(
@@ -827,14 +827,18 @@ fn idle_new_transition_checks_foreground_and_gestures_before_taking_any_form() {
     w.answer_new(NewChoice::Cancel);
     let source = w.sessions.export_path().expect("saved model");
     let reading = crate::sketch_facts::read(&source).expect("model");
-    let sketch = reading.sketches[0].sketch;
-    assert!(w.creates.sketch.begin_edit(&source, &reading, sketch));
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+    assert!(
+        w.creates
+            .sketch
+            .begin_test_drawing(&source, &reading, sketch)
+    );
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "a held vertex keeps the transition");
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
-    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
+    crate::sketch::navigation_tests::hold_camera(&mut w.input);
     assert!(!w.begin_quit(), "a held canvas pan keeps the transition");
-    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
+    crate::sketch::navigation_tests::release_camera(&mut w.input);
 }
 
 #[test]
@@ -852,12 +856,12 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     w.creates.sketch = crate::sketch::tests::typed_apply(
         &source,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     )
     .0;
-    let saved = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("saved Sketch");
+    let saved = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("saved Sketch");
     w.open(&b_file);
     let b = w.sessions.tab();
     w.open_height_form();
@@ -865,7 +869,7 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     open_empty_form(&mut w);
     w.hold_quit_new();
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(saved.clone()),
         "shared Editor lost underlying saved Sketch"
     );
@@ -878,17 +882,17 @@ fn new_contour_over_saved_sketch_returns_both_editors_with_functional_history() 
     finish_returned_triangle(&mut w);
     w.round(a);
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(saved.clone())
     );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
     assert_ne!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(saved.clone())
     );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Redo");
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(saved)
     );
 }
@@ -1108,7 +1112,7 @@ fn native_new_recipe(root: &Path) {
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,
-        reading.circle_sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         ["-3.5", "4.25"],
         "8",
     )
@@ -1163,8 +1167,8 @@ fn native_new_recipe(root: &Path) {
         "B form overwritten by New"
     );
     // Undo/Redo restored B's own draft, independently of the New history.
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Redo");
     assert_eq!(format!("{:?}", w.creates.sketch), b_form);
     w.round(a);
     assert_eq!(

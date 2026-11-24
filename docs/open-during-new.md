@@ -317,8 +317,9 @@ The generator writes only the inputs: `a.fcad` (CLI sample 80×40×12), `b.fcad`
 centre 12.5, −7.25, r 10.5, h 15.25), pristine copies in `inputs/`, an empty `recovery/`
 and `facts.json`. It refuses a root inside a checkout and makes no window output.
 
-1. `a.fcad` opens. **Edit Sketch…** → replace both `80` with `90` → **Apply vertices**
-   (`*a.fcad`).
+1. `a.fcad` opens. Select its sketch and **Edit sketch…**. Set grid **0.1 mm**,
+   guides **Off**; move each endpoint at X `80` to X `90`, preserving Y.
+   Press **Finish** (`*a.fcad`).
 2. **Edit extrusion…** → choose the extrusion → type `2..6`. Do not Apply.
 3. **New** → **Sample plate** → Width `50x`, Depth ` 30 `, Height `7`. Do not press
    **Create document**. **Open…** is enabled.

@@ -254,7 +254,7 @@ fn add_fillet_busy_guard_proves_idle_request_then_excludes_other_work_and_forms(
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
-            .begin_edit(&path, &reading, selected(&reading, 0).profile)
+            .begin_test_drawing(&path, &reading, selected(&reading, 0).profile)
     );
     assert!(!ready(&c, &s));
     let mut c = creates::Creates::default();

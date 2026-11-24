@@ -1157,11 +1157,10 @@ impl Window {
     fn apply_circle(&mut self, center: [f64; 2], radius: f64) {
         let reading = crate::sketch_facts::read(&self.sessions.export_path().expect("shown"))
             .expect("reading");
-        let choice = &reading.circle_sketches[0];
-        let circle = choice.circle.as_ref().expect("a supported circle");
-        let (sketch, expected) = (choice.sketch, reading.version);
+        let (sketch, circle) = crate::transaction_tests::stored_circle(&reading);
+        let expected = reading.version;
         let changes = vec![
-            crate::sketch_transactions::circle_change(sketch, circle.curve_id, center, radius)
+            crate::transaction_tests::circle_change(sketch, circle.curve_id, center, radius)
                 .expect("circle"),
         ];
         let (tx, rx) = mpsc::channel();
@@ -1181,15 +1180,14 @@ impl Window {
 /// The circle's own numbers as the document stores them.
 fn circle_of(path: &Path) -> ([f64; 2], f64, f64) {
     let reading = crate::sketch_facts::read(path).expect("reading");
-    let circle = reading.circle_sketches[0]
-        .circle
-        .clone()
-        .expect("a supported circle");
-    (
-        circle.center_mm,
-        circle.radius_mm,
-        circle.height_mm.expect("extrusion height"),
+    let (_, circle) = crate::transaction_tests::stored_circle(&reading);
+    let height = ferritecad_fixtures::expression_slot(
+        &reading,
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
     )
+    .expression
+    .value();
+    (circle.center_mm, circle.radius_mm, height)
 }
 
 /// Two small real models in two tabs: Apply alternates between them, Undo, Redo
@@ -1247,16 +1245,14 @@ fn native_two_tabs_alternate_applies_undo_restore_exports_and_saves_like_the_com
         ])
     };
     let b_reading = crate::sketch_facts::read(&b_file).expect("b");
-    let b_curve = b_reading.circle_sketches[0]
-        .circle
-        .as_ref()
-        .expect("circle")
+    let b_curve = crate::transaction_tests::stored_circle(&b_reading)
+        .1
         .curve_id;
     let request = user.join("b-request.json");
     std::fs::write(
         &request,
-        ferritecad_fixtures::edit_request_json(&[crate::sketch_transactions::circle_change(
-            b_reading.circle_sketches[0].sketch,
+        ferritecad_fixtures::edit_request_json(&[crate::transaction_tests::circle_change(
+            crate::sketch_mode::tests::curve_edits::sketch_id(&b_reading),
             b_curve,
             [-3.5, 4.25],
             8.0,
@@ -1474,6 +1470,23 @@ fn make_inputs(root: &Path) {
 
 /// The command line's copies of what the recipe makes of each input.
 fn peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
+    peers_with_circle(inputs, work, [-3.5, 4.3], draft_circle_radius())
+}
+fn draft_circle_radius() -> f64 {
+    // Without a solver the viewport moves the centre but cannot yet resize the rim.
+    if ferritecad_eval::solver_available() {
+        8.
+    } else {
+        10.5
+    }
+}
+
+fn peers_with_circle(
+    inputs: &Path,
+    work: &Path,
+    center: [f64; 2],
+    radius: f64,
+) -> (PathBuf, PathBuf) {
     let a = inputs.join("a.fcad");
     let reading = crate::sketch_facts::read(&a).expect("a");
     let a_peer = work.join("a-peer.fcad");
@@ -1502,16 +1515,13 @@ fn peers(inputs: &Path, work: &Path) -> (PathBuf, PathBuf) {
     };
     let b = inputs.join("b.fcad");
     let reading = crate::sketch_facts::read(&b).expect("b");
-    let choice = &reading.circle_sketches[0];
-    let curve = choice.circle.as_ref().expect("circle").curve_id;
+    let (sketch, circle) = crate::transaction_tests::stored_circle(&reading);
+    let curve = circle.curve_id;
     let request = work.join("b-request.json");
     std::fs::write(
         &request,
-        ferritecad_fixtures::edit_request_json(&[crate::sketch_transactions::circle_change(
-            choice.sketch,
-            curve,
-            [-3.5, 4.25],
-            8.0,
+        ferritecad_fixtures::edit_request_json(&[crate::transaction_tests::circle_change(
+            sketch, curve, center, radius,
         )
         .expect("geometry")])
         .to_string(),
@@ -1627,7 +1637,7 @@ fn compare_gui(root: &Path) {
     );
     let (_, height, volume) = stl_facts(&a_stl);
     assert!((height - 26.0).abs() < 1e-4 && (volume - 80.0 * 40.0 * 26.0).abs() < 1e-2);
-    super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
+    super::analytic::assert_round(&b_stl, [-3.5, 4.3], draft_circle_radius(), None, 15.25);
 
     // Every unsaved tab was decided at Quit: nothing is left to recover.
     let store = RecoveryStore::open(&root.join("recovery")).expect("store");
@@ -1776,7 +1786,7 @@ fn native_tabs_scenario_on_session_files_passes_the_comparator_and_its_controls(
     // 4–5: B opens in a new tab with no question; its circle is changed.
     assert_eq!(w.open(&b_file), Opening::Load);
     let b = w.sessions.tab();
-    w.apply_circle([-3.5, 4.25], 8.0);
+    w.apply_circle([-3.5, 4.3], draft_circle_radius());
     // 6: back to A: 26, Undo, Redo, Restore A 12, Undo; unsaved exports.
     w.switch(a);
     w.apply(26.0);

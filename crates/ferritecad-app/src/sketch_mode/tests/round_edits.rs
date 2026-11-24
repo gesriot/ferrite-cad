@@ -22,6 +22,26 @@ pub(crate) fn edit(
     } else {
         Drawn::Mock
     };
+    edit_in(
+        path,
+        sketch,
+        center,
+        radii,
+        navigate,
+        after_navigation,
+        drawn,
+    )
+}
+
+fn edit_in(
+    path: &Path,
+    sketch: ObjectId,
+    center: [f64; 2],
+    radii: &[f64],
+    navigate: bool,
+    after_navigation: impl FnOnce(),
+    drawn: Drawn,
+) -> (Window, EditRequest) {
     let mut w = open(path, drawn);
     enter(&mut w, sketch, ModelEdit::Sketch);
     let mut ui = Ui::new(&mut w);
@@ -113,7 +133,7 @@ pub(crate) fn edit(
     }
     // Dimensions need the solver; the viewport has no circle-rim drag yet.
     ui.press(&mut w, "Off", false);
-    ui.press(&mut w, "1 mm", false);
+    ui.press(&mut w, "0.1 mm", false);
     let target = point(center[0], center[1]);
     let mut expected = original.curves.clone();
     for (saved, radius) in expected.iter_mut().zip(radii) {
@@ -154,4 +174,21 @@ pub(crate) fn edit(
             .collect::<Vec<_>>()
     );
     (w, request)
+}
+
+/// Keep the fixture path alive independently of the temporary window used to drive widgets.
+pub(crate) fn detached(
+    path: &Path,
+    source: &Source,
+    sketch: ObjectId,
+    center: [f64; 2],
+    radii: &[f64],
+) -> (crate::sketch::Editor, EditRequest) {
+    let (mut window, mut request) = edit_in(path, sketch, center, radii, false, || {}, Drawn::Mock);
+    assert_eq!(request.expected, source.version);
+    let mut forms = std::mem::take(&mut window.creates.sketch);
+    forms.viewport.source = path.to_path_buf();
+    forms.viewport.clear_pointer();
+    request.source = path.to_path_buf();
+    (forms, request)
 }

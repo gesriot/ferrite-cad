@@ -5,6 +5,9 @@
 [ADR 0005](0005-document-session.md) (Apply as a reused copy operation and cold
 rebuilds on every Apply). Their other rules remain in force.
 
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate saved vertex, circle
+and annulus forms; their replacements use the viewport sketch draft.
+
 ## The problem
 
 Each new feature costs more as existing features multiply: the editor recognises

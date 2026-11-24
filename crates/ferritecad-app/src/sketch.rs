@@ -1,96 +1,18 @@
 // SPDX-License-Identifier: MIT
-//! A disposable drawing, separate from the accepted scene and persisted model.
-//! No kernel, filesystem or document mutation occurs while editing it.
-use crate::sketch_facts::{
-    AnnulusChoice, CircleChoice, SketchChoice, SketchProfileUse, Source as ExtrudeEditSource,
-};
-use ferritecad_document::SketchVertex;
+//! Tab-owned sketch, sweep and numeric forms, separate from the accepted scene.
+use crate::sketch_facts::Source as ExtrudeEditSource;
 use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
 pub(crate) mod accepted;
-mod analytic;
-mod anchor;
 pub(crate) mod dimension;
 pub(crate) mod grid;
 pub(crate) mod guide;
-use grid::Snap;
 pub(crate) mod ink;
 pub(crate) mod marker;
 mod navigation;
-mod object_snap;
 mod revolve_angle;
-
-#[derive(Debug, Clone, PartialEq)]
-struct State {
-    points: Vec<[String; 2]>,
-    height: String,
-    /// The saved sweep that uses this line profile.
-    feature: Feature,
-    /// The saved partial turn in degrees, shown by the vertex editor.
-    angle: String,
-}
-/// The saved feature whose line profile is being edited.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Feature {
-    /// Blind along +Z by the saved height.
-    Extrude,
-    /// One full turn about the sketch's local Y axis (§27A). X is the radius.
-    Revolve,
-    /// §27D: the same turn through a saved partial angle, a sector with two
-    /// end faces. The same profile policy; the angle is the document's.
-    RevolveAngle,
-}
-
-impl Feature {
-    /// Whether the profile is turned about the sketch Y axis, fully or not.
-    fn revolves(self) -> bool {
-        matches!(self, Self::Revolve | Self::RevolveAngle)
-    }
-}
-
-/// The numbers a circle needs, as typed.
-///
-/// Text for the same reason the polygon's are: a field being filled in passes
-/// through `-`, `1.` and empty, and what a number means is decided once, by
-/// the document, when the person says they are finished.
-#[derive(Debug, Clone, PartialEq)]
-struct CircleState {
-    center: [String; 2],
-    radius: String,
-    height: String,
-}
-impl Default for CircleState {
-    fn default() -> Self {
-        Self {
-            center: ["0".into(), "0".into()],
-            radius: "10".into(),
-            height: "10".into(),
-        }
-    }
-}
-
-/// The numbers a circle with one concentric hole needs, as typed.
-///
-/// Keep the boundary and bore separate so that editing either radius leaves the other intact.
-#[derive(Debug, Clone, PartialEq)]
-struct AnnulusState {
-    center: [String; 2],
-    outer_radius: String,
-    inner_radius: String,
-    height: String,
-}
-impl Default for AnnulusState {
-    fn default() -> Self {
-        Self {
-            center: ["0".into(), "0".into()],
-            outer_radius: "10".into(),
-            inner_radius: "4".into(),
-            height: "10".into(),
-        }
-    }
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
@@ -113,57 +35,18 @@ pub(crate) struct Editor {
     /// reason: they add to a Body's history (or change its one number) and read
     /// their own catalogue.
     pub(crate) chamfers: crate::chamfers::Editor,
-    draft: Option<State>,
-    undo: Vec<State>,
-    redo: Vec<State>,
-    canvas: Canvas,
-    editing: Option<(EditRequest, SketchChoice)>,
-    pending_edit: Option<EditRequest>,
-    /// §30B: Apply on the open document's session, asked for and not yet taken.
-    pending_apply: Option<EditRequest>,
-    /// Whether the window can apply the draft to the open document right now.
-    /// Set by the window each frame; never persisted.
-    can_apply: bool,
-    /// §30D: Apply of the saved Circle or annulus form on the open document is
-    /// possible right now, and the requests it has asked for and nobody has taken.
-    /// Set by the window each frame; never persisted.
-    can_apply_analytic: bool,
-    pending_apply_circle: Option<EditRequest>,
-    pending_apply_annulus: Option<EditRequest>,
-    /// Whether the saved Sketch editor may be opened on the open document even
-    /// with unsaved changes (it applies into the session, not into a new file).
-    can_begin_sketch: bool,
-    /// The open document has unsaved changes: the copy workflow reads a file and
-    /// writes a new one, so it is withheld, and the form says why.
+    /// Permission to open the saved angle form on the current session.
+    can_begin_angle: bool,
+    /// Unsaved changes withhold the retained numeric form's copy action.
     unsaved: bool,
-    circle: CircleState,
-    annulus: AnnulusState,
-    /// The saved circle being edited, with the request it was read from.
-    editing_circle: Option<(EditRequest, CircleChoice)>,
-    pending_circle_edit: Option<EditRequest>,
-    /// The circle draft's own bounded history, under the same policy and the
-    /// same bound as the polygon draft's beside it.
-    circle_undo: Vec<CircleState>,
-    circle_redo: Vec<CircleState>,
-    circle_applied: Option<CircleState>,
-    /// The saved pair of circles being edited, with the request it was read
-    /// from, and that draft's own bounded history under the same policy.
-    editing_annulus: Option<(EditRequest, AnnulusChoice)>,
-    pending_annulus_edit: Option<EditRequest>,
-    annulus_undo: Vec<AnnulusState>,
-    annulus_redo: Vec<AnnulusState>,
-    annulus_applied: Option<AnnulusState>,
-    /// §31I: the canvases of the circle and the annular form (New and saved): the
-    /// view and the handle held. Part of the editor, so they go with its tab.
-    circle_canvas: analytic::Canvas,
-    annulus_canvas: analytic::Canvas,
     /// The saved partial-turn angle form and its local history.
     angle: revolve_angle::Draft,
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
     published_draft: Option<(PathBuf, Box<Editor>)>,
 }
-/// How many draft checkpoints either editor keeps. One bound, one policy.
+
+/// How many confirmed angle checkpoints the numeric form keeps.
 const DRAFT_HISTORY: usize = 128;
 
 fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
@@ -171,27 +54,6 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
         stack.remove(0);
     }
     stack.push(value);
-}
-
-/// §31I: the history of the canvas gestures that ended in one frame, each given by
-/// the exact draft at its press and release. Text that was typed and not confirmed
-/// when a gesture started is first its own step, exactly as typed; the gesture becomes
-/// the confirmed draft. So one Undo gives back the strings of the press, a second
-/// the numbers confirmed before them, and no Confirm is needed after a gesture.
-fn record_gestures<T: Clone + PartialEq>(
-    undo: &mut Vec<T>,
-    redo: &mut Vec<T>,
-    applied: &mut Option<T>,
-    changes: impl IntoIterator<Item = (T, T)>,
-) {
-    for (before, after) in changes {
-        let confirmed = applied.replace(after).unwrap_or_else(|| before.clone());
-        if confirmed != before {
-            push_bounded(undo, confirmed);
-        }
-        push_bounded(undo, before);
-        redo.clear();
-    }
 }
 
 impl Editor {
@@ -206,130 +68,50 @@ impl Editor {
         .into_iter()
         .flatten()
     }
-
-    pub(crate) fn editing_saved_vertices(&self) -> bool {
-        self.editing.is_some()
-    }
-
     pub(crate) fn only_editing_cut(&self) -> bool {
         self.cuts.editing_saved()
-            && self.draft.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.fillets.active()
             && !self.chamfers.active()
     }
-
     /// §30I: the Add form of a Cut is the only form open.
     pub(crate) fn only_adding_cut(&self) -> bool {
         self.cuts.adding()
-            && self.draft.is_none()
-            && self.editing.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.fillets.active()
             && !self.chamfers.active()
     }
-
     /// §30J: the Add form of a Fillet is the only form open.
     pub(crate) fn only_adding_fillet(&self) -> bool {
         self.fillets.adding()
-            && self.draft.is_none()
-            && self.editing.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.cuts.active()
             && !self.chamfers.active()
     }
-
     pub(crate) fn only_editing_fillet_radius(&self) -> bool {
         self.fillets.editing_radius()
-            && self.draft.is_none()
-            && self.editing.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.cuts.active()
             && !self.chamfers.active()
     }
-
     /// §30K: the Add form of a Chamfer is the only form open.
     pub(crate) fn only_adding_chamfer(&self) -> bool {
         self.chamfers.adding()
-            && self.draft.is_none()
-            && self.editing.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.cuts.active()
             && !self.fillets.active()
     }
-
     pub(crate) fn only_editing_chamfer_distance(&self) -> bool {
         self.chamfers.editing_distance()
-            && self.draft.is_none()
-            && self.editing.is_none()
-            && self.editing_circle.is_none()
-            && self.editing_annulus.is_none()
             && self.angle.editing_angle.is_none()
             && !self.constraints.active()
             && !self.cuts.active()
             && !self.fillets.active()
-    }
-
-    /// §30D: a saved Circle or annulus form is open.
-    pub(crate) fn editing_analytic(&self) -> bool {
-        self.editing_circle.is_some() || self.editing_annulus.is_some()
-    }
-
-    /// What the window tells the saved Circle and annulus forms each frame.
-    pub(crate) fn set_analytic_apply(&mut self, can_apply: bool) {
-        self.can_apply_analytic = can_apply;
-    }
-    /// §30D: the saved Circle the user asked to apply to the open document.
-    pub(crate) fn take_apply_circle_request(&mut self) -> Option<EditRequest> {
-        self.pending_apply_circle.take()
-    }
-    /// §30D: the saved annulus the user asked to apply to the open document.
-    pub(crate) fn take_apply_annulus_request(&mut self) -> Option<EditRequest> {
-        self.pending_apply_annulus.take()
-    }
-    /// Whether the typed numbers are not the stored ones, so that Apply would be a
-    /// change. The session still decides on the model itself; this only keeps the
-    /// button from offering what is plainly nothing.
-    fn circle_differs_from_saved(&self, request: &EditRequest) -> bool {
-        self.editing_circle
-            .as_ref()
-            .and_then(|(_, choice)| choice.circle.as_ref())
-            .is_none_or(|saved| {
-                saved.center_mm != crate::sketch_transactions::circle_values(&request.changes[0]).0
-                    || saved.radius_mm
-                        != crate::sketch_transactions::circle_values(&request.changes[0]).1
-            })
-    }
-    fn annulus_differs_from_saved(&self, request: &EditRequest) -> bool {
-        self.editing_annulus
-            .as_ref()
-            .and_then(|(_, choice)| choice.annulus.as_ref())
-            .is_none_or(|saved| {
-                // The stored circles may not share a centre; applying puts both
-                // at the typed one, which is a change even with the same numbers.
-                saved.center_mm != crate::sketch_transactions::circle_values(&request.changes[0]).0
-                    || saved.inner_center_mm
-                        != crate::sketch_transactions::circle_values(&request.changes[0]).0
-                    || saved.outer_radius_mm
-                        != crate::sketch_transactions::circle_values(&request.changes[0]).1
-                    || saved.inner_radius_mm
-                        != crate::sketch_transactions::circle_values(&request.changes[1]).1
-            })
     }
     fn outcome_line(ui: &mut egui::Ui, outcome: &str) {
         if !outcome.is_empty() {
@@ -337,12 +119,8 @@ impl Editor {
             ui.label(format!("Document: {outcome}"));
         }
     }
-
     pub(crate) fn active(&self) -> bool {
-        self.draft.is_some()
-            || self.editing_circle.is_some()
-            || self.editing_annulus.is_some()
-            || self.angle.editing_angle.is_some()
+        self.angle.editing_angle.is_some()
             || self.constraints.active()
             || self.cuts.active()
             || self.fillets.active()
@@ -355,8 +133,7 @@ impl Editor {
         // What the window said about the session is not the draft's: it is said
         // again every frame, but a draft that is replaced must not forget it for
         // the frame in between.
-        let (begin, apply, unsaved) = (self.can_begin_sketch, self.can_apply, self.unsaved);
-        let analytic = self.can_apply_analytic;
+        let (begin, unsaved) = (self.can_begin_angle, self.unsaved);
         let angle = self.angle.can_apply_angle;
         let constraints = self.constraints.session();
         let cuts = self.cuts.session();
@@ -366,9 +143,7 @@ impl Editor {
         let chamfers = self.chamfers.session();
         let chamfers_add = self.chamfers.add_session();
         *self = Self::default();
-        self.can_begin_sketch = begin;
-        self.can_apply = apply;
-        self.can_apply_analytic = analytic;
+        self.can_begin_angle = begin;
         self.angle.can_apply_angle = angle;
         self.unsaved = unsaved;
         self.constraints
@@ -381,24 +156,15 @@ impl Editor {
             .set_session(chamfers.0, chamfers.1, chamfers.2);
         self.chamfers.set_add(chamfers_add);
     }
-    pub(crate) fn take_edit_request(&mut self) -> Option<EditRequest> {
-        self.pending_edit.take()
-    }
-    /// §30B: the draft the user asked to apply to the open document.
-    pub(crate) fn take_apply_request(&mut self) -> Option<EditRequest> {
-        self.pending_apply.take()
-    }
     /// What the window tells the form each frame: whether Apply is possible and
     /// whether unsaved changes withhold the copy workflow.
-    pub(crate) fn set_session(&mut self, can_begin: bool, can_apply: bool, unsaved: bool) {
-        self.can_begin_sketch = can_begin;
-        self.can_apply = can_apply;
+    pub(crate) fn set_session(&mut self, can_begin: bool, unsaved: bool) {
+        self.can_begin_angle = can_begin;
         self.unsaved = unsaved;
     }
     /// Saved-object forms describe the picture that was replaced and end here.
     /// Parameters reads each accepted version and keeps its unsubmitted text.
     pub(crate) fn finish_session_change(&mut self) {
-        self.forget_anchor();
         if self.saved_object_open() && !self.parameters.active() {
             self.dismiss();
         }
@@ -406,10 +172,7 @@ impl Editor {
     /// A form about a saved object of the open document is open: what a hidden
     /// tab keeps (§30P).
     pub(crate) fn saved_object_open(&self) -> bool {
-        self.editing.is_some()
-            || self.editing_circle.is_some()
-            || self.editing_annulus.is_some()
-            || self.angle.editing_angle.is_some()
+        self.angle.editing_angle.is_some()
             || self.constraints.active()
             || self.cuts.active()
             || self.fillets.active()
@@ -418,70 +181,10 @@ impl Editor {
             || self.viewport.active()
             || self.sweeps.active()
     }
-    /// A captured sketch-mode handle, a legacy canvas edit, or a canvas pan
-    /// holds window transitions until the pointer is released or the gesture is cancelled.
+    /// A captured sketch-mode handle or constraint-canvas pan holds window transitions
+    /// until the pointer is released or the gesture is cancelled.
     pub(crate) fn gesturing(&self) -> bool {
-        self.viewport.gesturing()
-            || self.canvas.gesture.is_some()
-            || self.canvas.claimed_press
-            || self.canvas.nav.panning()
-            || self.analytic_gesturing()
-            || self.circle_canvas.panning()
-            || self.annulus_canvas.panning()
-            || self.constraints.panning()
-    }
-    /// §31I: a handle of the circle or annular canvas is held. A pan (§31J) is not: it
-    /// holds the window above but edits nothing, so no box or button of a form is
-    /// disabled for it.
-    fn analytic_gesturing(&self) -> bool {
-        self.circle_canvas.gesturing() || self.annulus_canvas.gesturing()
-    }
-    /// §31I: the gestures that ended in this frame on the circle canvas, given by
-    /// their press/release strings over the draft `frame` had at the frame's start.
-    fn record_circle_gestures(&mut self, frame: &CircleState, finished: Vec<analytic::Finished>) {
-        let state = |s: analytic::Strings| CircleState {
-            center: s.centre,
-            radius: s.outer,
-            height: frame.height.clone(),
-        };
-        record_gestures(
-            &mut self.circle_undo,
-            &mut self.circle_redo,
-            &mut self.circle_applied,
-            finished
-                .into_iter()
-                .map(|g| (state(g.before), state(g.after))),
-        );
-    }
-    /// §31I: the same for the annular canvas.
-    fn record_annulus_gestures(&mut self, frame: &AnnulusState, finished: Vec<analytic::Finished>) {
-        let state = |s: analytic::Strings| AnnulusState {
-            center: s.centre,
-            outer_radius: s.outer,
-            inner_radius: s.bore.unwrap_or_else(|| frame.inner_radius.clone()),
-            height: frame.height.clone(),
-        };
-        record_gestures(
-            &mut self.annulus_undo,
-            &mut self.annulus_redo,
-            &mut self.annulus_applied,
-            finished
-                .into_iter()
-                .map(|g| (state(g.before), state(g.after))),
-        );
-    }
-    /// §31D-2: the anchor a hovering pointer holds belongs to one canvas, one drawing
-    /// and one moment. The window forgets it when a tab's form is set aside and when
-    /// the document changes under the form, so it cannot come alive over another
-    /// picture. The mode itself is the editor's setting and stays with it.
-    pub(crate) fn forget_anchor(&mut self) {
-        self.canvas.provisional = None;
-    }
-    pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditRequest> {
-        self.pending_circle_edit.take()
-    }
-    pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditRequest> {
-        self.pending_annulus_edit.take()
+        self.viewport.gesturing() || self.constraints.panning()
     }
     pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.cuts.take_request()
@@ -501,186 +204,6 @@ impl Editor {
     pub(crate) fn take_chamfer_distance_request(&mut self) -> Option<ferritecad_jobs::EditRequest> {
         self.chamfers.take_distance_request()
     }
-    /// Begin editing one saved pair of concentric circles of the accepted scene.
-    ///
-    /// The path and the version come from the reading that was accepted, so a
-    /// later Open that has not been accepted cannot retarget this draft. The
-    /// form opens on the bounding circle's stored centre; applying an edit puts
-    /// both circles at exactly one centre, which the two may not be already.
-    pub(crate) fn begin_annulus_edit(
-        &mut self,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        id: ferritecad_types::ObjectId,
-    ) -> bool {
-        if self.active() || source.refusal.is_some() {
-            return false;
-        }
-        let Some(choice) = source
-            .annulus_sketches
-            .iter()
-            .find(|c| c.sketch == id && c.refusal.is_none())
-        else {
-            return false;
-        };
-        let Some(saved) = &choice.annulus else {
-            return false;
-        };
-        self.dismiss();
-        self.annulus = AnnulusState {
-            center: saved.center_mm.map(|n| n.to_string()),
-            outer_radius: saved.outer_radius_mm.to_string(),
-            inner_radius: saved.inner_radius_mm.to_string(),
-            height: saved.height_mm.map(|n| n.to_string()).unwrap_or_default(),
-        };
-        self.annulus_applied = Some(self.annulus.clone());
-        self.editing_annulus = Some((
-            EditRequest {
-                source: path.to_path_buf(),
-                expected: source.version,
-                changes: Vec::new(),
-                destination: PathBuf::new(),
-            },
-            choice.clone(),
-        ));
-        true
-    }
-    /// What the annular edit form is asking for, or why it is not an edit yet.
-    fn annulus_edit_request(&self) -> Result<EditRequest> {
-        let (basis, _choice) = self
-            .editing_annulus
-            .as_ref()
-            .ok_or_else(|| CadError::input("no saved annulus draft"))?;
-        let mut request = basis.clone();
-        let saved = _choice.annulus.as_ref().expect("saved annulus");
-        let center = [
-            number(&self.annulus.center[0])?,
-            number(&self.annulus.center[1])?,
-        ];
-        request.changes = vec![
-            crate::sketch_transactions::circle_change(
-                _choice.sketch,
-                saved.outer_curve_id,
-                center,
-                number(&self.annulus.outer_radius)?,
-            )?,
-            crate::sketch_transactions::circle_change(
-                _choice.sketch,
-                saved.inner_curve_id,
-                center,
-                number(&self.annulus.inner_radius)?,
-            )?,
-        ];
-        Ok(request)
-    }
-    fn apply_annulus(&mut self) -> Result<()> {
-        let request = self.annulus_edit_request()?;
-        self.annulus.center = crate::sketch_transactions::circle_values(&request.changes[0])
-            .0
-            .map(|n| n.to_string());
-        self.annulus.outer_radius = crate::sketch_transactions::circle_values(&request.changes[0])
-            .1
-            .to_string();
-        self.annulus.inner_radius = crate::sketch_transactions::circle_values(&request.changes[1])
-            .1
-            .to_string();
-        let before = self
-            .annulus_applied
-            .replace(self.annulus.clone())
-            .ok_or_else(|| CadError::input("no applied annulus draft"))?;
-        // §31I: a gesture keeps the spelling of the fields it did not move, so the
-        // numbers decide whether this is a step, not their text.
-        let numbers = |a: &AnnulusState| {
-            [&a.center[0], &a.center[1], &a.outer_radius, &a.inner_radius].map(|s| number(s).ok())
-        };
-        if numbers(&self.annulus) != numbers(&before) {
-            push_bounded(&mut self.annulus_undo, before);
-            self.annulus_redo.clear();
-        }
-        Ok(())
-    }
-    /// Begin editing one saved analytic circle of the accepted scene.
-    ///
-    /// The path and the version come from the reading that was accepted, so a
-    /// later Open that has not been accepted cannot retarget this draft.
-    pub(crate) fn begin_circle_edit(
-        &mut self,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        id: ferritecad_types::ObjectId,
-    ) -> bool {
-        if self.active() || source.refusal.is_some() {
-            return false;
-        }
-        let Some(choice) = source
-            .circle_sketches
-            .iter()
-            .find(|c| c.sketch == id && c.refusal.is_none())
-        else {
-            return false;
-        };
-        let Some(saved) = &choice.circle else {
-            return false;
-        };
-        self.dismiss();
-        self.circle = CircleState {
-            center: saved.center_mm.map(|n| n.to_string()),
-            radius: saved.radius_mm.to_string(),
-            height: saved.height_mm.map(|n| n.to_string()).unwrap_or_default(),
-        };
-        self.circle_applied = Some(self.circle.clone());
-        self.editing_circle = Some((
-            EditRequest {
-                source: path.to_path_buf(),
-                expected: source.version,
-                changes: Vec::new(),
-                destination: PathBuf::new(),
-            },
-            choice.clone(),
-        ));
-        true
-    }
-    /// What the circle edit form is asking for, or why it is not an edit yet.
-    fn circle_edit_request(&self) -> Result<EditRequest> {
-        let (basis, _choice) = self
-            .editing_circle
-            .as_ref()
-            .ok_or_else(|| CadError::input("no saved Circle draft"))?;
-        let mut request = basis.clone();
-        let saved = _choice.circle.as_ref().expect("saved circle");
-        request.changes = vec![crate::sketch_transactions::circle_change(
-            _choice.sketch,
-            saved.curve_id,
-            [
-                number(&self.circle.center[0])?,
-                number(&self.circle.center[1])?,
-            ],
-            number(&self.circle.radius)?,
-        )?];
-        Ok(request)
-    }
-    fn apply_circle(&mut self) -> Result<()> {
-        let request = self.circle_edit_request()?;
-        self.circle.center = crate::sketch_transactions::circle_values(&request.changes[0])
-            .0
-            .map(|n| n.to_string());
-        self.circle.radius = crate::sketch_transactions::circle_values(&request.changes[0])
-            .1
-            .to_string();
-        let before = self
-            .circle_applied
-            .replace(self.circle.clone())
-            .ok_or_else(|| CadError::input("no applied Circle draft"))?;
-        // §31I: a gesture keeps the spelling of the fields it did not move, so the
-        // numbers decide whether this is a step, not their text.
-        let numbers =
-            |c: &CircleState| [&c.center[0], &c.center[1], &c.radius].map(|s| number(s).ok());
-        if numbers(&self.circle) != numbers(&before) {
-            push_bounded(&mut self.circle_undo, before);
-            self.circle_redo.clear();
-        }
-        Ok(())
-    }
     pub(crate) fn draft_published(&mut self, path: &Path) {
         let mut saved = std::mem::take(self);
         saved.published_draft = None;
@@ -698,65 +221,6 @@ impl Editor {
             let (_, saved) = self.published_draft.take().expect("matching publication");
             *self = *saved;
         }
-    }
-    pub(crate) fn begin_edit(
-        &mut self,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        id: ferritecad_types::ObjectId,
-    ) -> bool {
-        if self.active() || source.refusal.is_some() {
-            return false;
-        }
-        let Some(choice) = source
-            .sketches
-            .iter()
-            .find(|s| s.sketch == id && s.refusal.is_none())
-        else {
-            return false;
-        };
-        let Some(vertices) = &choice.vertices else {
-            return false;
-        };
-        // The saved feature decides what the draft shows. A Revolve has no
-        // height to show, so none is invented; the editor offers no switch.
-        // §27F: a sector shows its saved angle, which the edit keeps.
-        let (height, feature, angle) = match choice.profile_use {
-            Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => {
-                (height_mm.to_string(), Feature::Extrude, String::new())
-            }
-            Some(SketchProfileUse::FullTurnRevolve { .. }) => {
-                (String::new(), Feature::Revolve, String::new())
-            }
-            Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) => (
-                String::new(),
-                Feature::RevolveAngle,
-                ferritecad_types::display_degrees(angle.radians()).to_string(),
-            ),
-            None => (String::new(), Feature::Extrude, String::new()),
-        };
-        self.dismiss();
-        self.draft = Some(State {
-            points: vertices
-                .iter()
-                .map(|v| v.start_mm.map(|n| n.to_string()))
-                .collect(),
-            height,
-            feature,
-            angle,
-        });
-        self.canvas
-            .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
-        self.editing = Some((
-            EditRequest {
-                source: path.to_path_buf(),
-                expected: source.version,
-                changes: Vec::new(),
-                destination: PathBuf::new(),
-            },
-            choice.clone(),
-        ));
-        true
     }
     pub(crate) fn draw_choices(
         &mut self,
@@ -796,57 +260,6 @@ impl Editor {
             return;
         }
         if let (Some(path), Some(source)) = (path, source) {
-            for choice in &source.sketches {
-                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-                let response = ui.add_enabled(
-                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
-                    egui::Button::new(format!(
-                        "Edit Sketch {} — {}…",
-                        choice.name.as_deref().unwrap_or("Unnamed"),
-                        choice.sketch
-                    )),
-                );
-                if response.clicked() {
-                    self.begin_edit(path, source, choice.sketch);
-                }
-                if let Some(reason) = refusal {
-                    response.on_hover_text(reason);
-                }
-            }
-            for choice in &source.circle_sketches {
-                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-                let response = ui.add_enabled(
-                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
-                    egui::Button::new(format!(
-                        "Edit circle {} — {}…",
-                        choice.name.as_deref().unwrap_or("Unnamed"),
-                        choice.sketch
-                    )),
-                );
-                if response.clicked() {
-                    self.begin_circle_edit(path, source, choice.sketch);
-                }
-                if let Some(reason) = refusal {
-                    response.on_hover_text(reason);
-                }
-            }
-            for choice in &source.annulus_sketches {
-                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-                let response = ui.add_enabled(
-                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
-                    egui::Button::new(format!(
-                        "Edit annulus {} — {}…",
-                        choice.name.as_deref().unwrap_or("Unnamed"),
-                        choice.sketch
-                    )),
-                );
-                if response.clicked() {
-                    self.begin_annulus_edit(path, source, choice.sketch);
-                }
-                if let Some(reason) = refusal {
-                    response.on_hover_text(reason);
-                }
-            }
             for choice in source
                 .expression_slots
                 .iter()
@@ -854,7 +267,7 @@ impl Editor {
             {
                 let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
                 let response = ui.add_enabled(
-                    (can_begin || self.can_begin_sketch) && refusal.is_none(),
+                    (can_begin || self.can_begin_angle) && refusal.is_none(),
                     egui::Button::new(format!(
                         "Edit Revolve angle {} — {}…",
                         choice.name.as_deref().unwrap_or("Unnamed"),
@@ -870,150 +283,6 @@ impl Editor {
             }
         }
     }
-    fn edit_request(&self) -> Result<EditRequest> {
-        let (basis, choice) = self
-            .editing
-            .as_ref()
-            .ok_or_else(|| CadError::input("no saved Sketch draft"))?;
-        let draft = self
-            .draft
-            .as_ref()
-            .ok_or_else(|| CadError::input("no draft"))?;
-        if draft.points.len() != choice.vertices.as_ref().expect("saved vertices").len() {
-            return Err(CadError::input("segment count cannot change"));
-        }
-        let mut request = basis.clone();
-        let vertices = choice
-            .vertices
-            .as_ref()
-            .expect("saved vertices")
-            .iter()
-            .zip(&draft.points)
-            .map(|(v, p)| {
-                Ok(SketchVertex {
-                    curve_id: v.curve_id,
-                    start_mm: [number(&p[0])?, number(&p[1])?],
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let stored = choice.stored.as_ref().expect("saved sketch draft");
-        request.changes =
-            ferritecad_document::move_sketch_vertices(choice.sketch, stored, &vertices)?;
-        ferritecad_document::validate_sketch_changes(choice.sketch, stored, &request.changes)?;
-        Ok(request)
-    }
-    /// The coordinate strings `begin_edit` showed, from the vertices the request
-    /// already holds. Compared as text, so `33.0` and `33` are not the same draft.
-    fn saved_coordinate_text(vertices: &[SketchVertex]) -> Vec<[String; 2]> {
-        vertices
-            .iter()
-            .map(|vertex| vertex.start_mm.map(|n| n.to_string()))
-            .collect()
-    }
-    fn saved_coordinates_current(&self) -> bool {
-        let (Some(draft), Some((_, choice))) = (&self.draft, &self.editing) else {
-            return false;
-        };
-        draft.points
-            == Self::saved_coordinate_text(choice.vertices.as_ref().expect("saved vertices"))
-    }
-    /// One history step back to that snapshot. A draft that already matches is
-    /// not a step, and its redo stack stays.
-    fn restore_saved_vertices(&mut self) {
-        let Some((_, choice)) = &self.editing else {
-            return;
-        };
-        let saved = Self::saved_coordinate_text(choice.vertices.as_ref().expect("saved vertices"));
-        let Some(before) = self.draft.clone() else {
-            return;
-        };
-        if before.points == saved {
-            return;
-        }
-        if let Some(draft) = &mut self.draft {
-            draft.points = saved;
-        }
-        self.record(before);
-    }
-    fn record(&mut self, before: State) {
-        if self.draft.as_ref() != Some(&before) {
-            self.push_undo(before);
-        }
-    }
-    fn push_undo(&mut self, before: State) {
-        push_bounded(&mut self.undo, before);
-        self.redo.clear();
-    }
-    fn undo(&mut self) {
-        if self.editing_saved_angle() {
-            self.undo_angle();
-            return;
-        }
-        if self.editing_annulus.is_some() {
-            if let Some(previous) = self.annulus_undo.pop() {
-                push_bounded(
-                    &mut self.annulus_redo,
-                    self.annulus_applied
-                        .replace(previous.clone())
-                        .expect("applied annulus"),
-                );
-                self.annulus = previous;
-            }
-            return;
-        }
-        if self.editing_circle.is_some() {
-            if let Some(previous) = self.circle_undo.pop() {
-                push_bounded(
-                    &mut self.circle_redo,
-                    self.circle_applied
-                        .replace(previous.clone())
-                        .expect("applied circle"),
-                );
-                self.circle = previous;
-            }
-            return;
-        }
-        if let Some(previous) = self.undo.pop()
-            && let Some(current) = self.draft.replace(previous)
-        {
-            self.redo.push(current);
-        }
-    }
-    fn redo(&mut self) {
-        if self.editing_saved_angle() {
-            self.redo_angle();
-            return;
-        }
-        if self.editing_annulus.is_some() {
-            if let Some(next) = self.annulus_redo.pop() {
-                push_bounded(
-                    &mut self.annulus_undo,
-                    self.annulus_applied
-                        .replace(next.clone())
-                        .expect("applied annulus"),
-                );
-                self.annulus = next;
-            }
-            return;
-        }
-        if self.editing_circle.is_some() {
-            if let Some(next) = self.circle_redo.pop() {
-                push_bounded(
-                    &mut self.circle_undo,
-                    self.circle_applied
-                        .replace(next.clone())
-                        .expect("applied circle"),
-                );
-                self.circle = next;
-            }
-            return;
-        }
-        if let Some(next) = self.redo.pop()
-            && let Some(current) = self.draft.replace(next)
-        {
-            self.undo.push(current);
-        }
-    }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool, outcome: &str) {
         if self.sweeps.active() {
             self.sweeps.draw(ui, running, outcome);
@@ -1026,9 +295,6 @@ impl Editor {
         // §31J: a pan whose canvas is no longer drawn (another profile was chosen while
         // the middle button was held) would hold the window for good.
         let frame = ui.ctx().cumulative_frame_nr();
-        self.canvas.nav.forget_undrawn(frame);
-        self.circle_canvas.forget_undrawn(frame);
-        self.annulus_canvas.forget_undrawn(frame);
         self.constraints.forget_undrawn(frame);
         if self.constraints.active() {
             self.constraints.draw(ui, running);
@@ -1053,572 +319,10 @@ impl Editor {
         if !self.active() || self.parameters.active() {
             return;
         }
-        crate::form_window(
-            ui,
-            if self.angle.editing_angle.is_some() {
-                "Edit saved Revolve angle"
-            } else if self.editing_annulus.is_some() {
-                "Edit saved annulus"
-            } else if self.editing_circle.is_some() {
-                "Edit saved Circle"
-            } else {
-                "Edit saved Sketch"
-            },
-        )
-        .resizable(false)
-        .default_width(540.)
-        .show(ui.ctx(), |ui| {
-            let analytic = self.editing_analytic();
-            self.draw_draft(ui, running, outcome);
-            // §31I: with a canvas these forms are taller than egui's default window,
-            // which sizes itself from the last frame. A line that appears (the
-            // session's outcome, a refusal) would be cut off and, with nothing else
-            // to draw, stay so: lay this frame out again at the new size instead.
-            let (content, clip) = (ui.min_rect(), ui.clip_rect());
-            if analytic
-                && content.bottom() > clip.bottom() + 0.5
-                && content.bottom() <= ui.ctx().content_rect().bottom()
-            {
-                ui.ctx().request_discard("a Circle or annulus form grew");
-            }
-        });
-    }
-
-    /// The saved-circle half of the same window.
-    ///
-    /// Shows what is stored, by identity, and offers the two numbers this edit
-    /// may change. The height is shown because it decides what they mean and
-    /// is deliberately not editable here: `Edit extrusion` owns it.
-    fn draw_circle_edit(&mut self, ui: &mut egui::Ui) {
-        let Some((request, choice)) = &self.editing_circle else {
-            return;
-        };
-        ui.label("XY · mm · saved analytic circle · centre and radius only");
-        ui.small(format!(
-            "Sketch {} · {}",
-            choice.sketch,
-            crate::sessions::shown_as(&request.source)
-        ));
-        if let Some(saved) = &choice.circle {
-            ui.small(format!(
-                "Circle {} · saved centre ({}, {}) mm · radius {} mm",
-                saved.curve_id, saved.center_mm[0], saved.center_mm[1], saved.radius_mm
-            ));
-            if let Some(height) = saved.height_mm {
-                ui.small(format!("Height {height} mm"));
-            }
-        }
-        // §31I: the canvas over the same strings; a gesture is one draft step.
-        let frame = self.circle.clone();
-        let queued = self.pending_apply_circle.is_some() || self.pending_circle_edit.is_some();
-        let finished = self.circle_canvas.draw(
-            ui,
-            analytic::Fields {
-                centre: &mut self.circle.center,
-                outer: &mut self.circle.radius,
-                bore: None,
-            },
-            queued,
-        );
-        self.record_circle_gestures(&frame, finished);
-        let gesture = self.circle_canvas.gesturing();
-        let editable = ui.is_enabled() && !gesture;
-        let height = self.circle.height.clone();
-        let [x, y] = &mut self.circle.center;
-        let fields: [(&str, &mut String); 3] = [
-            ("Center X", x),
-            ("Center Y", y),
-            ("Radius", &mut self.circle.radius),
-        ];
-        egui::Grid::new("ferritecad saved circle numbers")
-            .num_columns(3)
-            .show(ui, |ui| {
-                for (label, value) in fields {
-                    ui.label(label);
-                    ui.add(
-                        egui::TextEdit::singleline(value)
-                            .char_limit(64)
-                            .desired_width(120.)
-                            .interactive(editable),
-                    );
-                    ui.label("mm");
-                    ui.end_row();
-                }
-                ui.label("Blind height");
-                ui.label(&height);
-                ui.label("mm (retained)");
-                ui.end_row();
-            });
-        match self.circle_edit_request() {
-            Ok(request) => {
-                let pending = self.circle_applied.as_ref() != Some(&self.circle);
-                let differs = self.circle_differs_from_saved(&request);
-                ui.horizontal(|ui| {
-                    // §30D: into the open document, no file name. The file on disk
-                    // changes only when you Save.
-                    if ui
-                        .add_enabled(
-                            self.can_apply_analytic && differs && !gesture,
-                            egui::Button::new("Apply circle"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_apply_circle = Some(request.clone());
-                    }
-                    if ui
-                        .add_enabled(
-                            pending && !gesture,
-                            egui::Button::new("Confirm draft numbers"),
-                        )
-                        .clicked()
-                    {
-                        self.apply_circle().expect("validated circle draft");
-                    }
-                });
-                let applied = self.circle_applied.as_ref() == Some(&self.circle);
-                if ui
-                    .add_enabled(
-                        applied && !self.unsaved && !gesture,
-                        egui::Button::new("Save edited circle copy…"),
-                    )
-                    .clicked()
-                {
-                    self.pending_circle_edit = Some(request);
-                }
-                if !differs {
-                    ui.small("These are the stored numbers: there is nothing to apply.");
-                }
-                if !applied && !self.unsaved {
-                    ui.small("Confirm the draft numbers before saving a copy.");
-                }
-                if self.unsaved {
-                    ui.small(
-                        "Saving a copy as a new file is unavailable while the document has \
-                         unsaved changes: Save or Undo them first. Apply changes this \
-                         document; the file on disk changes only when you Save.",
-                    );
-                }
-            }
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
-        }
-    }
-
-    /// The saved-Revolve-angle half of the same window (§27E).
-    ///
-    /// The saved-annulus half of the same window.
-    ///
-    /// Shows what is stored, by identity, and offers the three numbers this edit
-    /// may change. The height is shown because it decides what they mean and is
-    /// deliberately not editable here: `Edit extrusion` owns it.
-    fn draw_annulus_edit(&mut self, ui: &mut egui::Ui) {
-        let Some((request, choice)) = &self.editing_annulus else {
-            return;
-        };
-        ui.label("XY · mm · saved annular profile · one centre and both radii");
-        ui.small(format!(
-            "Sketch {} · {}",
-            choice.sketch,
-            crate::sessions::shown_as(&request.source)
-        ));
-        if let Some(saved) = &choice.annulus {
-            ui.small(format!(
-                "Boundary {} · saved centre ({}, {}) mm · radius {} mm",
-                saved.outer_curve_id, saved.center_mm[0], saved.center_mm[1], saved.outer_radius_mm
-            ));
-            ui.small(format!(
-                "Bore {} · saved centre ({}, {}) mm · radius {} mm",
-                saved.inner_curve_id,
-                saved.inner_center_mm[0],
-                saved.inner_center_mm[1],
-                saved.inner_radius_mm
-            ));
-            if let Some(height) = saved.height_mm {
-                ui.small(format!("Height {height} mm"));
-            }
-        }
-        // §31I: the canvas over the same strings; a gesture is one draft step.
-        let frame = self.annulus.clone();
-        let queued = self.pending_apply_annulus.is_some() || self.pending_annulus_edit.is_some();
-        let finished = self.annulus_canvas.draw(
-            ui,
-            analytic::Fields {
-                centre: &mut self.annulus.center,
-                outer: &mut self.annulus.outer_radius,
-                bore: Some(&mut self.annulus.inner_radius),
-            },
-            queued,
-        );
-        self.record_annulus_gestures(&frame, finished);
-        let gesture = self.annulus_canvas.gesturing();
-        let editable = ui.is_enabled() && !gesture;
-        let height = self.annulus.height.clone();
-        let [x, y] = &mut self.annulus.center;
-        let fields: [(&str, &mut String); 4] = [
-            ("Center X", x),
-            ("Center Y", y),
-            ("Outer radius", &mut self.annulus.outer_radius),
-            ("Inner radius", &mut self.annulus.inner_radius),
-        ];
-        egui::Grid::new("ferritecad saved annulus numbers")
-            .num_columns(3)
-            .show(ui, |ui| {
-                for (label, value) in fields {
-                    ui.label(label);
-                    ui.add(
-                        egui::TextEdit::singleline(value)
-                            .char_limit(64)
-                            .desired_width(120.)
-                            .interactive(editable),
-                    );
-                    ui.label("mm");
-                    ui.end_row();
-                }
-                ui.label("Blind height");
-                ui.label(&height);
-                ui.label("mm (retained)");
-                ui.end_row();
-            });
-        match self.annulus_edit_request() {
-            Ok(request) => {
-                let pending = self.annulus_applied.as_ref() != Some(&self.annulus);
-                let differs = self.annulus_differs_from_saved(&request);
-                ui.horizontal(|ui| {
-                    // §30D: into the open document, no file name. The file on disk
-                    // changes only when you Save.
-                    if ui
-                        .add_enabled(
-                            self.can_apply_analytic && differs && !gesture,
-                            egui::Button::new("Apply annulus"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_apply_annulus = Some(request.clone());
-                    }
-                    if ui
-                        .add_enabled(
-                            pending && !gesture,
-                            egui::Button::new("Confirm draft numbers"),
-                        )
-                        .clicked()
-                    {
-                        self.apply_annulus().expect("validated annulus draft");
-                    }
-                });
-                let applied = self.annulus_applied.as_ref() == Some(&self.annulus);
-                if ui
-                    .add_enabled(
-                        applied && !self.unsaved && !gesture,
-                        egui::Button::new("Save edited annulus copy…"),
-                    )
-                    .clicked()
-                {
-                    self.pending_annulus_edit = Some(request);
-                }
-                if !differs {
-                    ui.small("These are the stored numbers: there is nothing to apply.");
-                }
-                if !applied && !self.unsaved {
-                    ui.small("Confirm the draft numbers before saving a copy.");
-                }
-                if self.unsaved {
-                    ui.small(
-                        "Saving a copy as a new file is unavailable while the document has \
-                         unsaved changes: Save or Undo them first. Apply changes this \
-                         document; the file on disk changes only when you Save.",
-                    );
-                }
-            }
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
-        }
-    }
-
-    fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool, outcome: &str) {
-        if self.editing_saved_angle() {
-            self.draw_angle_draft(ui, running, outcome);
-            return;
-        }
-        if self.editing_annulus.is_some() {
-            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !self.annulus_undo.is_empty(),
-                            egui::Button::new("Undo draft"),
-                        )
-                        .clicked()
-                    {
-                        self.undo();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.annulus_redo.is_empty(),
-                            egui::Button::new("Redo draft"),
-                        )
-                        .clicked()
-                    {
-                        self.redo();
-                    }
-                    if ui.button("Cancel draft").clicked() {
-                        self.dismiss();
-                    }
-                });
-            });
-            // Cancel took the draft down; there is nothing left to draw.
-            if self.editing_annulus.is_none() {
-                return;
-            }
-            ui.add_enabled_ui(!running, |ui| self.draw_annulus_edit(ui));
-            if running {
-                ui.label("Working… Draft retained until it is done. Cancel the operation in the toolbar.");
-            }
-            Self::outcome_line(ui, outcome);
-            ui.small(
-                "Draft Undo/Redo change only this draft; its history ends when the change is \
-                 applied or the document moves to another version.",
-            );
-            return;
-        }
-        if self.editing_circle.is_some() {
-            ui.add_enabled_ui(!running && !self.analytic_gesturing(), |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !self.circle_undo.is_empty(),
-                            egui::Button::new("Undo draft"),
-                        )
-                        .clicked()
-                    {
-                        self.undo();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.circle_redo.is_empty(),
-                            egui::Button::new("Redo draft"),
-                        )
-                        .clicked()
-                    {
-                        self.redo();
-                    }
-                    if ui.button("Cancel draft").clicked() {
-                        self.dismiss();
-                    }
-                });
-            });
-            // Cancel took the draft down; there is nothing left to draw.
-            if self.editing_circle.is_none() {
-                return;
-            }
-            ui.add_enabled_ui(!running, |ui| self.draw_circle_edit(ui));
-            if running {
-                ui.label("Working… Draft retained until it is done. Cancel the operation in the toolbar.");
-            }
-            Self::outcome_line(ui, outcome);
-            ui.small(
-                "Draft Undo/Redo change only this draft; its history ends when the change is \
-                 applied or the document moves to another version.",
-            );
-            return;
-        }
-        let feature = self.draft.as_ref().map(|d| d.feature);
-        let revolve = feature.is_some_and(Feature::revolves);
-        ui.label(match feature {
-            Some(Feature::Revolve) => {
-                "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody"
-            }
-            Some(Feature::RevolveAngle) => {
-                "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody"
-            }
-            _ => "XY · mm · Line polygon · Blind · NewBody",
-        });
-        if revolve {
-            ui.label(
-                "X is the radius and Y runs along the axis, which is X = 0. \
-                 The swept profile must form one valid solid.",
-            );
-        }
-        let sector = self
-            .draft
-            .as_ref()
-            .filter(|d| d.feature == Feature::RevolveAngle)
-            .map(|d| d.angle.clone());
-        ui.label(match &sector {
-            Some(angle) => format!(
-                "Edit exact coordinates. Curve IDs, order, closure and the saved {angle}° sector \
-                 about Y are retained."
-            ),
-            None if revolve => "Edit exact coordinates. Curve IDs, order, closure and \
-                 the saved full turn about Y are retained."
-                .to_owned(),
-            None => "Edit exact coordinates. Curve IDs, order, closure and height are retained."
-                .to_owned(),
-        });
-        if let Some((request, choice)) = &self.editing {
-            for detail in &choice.details {
-                ui.label(detail);
-            }
-            ui.small(format!(
-                "Sketch {} · {}",
-                choice.sketch,
-                crate::sessions::shown_as(&request.source)
-            ));
-        }
-        ui.add_enabled_ui(!running, |ui| self.edit(ui));
-        if running {
-            ui.label(
-                "Working… Draft retained until it is done. Cancel the operation in the toolbar.",
-            );
-        }
-        ui.small(
-            "Undo/redo changes only this draft; its history ends when the change is applied or \
-             the document moves to another version.",
-        );
-    }
-
-    fn edit(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(self.canvas.gesture.is_none(), |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo draft"))
-                    .clicked()
-                {
-                    self.undo();
-                }
-                if ui
-                    .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo draft"))
-                    .clicked()
-                {
-                    self.redo();
-                }
-                if self.editing.is_some()
-                    && ui
-                        .add_enabled(
-                            !self.saved_coordinates_current(),
-                            egui::Button::new("Restore saved vertices"),
-                        )
-                        .clicked()
-                {
-                    self.restore_saved_vertices();
-                }
-                if ui.button("Cancel draft").clicked() {
-                    self.dismiss();
-                }
-            })
-        });
-        let Some(before) = self.draft.clone() else {
-            return;
-        };
-        let queued = self.pending_apply.is_some() || self.pending_edit.is_some();
-        let draft = self.draft.as_mut().expect("present");
-        let canvas_edit = self.canvas.draw(ui, draft, queued);
-        // A pointer gesture owns its checkpoint. Ordinary numeric/button edits
-        // keep their existing per-change history and cannot modify a live drag.
-        ui.add_enabled_ui(matches!(canvas_edit, CanvasEdit::Ordinary), |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(160.)
-                .show(ui, |ui| {
-                    for (i, p) in draft.points.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            let label = egui::RichText::new(format!("{}  X mm", i + 1));
-                            ui.label(if self.canvas.selected == Some(i) {
-                                label.strong().color(egui::Color32::LIGHT_YELLOW)
-                            } else {
-                                label
-                            });
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p[0])
-                                    .char_limit(64)
-                                    .desired_width(125.),
-                            );
-                            ui.label("Y mm");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p[1])
-                                    .char_limit(64)
-                                    .desired_width(125.),
-                            );
-                            // A saved vertex keeps its curve ID and place in the contour.
-                            ui.add_enabled(false, egui::Button::new("Remove"));
-                        });
-                    }
-                });
-            if draft.feature == Feature::Extrude {
-                ui.horizontal(|ui| {
-                    ui.label("Blind height mm");
-                    ui.add_enabled(
-                        false,
-                        egui::TextEdit::singleline(&mut draft.height)
-                            .char_limit(64)
-                            .desired_width(100.),
-                    );
-                });
-            } else if draft.feature == Feature::RevolveAngle {
-                ui.horizontal(|ui| {
-                    ui.label("Angle °");
-                    // A saved sector's angle is shown, not edited here: the
-                    // angle has its own edit (§27E).
-                    ui.add_enabled(
-                        false,
-                        egui::TextEdit::singleline(&mut draft.angle)
-                            .char_limit(64)
-                            .desired_width(100.),
-                    );
-                });
-                ui.label(
-                    "Revolve: the saved sector, right-handed about the sketch Y axis through \
-                         X = 0. Its angle is kept; change it with Edit Revolve angle.",
-                );
-            } else {
-                ui.label("Revolve: one full turn (360°) about the sketch Y axis, through X = 0.");
-            }
-        });
-        match canvas_edit {
-            CanvasEdit::Ordinary => self.record(before),
-            CanvasEdit::Gesture => {}
-            CanvasEdit::Finished(checkpoints) => {
-                for before in checkpoints {
-                    self.push_undo(before);
-                }
-            }
-        }
-        match self.edit_request() {
-            Ok(request) => {
-                ui.horizontal(|ui| {
-                    // §30B: into the open document, no file name. The file on
-                    // disk changes only when you Save.
-                    if ui
-                        .add_enabled(
-                            self.can_apply && self.canvas.gesture.is_none(),
-                            egui::Button::new("Apply vertices"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_apply = Some(request.clone());
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.unsaved && self.canvas.gesture.is_none(),
-                            egui::Button::new("Save edited copy…"),
-                        )
-                        .clicked()
-                    {
-                        self.pending_edit = Some(request);
-                    }
-                });
-                if self.unsaved {
-                    ui.small(
-                        "Saving a copy as a new file is unavailable while the document has \
-                             unsaved changes: Save or Undo them first. Apply changes this \
-                             document; the file on disk changes only when you Save.",
-                    );
-                }
-            }
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
-        }
+        crate::form_window(ui, "Edit saved Revolve angle")
+            .resizable(false)
+            .default_width(540.)
+            .show(ui.ctx(), |ui| self.draw_angle_draft(ui, running, outcome));
     }
 }
 
@@ -1636,27 +340,8 @@ pub(crate) fn finish_edit(
     edits.finish(generation, result)
 }
 
-/// Finish one circle edit at the application boundary.
-///
-/// The draft survives everything except a publication: a refusal, a stale
-/// version and a reply for a request that is no longer current all leave the
-/// numbers on screen to try again with.
-pub(crate) fn finish_circle_edit(
-    editor: &mut Editor,
-    edits: &mut crate::edits::Edits,
-    generation: u64,
-    result: Result<ferritecad_jobs::EditedDocument>,
-) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
-    }
-    edits.finish(generation, result)
-}
-
 /// Finish one Revolve angle edit at the application boundary (§27E), through
-/// the same two steps and the same shared draft mechanism as the circle edit.
+/// the same publication and accepted-picture recovery as the other numeric forms.
 pub(crate) fn finish_angle_edit(
     editor: &mut Editor,
     edits: &mut crate::edits::Edits,
@@ -1671,27 +356,7 @@ pub(crate) fn finish_angle_edit(
     edits.finish(generation, result)
 }
 
-/// Finish one annulus edit at the application boundary.
-///
-/// The same two steps the circle edit takes, through the same shared draft
-/// mechanism: a published copy hands its draft to `draft_published` so an Open
-/// that is later refused can give it back, and the generation check stays the
-/// worker state's.
-pub(crate) fn finish_annulus_edit(
-    editor: &mut Editor,
-    edits: &mut crate::edits::Edits,
-    generation: u64,
-    result: Result<ferritecad_jobs::EditedDocument>,
-) -> Option<PathBuf> {
-    if edits.accepts(generation)
-        && let Ok(saved) = &result
-    {
-        editor.draft_published(&saved.destination);
-    }
-    edits.finish(generation, result)
-}
-
-/// Vertices beyond this are not drawn: the canvas shows no contour that has one.
+/// Coordinates beyond this are not drawn by the constraint canvas.
 const DRAWABLE_MM: f64 = 1e6;
 
 /// How near a press must be to a vertex or a handle to take it, in egui logical
@@ -1700,7 +365,7 @@ const PICK_POINTS: f32 = 9.0;
 
 /// The screen point of the document point `p` (mm) on a canvas `rect` whose
 /// lower-left corner shows `minimum` at `scale` logical points per mm; +Y is up.
-/// The one transform of the Line canvas and of the Circle and annulus canvas.
+/// The transform of the retained constraint canvas.
 fn canvas_point(rect: egui::Rect, minimum: [f64; 2], scale: f32, p: [f64; 2]) -> egui::Pos2 {
     rect.left_bottom()
         + egui::vec2(
@@ -1716,22 +381,6 @@ fn canvas_mm(rect: egui::Rect, minimum: [f64; 2], scale: f32, pos: egui::Pos2) -
         minimum[0] + f64::from(pos.x - origin.x) / f64::from(scale),
         minimum[1] + f64::from(origin.y - pos.y) / f64::from(scale),
     ]
-}
-
-/// The view (lower-left corner in mm, logical points per mm) that shows the box
-/// `lo`..`hi` on a canvas of `size` with 30-point margins, from `lo`.
-fn fit_view(lo: [f64; 2], hi: [f64; 2], size: egui::Vec2) -> ([f64; 2], f32) {
-    let width = (hi[0] - lo[0]).max(1e-5);
-    let height = (hi[1] - lo[1]).max(1e-5);
-    let scale =
-        ((f64::from(size.x) - 60.0) / width).min((f64::from(size.y) - 60.0) / height) as f32;
-    (
-        [
-            lo[0] - 30.0 / f64::from(scale),
-            lo[1] - 30.0 / f64::from(scale),
-        ],
-        scale,
-    )
 }
 
 /// A canvas's background and millimetre grid; returns the grid step in mm. At most
@@ -1756,966 +405,6 @@ fn paint_grid(painter: &egui::Painter, rect: egui::Rect, minimum: [f64; 2], scal
     grid
 }
 
-/// Drawing coordinates are a view of numbers, never a source of modelling rules.
-#[derive(Debug)]
-struct Canvas {
-    minimum: [f64; 2],
-    scale: f32,
-    selected: Option<usize>,
-    gesture: Option<VertexDrag>,
-    claimed_press: bool,
-    snap: Snap,
-    /// §31C: snap to the drawn contour's endpoints, midpoints and crossings.
-    /// Editor state beside the grid step: off for a new editor, never persisted.
-    object_snap: bool,
-    /// §31D-1: orthogonal or 45° guides from an explicit anchor. Editor state beside
-    /// the grid step: off for a new editor, never persisted.
-    guides: guide::Mode,
-    /// The Length mm field as typed (blank = none). A temporary input to the next
-    /// guided point or drag, owned by this editor, never a constraint or a
-    /// document value; a gesture reads it once, at its start.
-    length: String,
-    /// §31D-2: "From object": a gesture starts from a shown object point instead of
-    /// the last vertex or the pressed one. Editor state beside the guides: off for a
-    /// new editor, never persisted, and used only while Guides are on.
-    anchors: bool,
-    /// The anchor the hovering pointer holds over the shown contour: frame state
-    /// that no history, selection or document ever sees. A press confirms it.
-    provisional: Option<object_snap::Candidate>,
-    /// §31J: zoom and pan of this canvas's own view (`minimum`, `scale`).
-    nav: navigation::Navigation,
-    /// §31J: a primary press made a pan (Shift) and has not been released: the click
-    /// egui will make of it places and selects nothing.
-    pan_click: bool,
-}
-
-/// A change of the snap row, replayed at the event that made it (see `draw`).
-#[derive(Debug, Clone, Copy)]
-enum SnapChange {
-    Grid(Snap),
-    Objects(bool),
-    Guides(guide::Mode),
-    Anchors(bool),
-}
-
-#[derive(Debug)]
-struct VertexDrag {
-    vertex: usize,
-    press: egui::Pos2,
-    scale: f64,
-    start: [f64; 2],
-    before: State,
-    snap: Snap,
-    /// §31C: the object candidates as the press found them (the grid step is
-    /// frozen the same way), or none when Object snap was off at the press. Held
-    /// here, not in the draft or the history; a toggle changes the next gesture.
-    objects: Option<Vec<object_snap::Candidate>>,
-    /// The object point the last preview used and the pointer that found it.
-    hit: Option<(object_snap::Candidate, egui::Pos2)>,
-    /// §31D-1: the guide settings as the press found them (none when Guides were
-    /// Off), with the guide held so far. The anchor is `start`: where the vertex
-    /// was at the press, not a moving point.
-    guide: Option<(guide::Settings, Option<usize>)>,
-    /// The guide outcome of the last preview (a guide or a refusal) and the pointer.
-    guided: Option<(guide::Outcome, egui::Pos2)>,
-    /// §31D-2: set when the press confirmed an object anchor; the gesture then
-    /// measures from it and the fields above that describe a pressed vertex's own
-    /// start (`start`, `objects` for its own position, `guide`) are not used.
-    anchored: Option<Anchored>,
-}
-
-/// §31D-2: what a gesture from a confirmed anchor froze at its press.
-#[derive(Debug)]
-struct Anchored {
-    anchor: object_snap::Candidate,
-    /// The document point under the pointer at the press.
-    press_mm: [f64; 2],
-    settings: guide::Settings,
-    /// The guide held so far.
-    held: Option<usize>,
-}
-
-/// Preview frames do not enter history. Each changed release supplies one
-/// checkpoint, even when several gestures arrive in a frame. Cancellation
-/// restores only the active gesture without changing undo or redo.
-enum CanvasEdit {
-    Ordinary,
-    Gesture,
-    Finished(Vec<State>),
-}
-impl Default for Canvas {
-    fn default() -> Self {
-        Self {
-            minimum: [-8.75, -7.5],
-            scale: 4.0,
-            selected: None,
-            gesture: None,
-            claimed_press: false,
-            snap: Snap::Off,
-            object_snap: false,
-            guides: guide::Mode::Off,
-            length: String::new(),
-            anchors: false,
-            provisional: None,
-            nav: navigation::Navigation::default(),
-            pan_click: false,
-        }
-    }
-}
-/// Where in `events` a control's accepted click belongs: its pointer release, else
-/// the last Space/Enter press, else after every event. Used to replay a change of
-/// the snap row at the moment it was made, in order with the canvas gestures.
-fn release_index(events: &[egui::Event], response: &egui::Response) -> usize {
-    events
-        .iter()
-        .rposition(|event| {
-            matches!(event,
-                egui::Event::PointerButton {
-                    pos, button: egui::PointerButton::Primary,
-                    pressed: false, ..
-                } if response.rect.contains(*pos)
-            )
-        })
-        .or_else(|| {
-            events.iter().rposition(|event| {
-                matches!(
-                    event,
-                    egui::Event::Key {
-                        key: egui::Key::Space | egui::Key::Enter,
-                        pressed: true,
-                        ..
-                    }
-                )
-            })
-        })
-        .unwrap_or(events.len())
-}
-
-impl Canvas {
-    fn apply_snap_change(&mut self, change: SnapChange) {
-        match change {
-            SnapChange::Grid(step) => self.snap = step,
-            SnapChange::Objects(on) => self.object_snap = on,
-            SnapChange::Guides(mode) => {
-                self.guides = mode;
-                if mode == guide::Mode::Off {
-                    self.provisional = None;
-                }
-            }
-            SnapChange::Anchors(on) => {
-                self.anchors = on;
-                if !on {
-                    self.provisional = None;
-                }
-            }
-        }
-    }
-    fn fit(&mut self, points: &[[f64; 2]]) {
-        if points.is_empty() {
-            return;
-        }
-        let mut lo = points[0];
-        let mut hi = points[0];
-        for p in points {
-            for j in 0..2 {
-                lo[j] = lo[j].min(p[j]);
-                hi[j] = hi[j].max(p[j]);
-            }
-        }
-        (self.minimum, self.scale) = fit_view(lo, hi, egui::vec2(510., 250.));
-    }
-    /// One vertex as a drawable point: finite numbers within [`DRAWABLE_MM`].
-    fn vertex(p: &[String; 2]) -> Option<[f64; 2]> {
-        let [x, y] = [number(&p[0]).ok()?, number(&p[1]).ok()?];
-        (x.is_finite() && y.is_finite() && x.abs() <= DRAWABLE_MM && y.abs() <= DRAWABLE_MM)
-            .then_some([x, y])
-    }
-    fn points(draft: &State) -> Option<Vec<[f64; 2]>> {
-        draft.points.iter().map(Self::vertex).collect()
-    }
-    fn screen(&self, rect: egui::Rect, p: [f64; 2]) -> egui::Pos2 {
-        canvas_point(rect, self.minimum, self.scale, p)
-    }
-    fn hit(
-        &self,
-        rect: egui::Rect,
-        visible: egui::Rect,
-        points: &[[f64; 2]],
-        at: egui::Pos2,
-    ) -> Option<usize> {
-        points
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                let screen = self.screen(rect, *p);
-                let distance = screen.distance_sq(at);
-                (visible.contains(screen) && distance <= PICK_POINTS * PICK_POINTS)
-                    .then_some((i, distance))
-            })
-            .min_by(|(i, a), (j, b)| a.total_cmp(b).then(i.cmp(j)))
-            .map(|(i, _)| i)
-    }
-    fn cancel(&mut self, draft: &mut State) {
-        if let Some(drag) = self.gesture.take() {
-            *draft = drag.before;
-        }
-    }
-    /// The document point (mm) under a screen position of the canvas `rect`.
-    fn document(&self, rect: egui::Rect, pos: egui::Pos2) -> [f64; 2] {
-        canvas_mm(rect, self.minimum, self.scale, pos)
-    }
-    /// What is visible of the canvas `rect`, as a document rectangle: snap points
-    /// outside it are not offered, as vertices outside it cannot be picked.
-    fn visible_window(&self, rect: egui::Rect, visible: egui::Rect) -> object_snap::Window {
-        object_snap::Window::new(
-            self.document(rect, visible.left_bottom()),
-            self.document(rect, visible.right_top()),
-        )
-    }
-    /// The selected vertex that can be moved from an explicit guide anchor.
-    fn anchor_vertex(&self, draft: &State) -> Option<usize> {
-        self.selected
-            .filter(|&i| self.anchors && self.guides != guide::Mode::Off && i < draft.points.len())
-    }
-    /// §31D-2: the provisional anchor once the pointer is at `at` of the canvas
-    /// `rect`; none when the pointer is not over it, nothing can be anchored, or no
-    /// shown object point is near. The set is the drawn contour's, cut to the window
-    /// the release distance reaches; in a saved Sketch the moved vertex and what sits
-    /// on it are not offered. The held anchor is kept by `anchor::track`.
-    fn track_anchor(
-        &mut self,
-        rect: egui::Rect,
-        visible: egui::Rect,
-        draft: &State,
-        at: Option<egui::Pos2>,
-    ) {
-        self.provisional = at.and_then(|at| {
-            let vertex = self.anchor_vertex(draft)?;
-            let points = Self::points(draft)?;
-            let cursor = self.document(rect, at);
-            let points_per_mm = f64::from(self.scale);
-            let near = object_snap::Window::around(cursor, anchor::RELEASE_POINTS / points_per_mm);
-            let mut candidates = object_snap::collect(&points, true, Some(near));
-            object_snap::drop_at(&mut candidates, points[vertex]);
-            anchor::track(
-                self.provisional,
-                &candidates,
-                &object_snap::Query {
-                    cursor,
-                    points_per_mm,
-                    visible: self.visible_window(rect, visible),
-                },
-            )
-        });
-    }
-    /// §31D-2: the standing line's situation and the point count the anchor's words
-    /// are numbered in, while the mode is on.
-    fn anchor_situation(&self, draft: &State) -> Option<(anchor::Situation, usize)> {
-        use anchor::Situation;
-        if !self.anchors {
-            return None;
-        }
-        if self.guides == guide::Mode::Off {
-            return Some((Situation::NeedsGuides, draft.points.len()));
-        }
-        if let Some(drag) = &self.gesture
-            && let Some(anchored) = &drag.anchored
-        {
-            return Some((
-                Situation::Held(anchored.anchor, drag.vertex),
-                drag.before.points.len(),
-            ));
-        }
-        let situation = match (self.anchor_vertex(draft), self.provisional) {
-            (Some(moves), Some(anchor)) => Situation::Provisional(anchor, moves),
-            (Some(moves), None) => Situation::Looking(moves),
-            (None, _) => Situation::SelectFirst,
-        };
-        Some((situation, draft.points.len()))
-    }
-    /// §31D-2: a gesture from a confirmed anchor. The point is where the pointer is in
-    /// the document (the press point and its movement), not the moved vertex's grab
-    /// offset; object → guide → grid → free, the guide measured from the anchor, whose
-    /// own position is no object target. The draft is rebuilt from the press-time
-    /// strings at every preview, so a pointer back at the press leaves nothing behind.
-    fn preview_anchored(
-        drag: &mut VertexDrag,
-        draft: &mut State,
-        at: egui::Pos2,
-        visible: object_snap::Window,
-    ) {
-        let Some(anchored) = &mut drag.anchored else {
-            return;
-        };
-        drag.hit = None;
-        drag.guided = None;
-        let delta = [
-            f64::from(at.x) - f64::from(drag.press.x),
-            f64::from(drag.press.y) - f64::from(at.y),
-        ];
-        let cursor = [
-            anchored.press_mm[0] + delta[0] / drag.scale,
-            anchored.press_mm[1] + delta[1] / drag.scale,
-        ];
-        // A press that has not moved has no direction and keeps its strings.
-        let placed = if delta == [0.0, 0.0] {
-            None
-        } else {
-            let object = drag.objects.as_deref().and_then(|objects| {
-                object_snap::pick(
-                    objects,
-                    &object_snap::Query {
-                        cursor,
-                        points_per_mm: drag.scale,
-                        visible,
-                    },
-                )
-            });
-            let from = anchored.anchor.at;
-            let reach = guide::Reach {
-                anchor: from,
-                offset: [cursor[0] - from[0], cursor[1] - from[1]],
-                points_per_mm: drag.scale,
-                held: anchored.held,
-            };
-            let (outcome, next) = guide::resolve(anchored.settings, &reach, object);
-            anchored.held = next;
-            match outcome {
-                guide::Outcome::Object(hit) => {
-                    drag.hit = Some((hit, at));
-                    Some(hit.at.map(object_snap::coordinate))
-                }
-                guide::Outcome::Guide(ref guided) => {
-                    let text = guide::strings(
-                        guided.heading,
-                        guided.at,
-                        &from.map(object_snap::coordinate),
-                    );
-                    drag.guided = Some((outcome, at));
-                    Some(text)
-                }
-                guide::Outcome::Refused { .. } => {
-                    drag.guided = Some((outcome, at));
-                    None
-                }
-                guide::Outcome::Open => Some(cursor.map(|n| drag.snap.apply(n))),
-            }
-        };
-        draft.points[drag.vertex] =
-            placed.unwrap_or_else(|| drag.before.points[drag.vertex].clone());
-    }
-    fn preview(&mut self, draft: &mut State, at: egui::Pos2, visible: object_snap::Window) {
-        if let Some(drag) = &mut self.gesture {
-            if drag.anchored.is_some() {
-                Self::preview_anchored(drag, draft, at, visible);
-                return;
-            }
-            // Preserve the grab offset and original strings on untouched axes.
-            let delta = [
-                f64::from(at.x) - f64::from(drag.press.x),
-                f64::from(drag.press.y) - f64::from(at.y),
-            ];
-            // The object point nearest where the vertex would be; none for a
-            // press that has not moved, which keeps its strings like the grid.
-            let offset = [delta[0] / drag.scale, delta[1] / drag.scale];
-            let object = drag
-                .objects
-                .as_deref()
-                .filter(|_| delta != [0.0, 0.0])
-                .and_then(|objects| {
-                    object_snap::pick(
-                        objects,
-                        &object_snap::Query {
-                            cursor: [drag.start[0] + offset[0], drag.start[1] + offset[1]],
-                            points_per_mm: drag.scale,
-                            visible,
-                        },
-                    )
-                });
-            // The guides of this gesture, frozen at its press, measured from the
-            // vertex's press-time position; they rank below the object and above
-            // the grid. A press that has not moved has no direction.
-            let outcome = match &mut drag.guide {
-                Some((settings, held)) if delta != [0.0, 0.0] => {
-                    let reach = guide::Reach {
-                        anchor: drag.start,
-                        offset,
-                        points_per_mm: drag.scale,
-                        held: *held,
-                    };
-                    let (outcome, next) = guide::resolve(*settings, &reach, object);
-                    *held = next;
-                    outcome
-                }
-                _ => object.map_or(guide::Outcome::Open, guide::Outcome::Object),
-            };
-            drag.hit = None;
-            drag.guided = None;
-            match outcome {
-                guide::Outcome::Object(hit) => {
-                    // An object point wins outright: neither the grid nor three
-                    // decimals touch it.
-                    drag.hit = Some((hit, at));
-                    for axis in 0..2 {
-                        draft.points[drag.vertex][axis] = object_snap::coordinate(hit.at[axis]);
-                    }
-                    return;
-                }
-                guide::Outcome::Guide(ref guided) => {
-                    draft.points[drag.vertex] =
-                        guide::strings(guided.heading, guided.at, &drag.before.points[drag.vertex]);
-                    drag.guided = Some((outcome, at));
-                    return;
-                }
-                guide::Outcome::Refused { .. } => {
-                    // A length that cannot be used moves nothing.
-                    draft.points[drag.vertex] = drag.before.points[drag.vertex].clone();
-                    drag.guided = Some((outcome, at));
-                    return;
-                }
-                guide::Outcome::Open => {}
-            }
-            for (axis, delta) in delta.into_iter().enumerate() {
-                draft.points[drag.vertex][axis] = if delta == 0.0 {
-                    drag.before.points[drag.vertex][axis].clone()
-                } else {
-                    drag.snap.apply(drag.start[axis] + delta / drag.scale)
-                };
-            }
-        }
-    }
-    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State, queued: bool) -> CanvasEdit {
-        let points = Self::points(draft);
-        let events = ui.input(|i| i.events.clone());
-        let mut snap_changes = Vec::new();
-        ui.add_enabled_ui(self.gesture.is_none() && !self.nav.panning(), |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Fit drawing").clicked()
-                    && let Some(p) = &points
-                {
-                    self.fit(p);
-                }
-                if ui.button("Reset view").clicked() {
-                    self.minimum = Self::default().minimum;
-                    self.scale = Self::default().scale;
-                }
-                ui.label("+X right · +Y up · coordinates in mm");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Snap:");
-                for (value, label) in Snap::CHOICES {
-                    let response = ui.selectable_label(self.snap == value, label);
-                    if response.clicked() {
-                        // egui evaluates the control before we replay canvas
-                        // events. Defer its accepted click to the actual release
-                        // so a later Snap choice cannot rewrite an earlier drag.
-                        snap_changes
-                            .push((release_index(&events, &response), SnapChange::Grid(value)));
-                        ui.ctx().request_repaint();
-                    }
-                }
-                ui.separator();
-                // §31C: the same deferral, so a toggle changes the next gesture.
-                let mut on = self.object_snap;
-                let response = ui.checkbox(&mut on, "Object snap").on_hover_text(
-                    "Snap to endpoints, midpoints and finite crossings of the drawn contour",
-                );
-                if response.clicked() {
-                    snap_changes.push((release_index(&events, &response), SnapChange::Objects(on)));
-                    ui.ctx().request_repaint();
-                }
-            });
-            // §31D-1: the guide choice and the optional typed length. The length is
-            // keyboard-only text read at the start of a gesture, so nothing has to be
-            // typed while a mouse button is held; the row is off during a drag.
-            ui.horizontal(|ui| {
-                ui.label("Guides:");
-                for (value, label) in guide::Mode::CHOICES {
-                    let response = ui.selectable_label(self.guides == value, label);
-                    if response.clicked() {
-                        snap_changes
-                            .push((release_index(&events, &response), SnapChange::Guides(value)));
-                        ui.ctx().request_repaint();
-                    }
-                }
-                ui.separator();
-                let name = ui.label("Length mm");
-                // A disabled box that still has the keyboard focus would keep
-                // taking text, so while a gesture holds it, a job runs or Guides
-                // are off it is also not interactive.
-                let usable = ui.is_enabled() && self.guides != guide::Mode::Off;
-                ui.add_enabled(
-                    self.guides != guide::Mode::Off,
-                    egui::TextEdit::singleline(&mut self.length)
-                        .char_limit(64)
-                        .desired_width(70.)
-                        .hint_text("optional")
-                        .interactive(usable),
-                )
-                .labelled_by(name.id)
-                .on_hover_text(
-                    "Distance from the ringed anchor along a shown guide. Temporary: it places \
-                     coordinates only and is not a constraint.",
-                );
-                ui.separator();
-                // §31D-2: the same deferral. Unavailable while Guides are off.
-                let mut from_object = self.anchors;
-                let response = ui
-                    .add_enabled(
-                        self.guides != guide::Mode::Off,
-                        egui::Checkbox::new(&mut from_object, "From object"),
-                    )
-                    .on_hover_text(
-                        "Start a guided gesture from a shown endpoint, midpoint or crossing: \
-                         hover it, press, drag, release. Editor-only; nothing is saved.",
-                    )
-                    .on_disabled_hover_text("Choose Orthogonal or Polar 45° first.");
-                if response.clicked() {
-                    snap_changes.push((
-                        release_index(&events, &response),
-                        SnapChange::Anchors(from_object),
-                    ));
-                    ui.ctx().request_repaint();
-                }
-            });
-            let (note, refused) = guide::note(
-                self.guides,
-                guide::Length::parse(&self.length),
-                &self.length,
-            );
-            if refused {
-                ui.colored_label(ui.visuals().error_fg_color, note);
-            } else {
-                ui.small(note);
-            }
-        });
-        let (response, painter) =
-            ui.allocate_painter(egui::vec2(510., 250.), egui::Sense::click_and_drag());
-        let rect = response.rect;
-        let mut change = if self.claimed_press {
-            CanvasEdit::Gesture
-        } else {
-            CanvasEdit::Ordinary
-        };
-        let pointer = ui.input(|i| i.pointer.clone());
-        let mut checkpoints = Vec::new();
-        let visible_rect = rect.intersect(ui.clip_rect());
-        let visible = self.visible_window(rect, visible_rect);
-        // §31J: navigation reads the same events in order, against a working copy of the
-        // view. Presses, moves, releases and clicks of the frame are read against the view
-        // the person saw; the copy replaces it at the end of the frame, unless a vertex is
-        // held then.
-        let open = ui.is_enabled() && !queued;
-        self.nav.begin(ui, open);
-        let mut view = navigation::View {
-            minimum: self.minimum,
-            scale: self.scale,
-        };
-        let mut pan_click = self.pan_click;
-        // Aggregate pointer state loses ordering when one frame contains the
-        // release of an old gesture and the press (or whole gesture) of another.
-        // Own gestures at their actual press and process every event in order.
-        for (index, event) in events.iter().enumerate() {
-            for &(_, change) in snap_changes.iter().filter(|(at, _)| *at == index) {
-                self.apply_snap_change(change);
-            }
-            if self.nav.event(
-                &navigation::Surface {
-                    ui,
-                    rect,
-                    visible: visible_rect,
-                    open,
-                    frozen: self.gesture.is_some(),
-                },
-                event,
-                &mut view,
-            ) {
-                if let egui::Event::PointerButton {
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    ..
-                } = *event
-                {
-                    self.pan_click = pressed;
-                    pan_click = true;
-                }
-                continue;
-            }
-            match *event {
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    ..
-                } => {
-                    self.cancel(draft);
-                    if pointer_over(ui, visible_rect, pos)
-                        && let Some(points) = Self::points(draft)
-                    {
-                        // §31D-2: the anchor the pointer holds at the press, in event
-                        // order, is confirmed by this press and not selected or dragged.
-                        // A press can confirm a ring shown by a preceding move,
-                        // including a move earlier in this frame. It cannot acquire
-                        // an unseen anchor after a tab/focus reset.
-                        if self.provisional.is_some() {
-                            self.track_anchor(rect, visible_rect, draft, Some(pos));
-                        }
-                        if let Some(vertex) = self.anchor_vertex(draft)
-                            && let Some(anchor) = self.provisional.take()
-                        {
-                            self.claimed_press = true;
-                            change = CanvasEdit::Gesture;
-                            let mut objects = object_snap::frozen(&points, true, points[vertex]);
-                            // The anchor is where the guide starts, never a target.
-                            object_snap::drop_at(&mut objects, anchor.at);
-                            self.gesture = Some(VertexDrag {
-                                vertex,
-                                press: pos,
-                                scale: f64::from(self.scale),
-                                start: anchor.at,
-                                before: draft.clone(),
-                                snap: self.snap,
-                                objects: self.object_snap.then_some(objects),
-                                hit: None,
-                                guide: None,
-                                guided: None,
-                                anchored: Some(Anchored {
-                                    anchor,
-                                    press_mm: self.document(rect, pos),
-                                    settings: guide::Settings {
-                                        mode: self.guides,
-                                        length: guide::Length::parse(&self.length),
-                                    },
-                                    held: None,
-                                }),
-                            });
-                        } else if let Some(vertex) = self.hit(rect, visible_rect, &points, pos) {
-                            self.selected = Some(vertex);
-                            self.claimed_press = true;
-                            change = CanvasEdit::Gesture;
-                            self.gesture = Some(VertexDrag {
-                                vertex,
-                                press: pos,
-                                scale: f64::from(self.scale),
-                                start: points[vertex],
-                                before: draft.clone(),
-                                snap: self.snap,
-                                objects: self
-                                    .object_snap
-                                    .then(|| object_snap::frozen(&points, true, points[vertex])),
-                                hit: None,
-                                guide: (self.guides != guide::Mode::Off).then(|| {
-                                    (
-                                        guide::Settings {
-                                            mode: self.guides,
-                                            length: guide::Length::parse(&self.length),
-                                        },
-                                        None,
-                                    )
-                                }),
-                                guided: None,
-                                anchored: None,
-                            });
-                        }
-                    }
-                }
-                egui::Event::PointerMoved(pos) => {
-                    self.preview(draft, pos, visible);
-                    // §31D-2: the pointer in event order, so a press in the same frame
-                    // finds the anchor it moved onto.
-                    if self.gesture.is_none() {
-                        let over = pointer_over(ui, visible_rect, pos).then_some(pos);
-                        self.track_anchor(rect, visible_rect, draft, over);
-                    }
-                }
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    ..
-                } => {
-                    self.preview(draft, pos, visible);
-                    if let Some(drag) = self.gesture.take()
-                        && *draft != drag.before
-                    {
-                        if checkpoints.len() == 128 {
-                            checkpoints.remove(0);
-                        }
-                        checkpoints.push(drag.before);
-                    }
-                    self.claimed_press = false;
-                    self.provisional = None;
-                }
-                egui::Event::Key {
-                    key: egui::Key::Escape,
-                    pressed: true,
-                    ..
-                } if self.gesture.is_some() || self.provisional.is_some() => {
-                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                    self.cancel(draft);
-                    self.provisional = None;
-                }
-                egui::Event::WindowFocused(false) | egui::Event::PointerGone => {
-                    self.cancel(draft);
-                    self.provisional = None;
-                }
-                _ => {}
-            }
-        }
-        // Accessibility/programmatic activation can have no pointer/key event.
-        for &(_, change) in snap_changes.iter().filter(|(at, _)| *at == events.len()) {
-            self.apply_snap_change(change);
-        }
-        // A lost release must not leave a preview or a permanently owned drag.
-        if !ui.input(|i| i.focused) || !pointer.primary_down() {
-            self.cancel(draft);
-        }
-        self.nav.finish(ui);
-        if !checkpoints.is_empty() {
-            change = CanvasEdit::Finished(checkpoints);
-        }
-        // §31D-2: the anchor under a pointer that rests over the canvas; none during
-        // a gesture (its anchor is the gesture's own) or when the pointer is away.
-        let resting = if self.gesture.is_some() {
-            None
-        } else {
-            response.hover_pos()
-        };
-        // An idle redraw only validates a held ring. Acquisition and replacement
-        // belong to PointerMoved, so a cleared anchor cannot reappear on another
-        // tab or after Escape/focus loss without a fresh pointer movement.
-        if let Some(held) = self.provisional {
-            self.track_anchor(rect, visible_rect, draft, resting);
-            if self.provisional != Some(held) {
-                self.provisional = None;
-            }
-        }
-        let points = Self::points(draft);
-        let hover = response.hover_pos().and_then(|pos| {
-            points
-                .as_ref()
-                .and_then(|points| self.hit(rect, visible_rect, points, pos))
-        });
-        let (marker, guided) = self
-            .gesture
-            .as_ref()
-            .map_or((None, None), |drag| (drag.hit, drag.guided.as_ref()));
-        if matches!(change, CanvasEdit::Ordinary)
-            && !pan_click
-            && response.clicked_by(egui::PointerButton::Primary)
-            && let Some(vertex) = hover
-        {
-            self.selected = Some(vertex);
-        }
-        if !pointer.primary_down() {
-            self.claimed_press = false;
-            self.pan_click = false;
-        }
-        if self.gesture.is_none() {
-            (self.minimum, self.scale) = (view.minimum, view.scale);
-        }
-        let screen = |p| self.screen(rect, p);
-        let grid = paint_grid(&painter, rect, self.minimum, self.scale);
-        painter.text(
-            rect.left_top() + egui::vec2(5., 5.),
-            egui::Align2::LEFT_TOP,
-            format!(
-                "grid: {grid} mm · snap: {} · object snap: {} · guides: {}{}",
-                self.snap.label(),
-                if self.object_snap { "on" } else { "off" },
-                self.guides.label(),
-                match guide::Length::parse(&self.length) {
-                    _ if self.guides == guide::Mode::Off => String::new(),
-                    guide::Length::None => String::new(),
-                    guide::Length::Millimetres(_) => {
-                        format!(" · length: {} mm", self.length.trim())
-                    }
-                    guide::Length::Refused => " · length: refused".into(),
-                }
-            ),
-            egui::FontId::proportional(12.),
-            egui::Color32::WHITE,
-        );
-        if draft.feature.revolves() {
-            // The axis of revolution: the sketch's local Y axis, X = 0. Drawn
-            // whenever the view reaches it, and named either way, so it is
-            // clear which side of it the profile must stay on.
-            let x = screen([0.0, self.minimum[1]]).x;
-            let colour = egui::Color32::from_rgb(255, 165, 60);
-            if x >= rect.left() && x <= rect.right() {
-                painter.line_segment(
-                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                    (2., colour),
-                );
-            }
-            painter.text(
-                egui::pos2(
-                    x.clamp(rect.left() + 4., rect.right() - 4.),
-                    rect.bottom() - 4.,
-                ),
-                egui::Align2::LEFT_BOTTOM,
-                "axis (Y) at X = 0 · radius X →",
-                egui::FontId::proportional(12.),
-                colour,
-            );
-        }
-        if let Some(points) = Self::points(draft) {
-            for pair in points.windows(2) {
-                painter.line_segment(
-                    [screen(pair[0]), screen(pair[1])],
-                    (2., egui::Color32::LIGHT_BLUE),
-                );
-            }
-            if points.len() > 1 {
-                painter.line_segment(
-                    [screen(points[points.len() - 1]), screen(points[0])],
-                    (2., egui::Color32::LIGHT_BLUE),
-                );
-            }
-            for (i, p) in points.iter().enumerate() {
-                let p = screen(*p);
-                let selected = self.selected == Some(i);
-                if hover == Some(i) {
-                    painter.circle_stroke(p, 9., (1.5, egui::Color32::LIGHT_BLUE));
-                }
-                painter.circle_filled(
-                    p,
-                    if selected { 5. } else { 3. },
-                    if selected {
-                        egui::Color32::LIGHT_YELLOW
-                    } else {
-                        egui::Color32::WHITE
-                    },
-                );
-                painter.text(
-                    p + egui::vec2(4., -4.),
-                    egui::Align2::LEFT_BOTTOM,
-                    (i + 1).to_string(),
-                    egui::FontId::proportional(12.),
-                    egui::Color32::WHITE,
-                );
-            }
-        }
-        if let Some((hit, pointer)) = marker {
-            paint_object_snap(&painter, rect, screen(hit.at), hit.kind, pointer);
-        }
-        if let Some((situation, vertices)) = self.anchor_situation(draft) {
-            paint_standing(&painter, rect, &anchor::status(situation, vertices));
-        }
-        if let Some(anchor) = self.provisional {
-            paint_provisional(
-                &painter,
-                rect,
-                screen(anchor.at),
-                &format!("From {}", anchor::describe(&anchor, draft.points.len())),
-                response.hover_pos(),
-            );
-        }
-        // §31D-1: the anchor is drawn apart from the target point, and so are the
-        // guide held and its words; all of it for the frame only.
-        if let Some((anchor, role)) = self.gesture.as_ref().and_then(|drag| {
-            if let Some(anchored) = &drag.anchored {
-                Some((
-                    anchored.anchor.at,
-                    guide::Role::DragFrom {
-                        source: anchored.anchor,
-                        vertices: drag.before.points.len(),
-                        vertex: drag.vertex,
-                    },
-                ))
-            } else {
-                drag.guide.as_ref().map(|_| {
-                    (
-                        drag.start,
-                        guide::Role::Drag {
-                            vertex: drag.vertex,
-                        },
-                    )
-                })
-            }
-        }) {
-            paint_guide(
-                &painter,
-                rect,
-                screen(anchor),
-                guided.map(|(outcome, pointer)| {
-                    (outcome, role, *pointer, outcome_target(outcome).map(screen))
-                }),
-            );
-        }
-        navigation::paint_hint(&painter, rect, self.nav.hint(open, self.gesture.is_some()));
-        ui.label(
-            self.selected
-                .and_then(|i| draft.points.get(i).map(|p| (i, p)))
-                .map(|(i, p)| format!("Vertex {} · X {} mm · Y {} mm", i + 1, p[0], p[1]))
-                .unwrap_or_else(|| "Select/drag a vertex · Escape cancels the gesture".into()),
-        );
-        change
-    }
-}
-/// The colour of the object-snap marker, which tests also look for.
-const SNAP_MARKER: egui::Color32 = egui::Color32::from_rgb(255, 214, 10);
-
-/// A glyph per kind at the snapped point and its name beside the pointer, for the
-/// frame only: nothing of it is stored.
-fn paint_object_snap(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    at: egui::Pos2,
-    kind: object_snap::SnapKind,
-    pointer: egui::Pos2,
-) {
-    let stroke = egui::Stroke::new(2., SNAP_MARKER);
-    let r = 5.;
-    match kind {
-        object_snap::SnapKind::Endpoint => {
-            painter.rect_stroke(
-                egui::Rect::from_center_size(at, egui::vec2(2. * r, 2. * r)),
-                0.,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-        }
-        object_snap::SnapKind::Midpoint => {
-            painter.add(egui::Shape::closed_line(
-                vec![
-                    at + egui::vec2(0., -r),
-                    at + egui::vec2(r, r),
-                    at + egui::vec2(-r, r),
-                ],
-                stroke,
-            ));
-        }
-        object_snap::SnapKind::Intersection => {
-            painter.line_segment([at + egui::vec2(-r, -r), at + egui::vec2(r, r)], stroke);
-            painter.line_segment([at + egui::vec2(-r, r), at + egui::vec2(r, -r)], stroke);
-        }
-    }
-    paint_pointer_label(painter, rect, pointer, kind.label(), SNAP_MARKER);
-}
-
-/// A name beside the pointer on a dark plate, clamped into the canvas.
-fn paint_pointer_label(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    pointer: egui::Pos2,
-    text: &str,
-    colour: egui::Color32,
-) {
-    let galley = painter.layout_no_wrap(text.into(), egui::FontId::proportional(12.), colour);
-    let size = galley.size();
-    let corner = egui::pos2(
-        (pointer.x + 14.).min(rect.right() - size.x - 4.),
-        (pointer.y + 14.).min(rect.bottom() - size.y - 4.),
-    );
-    painter.rect_filled(
-        egui::Rect::from_min_size(corner, size).expand(2.),
-        2.,
-        egui::Color32::from_black_alpha(200),
-    );
-    painter.galley(corner, galley, colour);
-}
-
 /// Whether a press or a move at `pos` is on this canvas, as an input the form takes:
 /// the form is enabled, the point is visible on the canvas and no other window covers it.
 fn pointer_over(ui: &egui::Ui, visible: egui::Rect, pos: egui::Pos2) -> bool {
@@ -2725,88 +414,6 @@ fn pointer_over(ui: &egui::Ui, visible: egui::Rect, pos: egui::Pos2) -> bool {
         && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
 }
 
-/// The standing words of the explicit mode, under the canvas's caption, on a dark
-/// plate: the form's height is the same with or without them.
-fn paint_standing(painter: &egui::Painter, rect: egui::Rect, words: &str) {
-    let galley = painter.layout_no_wrap(
-        words.into(),
-        egui::FontId::proportional(11.),
-        egui::Color32::from_gray(225),
-    );
-    let corner = rect.left_top() + egui::vec2(5., 22.);
-    painter.rect_filled(
-        egui::Rect::from_min_size(corner, galley.size()).expand(2.),
-        2.,
-        egui::Color32::from_black_alpha(200),
-    );
-    painter.galley(corner, galley, egui::Color32::from_gray(225));
-}
-
-/// The colour of the provisional anchor's ring, which tests also look for.
-const ANCHOR_COLOUR: egui::Color32 = egui::Color32::from_rgb(110, 170, 255);
-
-/// A provisional anchor: a ring larger than the confirmed one and of its own colour,
-/// and its words beside the pointer, for the frame only.
-fn paint_provisional(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    at: egui::Pos2,
-    words: &str,
-    pointer: Option<egui::Pos2>,
-) {
-    painter.circle_stroke(at, 11., egui::Stroke::new(2., ANCHOR_COLOUR));
-    if let Some(pointer) = pointer {
-        paint_pointer_label(painter, rect, pointer, words, ANCHOR_COLOUR);
-    }
-}
-
-/// The colours of the guide anchor, ray, target and words, which tests also look for.
-const GUIDE_COLOUR: egui::Color32 = egui::Color32::from_rgb(64, 224, 160);
-const GUIDE_REFUSED: egui::Color32 = egui::Color32::from_rgb(255, 110, 100);
-
-/// Where a guided outcome puts the point, in the document.
-fn outcome_target(outcome: &guide::Outcome) -> Option<[f64; 2]> {
-    match outcome {
-        guide::Outcome::Guide(guided) => Some(guided.at),
-        _ => None,
-    }
-}
-
-/// The anchor ring and, when the pointer holds a guide, the ray, the target and the
-/// words. The anchor is drawn apart from the target, and never moves with the
-/// pointer.
-fn paint_guide(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    anchor: egui::Pos2,
-    held: Option<(&guide::Outcome, guide::Role, egui::Pos2, Option<egui::Pos2>)>,
-) {
-    painter.circle_stroke(anchor, 8., egui::Stroke::new(2., GUIDE_COLOUR));
-    let Some((outcome, role, pointer, target)) = held else {
-        return;
-    };
-    let (heading, colour) = match outcome {
-        guide::Outcome::Guide(guided) => (guided.heading, GUIDE_COLOUR),
-        guide::Outcome::Refused { heading } => (*heading, GUIDE_REFUSED),
-        guide::Outcome::Open | guide::Outcome::Object(_) => return,
-    };
-    // The screen's y axis points down; the guide's does not.
-    let unit = guide::unit(heading);
-    let far = anchor + egui::vec2(unit[0] as f32, -unit[1] as f32) * rect.size().length();
-    painter.extend(egui::Shape::dashed_line(
-        &[anchor, far],
-        egui::Stroke::new(1., colour),
-        6.,
-        4.,
-    ));
-    if let Some(target) = target {
-        painter.line_segment([anchor, target], egui::Stroke::new(2., colour));
-        painter.circle_stroke(target, 4., egui::Stroke::new(2., colour));
-    }
-    if let Some(words) = guide::label(outcome, role) {
-        paint_pointer_label(painter, rect, pointer, &words, colour);
-    }
-}
 pub(crate) fn number(s: &str) -> Result<f64> {
     s.trim()
         .parse()
@@ -2817,6 +424,7 @@ pub(crate) fn number(s: &str) -> Result<f64> {
 #[allow(clippy::panic)]
 pub(crate) mod tests {
     use super::*;
+    use crate::sketch_facts::SketchProfileUse;
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
     /// §30Q: New over a tab's floating form, through real widgets.
@@ -2826,14 +434,16 @@ pub(crate) mod tests {
 
     #[test]
     fn floating_forms_in_two_tabs_do_not_share_keyboard_focus() {
-        let root = tempfile::tempdir().expect("root");
-        let path = root.path().join("circle.fcad");
-        analytic_apply::write_round(&path, [12.0, -7.0], &[10.0], 15.0, false);
-        let reading = crate::sketch_facts::read(&path).expect("reading");
+        let (_root, path, reading) = angle_apply::fixture();
+        let id = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::RevolveAngle,
+        )
+        .object;
         let mut a = Editor::default();
         let mut b = Editor::default();
         for editor in [&mut a, &mut b] {
-            assert!(editor.begin_circle_edit(&path, &reading, reading.circle_sketches[0].sketch));
+            assert!(editor.begin_angle_edit(&path, &reading, id));
         }
         let ctx = egui::Context::default();
         let frame = |editor: &mut Editor, tab, events| {
@@ -2857,7 +467,7 @@ pub(crate) mod tests {
         };
         frame(&mut a, 1, vec![]);
         let out = frame(&mut a, 1, vec![]);
-        let field = text_at(&out, "12");
+        let field = text_at(&out, "137.5");
         for pressed in [true, false] {
             frame(
                 &mut a,
@@ -2874,25 +484,25 @@ pub(crate) mod tests {
             );
         }
         frame(&mut a, 1, vec![egui::Event::Text("5".into())]);
-        let typed_a = a.circle.center.clone();
-        assert_ne!(typed_a[0], "12", "A received keyboard input");
+        let typed_a = a.angle.angle_edit.clone();
+        assert_ne!(typed_a, "137.5", "A received keyboard input");
         frame(&mut b, 2, vec![]);
         frame(&mut b, 2, vec![egui::Event::Text("9".into())]);
         frame(&mut b, 2, vec![egui::Event::Text("9".into())]);
         assert_eq!(
-            b.circle.center,
-            ["12", "-7"],
+            b.angle.angle_edit, "137.5",
             "A's focus edited B's floating form"
         );
-        assert_eq!(a.circle.center, typed_a);
+        assert_eq!(a.angle.angle_edit, typed_a);
     }
 
-    /// The request the saved Sketch form makes when `from` is replaced by `to` in
-    /// the two vertex boxes that show it and **Apply vertices** is pressed: the real
-    /// widgets, in the state the window leaves the form in for an idle session.
-    /// Replaces the number `from` by `to` in every box that shows it, through the
-    /// real widgets.
+    /// Move the matching sketch corner with real pointer input, or replace the
+    /// retained angle form's field through its text widget.
     pub(crate) fn replace_one_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
+        if e.viewport.active() {
+            crate::sketch_mode::tests::curve_edits::one_coordinate(e, from, to);
+            return;
+        }
         frame(ctx, e, vec![]);
         frame(ctx, e, vec![]);
         replace_field(ctx, e, from, to);
@@ -2900,40 +510,32 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn replace_in_form(ctx: &egui::Context, e: &mut Editor, from: &str, to: &str) {
-        frame(ctx, e, vec![]);
-        frame(ctx, e, vec![]);
-        let shown = e
-            .draft
-            .as_ref()
-            .map_or(0, |d| d.points.iter().filter(|p| p[0] == from).count());
-        for _ in 0..shown {
-            replace_field(ctx, e, from, to);
-        }
-        frame(ctx, e, vec![]);
+        crate::sketch_mode::tests::curve_edits::move_coordinate(ctx, e, from, to);
     }
 
-    /// Whether the form currently offers **Apply vertices** at all (it does not for
-    /// a draft that is not a request).
+    /// Whether the workspace paints the sketch form's Finish action.
     pub(crate) fn offers_apply(ctx: &egui::Context, e: &mut Editor) -> bool {
         let out = frame(ctx, e, vec![]);
-        out.shapes.iter().any(
-            |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Apply vertices"),
-        )
+        out.shapes
+            .iter()
+            .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Finish"))
     }
 
     /// §30P: one press of `label` on a form the window holds, through the widgets.
     pub(crate) fn press(e: &mut Editor, label: &str) {
-        let ctx = egui::Context::default();
-        frame(&ctx, e, vec![]);
-        let out = frame(&ctx, e, vec![]);
-        click(&ctx, e, text_at(&out, label));
+        press_with(&egui::Context::default(), e, label);
+    }
+    pub(crate) fn press_with(ctx: &egui::Context, e: &mut Editor, label: &str) {
+        frame(ctx, e, vec![]);
+        let out = frame(ctx, e, vec![]);
+        click(ctx, e, text_at(&out, label));
     }
 
     /// §30P: the vertex draft as typed, and the depth of its Undo and Redo.
-    pub(crate) fn vertex_draft(e: &Editor) -> Option<(Vec<[String; 2]>, usize, usize)> {
-        e.draft
-            .as_ref()
-            .map(|d| (d.points.clone(), e.undo.len(), e.redo.len()))
+    pub(crate) fn sketch_draft(
+        e: &Editor,
+    ) -> Option<(Vec<ferritecad_document::SketchCurve>, usize, usize)> {
+        crate::sketch_mode::tests::curve_edits::state(e)
     }
 
     pub(crate) fn typed_apply(
@@ -2943,80 +545,49 @@ pub(crate) mod tests {
         from: &str,
         to: &str,
     ) -> (Editor, EditRequest) {
-        let mut e = Editor::default();
-        e.set_session(true, true, false);
-        assert!(e.begin_edit(path, reading, sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, from, to);
-        replace_field(&ctx, &mut e, from, to);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
-        let request = e.take_apply_request().expect("Apply vertices asked");
-        (e, request)
+        crate::sketch_mode::tests::curve_edits::request(path, reading, sketch, from, to)
     }
 
     #[test]
     fn apply_vertices_is_offered_when_it_would_work_and_keeps_the_draft() {
-        let (root, path, reading) = crate::fillets::tests::plate();
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
+        use crate::sketch_mode::tests::curve_edits;
+        let (_root, path, reading) = crate::fillets::tests::plate();
+        let id = curve_edits::sketch_id(&reading);
         let ctx = egui::Context::default();
-
-        // Not offered while the window says the session is busy: pressing does nothing.
         let mut e = Editor::default();
-        e.set_session(true, false, false);
-        assert!(e.begin_edit(&path, &reading, id));
-        frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, "33", "41.25");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
-        assert!(e.take_apply_request().is_none(), "a disabled button asked");
-
-        // Offered: one press, one request, naming the version the form was opened on.
-        let (mut e, request) = typed_apply(&path, &reading, id, "33", "41.25");
+        assert!(e.begin_test_drawing(&path, &reading, id));
+        replace_in_form(&ctx, &mut e, "33", "41.3");
+        let kept = sketch_draft(&e);
+        e.viewport.set_apply(false);
+        press_with(&ctx, &mut e, "Finish");
+        assert!(
+            e.viewport.take_request().is_none(),
+            "a disabled button asked"
+        );
+        assert_eq!(sketch_draft(&e), kept);
+        e.viewport.set_apply(true);
+        press_with(&ctx, &mut e, "Finish");
+        let request = e.viewport.take_request().expect("one request");
         assert_eq!(request.source, path);
         assert_eq!(request.expected, reading.version);
         assert_eq!(crate::transaction_tests::sketch(&request), id);
         assert!(
             crate::transaction_tests::vertices(&request)
                 .iter()
-                .any(|v| v.start_mm[0] == 41.25 && v.start_mm[1] == 15.5)
+                .any(|v| { v.start_mm == [41.3, 15.5] })
         );
-        assert!(e.take_apply_request().is_none(), "one press, one request");
-        // The draft is the user's until the document has accepted it.
-        assert_eq!(
-            e.draft.as_ref().expect("draft").points[0][0],
-            "41.25",
-            "pressing Apply discarded the draft"
-        );
-        assert!(e.editing.is_some());
-
-        // A draft that is not a request offers nothing to apply, and says why.
-        e.draft.as_mut().expect("draft").points[0][0] = "invalid".into();
-        e.draft.as_mut().expect("draft").points[1][0] = "-1000".into();
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(e.edit_request().is_err());
         assert!(
-            !out.shapes.iter().any(|c| matches!(
-                &c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "Apply vertices"
-            )),
-            "Apply was offered for a refused draft"
+            e.viewport.take_request().is_none(),
+            "one press, one request"
         );
-        drop(root);
+        assert_eq!(sketch_draft(&e), kept, "Finish discarded the draft");
+        assert!(e.viewport.active());
     }
 
-    /// Exercise the window's actual availability predicate after opening a form,
-    /// rather than granting Apply directly to a standalone widget.
+    /// The owner and its Finish button share the same availability predicate.
     #[test]
     fn the_open_sketch_form_can_apply_through_the_windows_busy_guard() {
-        use crate::{Loads, can_apply_sketch, creates, edits, exports, sessions};
+        use crate::{Loads, creates, edits, exports, numeric, sessions};
         let (_root, path, reading) = crate::fillets::tests::plate();
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = sessions::Sessions::default();
@@ -3032,34 +603,28 @@ pub(crate) mod tests {
         let mut loads = Loads::default();
         let exports = exports::Exports::default();
         let edits = edits::Edits::default();
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("Sketch")
-            .sketch;
-        assert!(creates.sketch.begin_edit(&path, &reading, id));
+        let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+        assert!(creates.sketch.begin_test_drawing(&path, &reading, id));
         assert!(creates.busy(), "New and Open still wait for this form");
-        let ready = can_apply_sketch(&creates, &loads, &exports, &edits, &sessions);
-        creates.sketch.set_session(false, ready, false);
+        let ready = numeric::can_apply(&creates, &loads, &exports, &edits, &sessions);
+        creates.sketch.viewport.set_apply(ready);
         let ctx = egui::Context::default();
-        frame(&ctx, &mut creates.sketch, vec![]);
-        frame(&ctx, &mut creates.sketch, vec![]);
-        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
-        replace_field(&ctx, &mut creates.sketch, "33", "41.25");
-        let out = frame(&ctx, &mut creates.sketch, vec![]);
-        click(&ctx, &mut creates.sketch, text_at(&out, "Apply vertices"));
+        replace_in_form(&ctx, &mut creates.sketch, "33", "41.3");
+        press_with(&ctx, &mut creates.sketch, "Finish");
         let request = creates
             .sketch
-            .take_apply_request()
-            .expect("the open form must allow Apply");
+            .viewport
+            .take_request()
+            .expect("the open form allows Finish");
         assert_eq!(request.expected, reading.version);
         assert!(
-            can_apply_sketch(&creates, &loads, &exports, &edits, &sessions),
-            "the command must allow the same request as its button"
+            crate::transaction_tests::vertices(&request)
+                .iter()
+                .any(|v| { v.start_mm == [41.3, 15.5] })
         );
-
-        // A genuine load and a session operation still prevent another Apply.
+        assert!(numeric::can_apply(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
         loads
             .open(
                 Some(&path),
@@ -3067,7 +632,7 @@ pub(crate) mod tests {
                 |_, _| std::thread::spawn(|| {}),
             )
             .expect("load");
-        assert!(!can_apply_sketch(
+        assert!(!numeric::can_apply(
             &creates, &loads, &exports, &edits, &sessions
         ));
         loads.stop_all();
@@ -3075,32 +640,29 @@ pub(crate) mod tests {
         sessions
             .begin_apply(|_, _, _| std::thread::spawn(|| {}))
             .expect("operation");
-        assert!(!can_apply_sketch(
+        assert!(!numeric::can_apply(
             &creates, &loads, &exports, &edits, &sessions
         ));
         sessions.stop_all();
         creates.sketch.dismiss();
-        assert!(!can_apply_sketch(
-            &creates, &loads, &exports, &edits, &sessions
-        ));
+        assert!(!creates.sketch.viewport.active());
     }
 
     #[test]
     fn with_unsaved_changes_the_copy_workflow_is_withheld_but_apply_is_not() {
-        let (root, path, reading) = crate::fillets::tests::plate();
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
+        let (root, path, reading) = angle_apply::fixture();
+        let id = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::RevolveAngle,
+        )
+        .object;
         let ctx = egui::Context::default();
         let mut e = Editor::default();
-        e.set_session(true, true, true);
-        assert!(e.begin_edit(&path, &reading, id));
+        e.set_session(true, true);
+        e.set_angle_apply(true);
+        assert!(e.begin_angle_edit(&path, &reading, id));
         frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, "33", "41.25");
-        replace_field(&ctx, &mut e, "33", "41.25");
+        replace_field(&ctx, &mut e, "137.5", "41.25");
         let out = frame(&ctx, &mut e, vec![]);
         assert!(
             out.shapes.iter().any(|c| matches!(
@@ -3109,32 +671,34 @@ pub(crate) mod tests {
             )),
             "the withheld copy workflow was not explained"
         );
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        click(&ctx, &mut e, text_at(&out, "Save edited Revolve copy…"));
         assert!(
-            e.take_edit_request().is_none(),
+            e.take_angle_edit_request().is_none(),
             "the copy workflow was reachable with unsaved changes"
         );
         let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Apply vertices"));
-        assert!(e.take_apply_request().is_some(), "Apply works while dirty");
+        click(&ctx, &mut e, text_at(&out, "Apply angle"));
+        assert!(
+            e.take_apply_angle_request().is_some(),
+            "Apply works while dirty"
+        );
         drop(root);
     }
 
     #[test]
     fn a_new_accepted_version_ends_the_forms_about_the_old_one_and_only_those() {
-        let (root, path, reading) = crate::fillets::tests::plate();
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
-        // A saved-object form is over once the document moves to another version...
-        let (mut e, _) = typed_apply(&path, &reading, id, "33", "41.25");
+        let (root, path, reading) = angle_apply::fixture();
+        let id = ferritecad_fixtures::expression_slot(
+            &reading,
+            ferritecad_document::ExpressionSlot::RevolveAngle,
+        )
+        .object;
+        let mut e = Editor::default();
+        assert!(e.begin_angle_edit(&path, &reading, id));
         assert!(e.active());
         e.finish_session_change();
         assert!(!e.active(), "a form about the replaced version survived");
-        assert!(e.take_apply_request().is_none());
+        assert!(e.take_apply_angle_request().is_none());
         let mut creates = crate::creates::Creates::default();
         let mut input = ferritecad_ui::ViewportInput::new();
         assert!(crate::ask_new(
@@ -3167,9 +731,11 @@ pub(crate) mod tests {
         w.apply(18.);
         let current = w.sessions.export_path().expect("dirty model");
         let reading = crate::sketch_facts::read(&current).expect("read");
-        let id = reading.sketches[0].sketch;
-        assert!(w.creates.sketch.begin_edit(&current, &reading, id));
-        w.creates.sketch.set_session(true, true, w.sessions.dirty());
+        let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+        assert!(w.creates.sketch.begin_test_drawing(&current, &reading, id));
+        w.creates
+            .sketch
+            .set_test_session(true, true, w.sessions.dirty());
         let out = frame(&egui::Context::default(), &mut w.creates.sketch, vec![]);
         assert!(!painted(&out, "Create sketch + Extrude…"));
         w.input
@@ -3184,7 +750,7 @@ pub(crate) mod tests {
         assert!(!w.creates.running(), "opening New does not start creation");
         assert!(w.answer_new(NewChoice::Cancel).is_none());
         assert!(w.sessions.dirty() && w.creates.sketch.unsaved);
-        assert!(w.creates.sketch.take_edit_request().is_none());
+        assert!(w.creates.sketch.viewport.take_request().is_none());
     }
     pub(super) fn frame_running(
         ctx: &egui::Context,
@@ -3201,7 +767,13 @@ pub(crate) mod tests {
                 events,
                 ..Default::default()
             },
-            |ui| e.draw(ui, running, ""),
+            |ui| {
+                if e.viewport.active() {
+                    e.viewport.draw(ui, running, "");
+                } else {
+                    e.draw(ui, running, "");
+                }
+            },
         );
         output.textures_delta.clear();
         output
@@ -3282,63 +854,6 @@ pub(crate) mod tests {
         }
         frame(ctx, e, events);
     }
-    /// Types into the box on one row of the circle grid.
-    ///
-    /// The grid's first column is as wide as its widest label, so every box
-    /// starts at the same x. Anchoring on that label rather than on each row's
-    /// own puts the click inside the box for short labels as well as long
-    /// ones.
-    fn type_into_grid_row(
-        ctx: &egui::Context,
-        e: &mut Editor,
-        out: &egui::FullOutput,
-        label: &str,
-        value: &str,
-    ) {
-        let column = out
-            .shapes
-            .iter()
-            .find_map(|c| match &c.shape {
-                egui::Shape::Text(t) if t.galley.text() == "Blind height" => {
-                    Some(t.visual_bounding_rect().right())
-                }
-                _ => None,
-            })
-            .expect("the widest label sets the column");
-        replace_box_on_row(ctx, e, out, column, label, value);
-    }
-
-    /// Types into the box on one row of the annular grid.
-    ///
-    /// The column is taken from the widest of *this* grid's own labels rather
-    /// than from one label chosen in advance: this form has five of them and
-    /// which is widest is a property of the font, not something to assert.
-    fn type_into_annulus_row(
-        ctx: &egui::Context,
-        e: &mut Editor,
-        out: &egui::FullOutput,
-        label: &str,
-        value: &str,
-    ) {
-        let column = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Text(t)
-                    if matches!(
-                        t.galley.text(),
-                        "Center X" | "Center Y" | "Outer radius" | "Inner radius" | "Blind height"
-                    ) =>
-                {
-                    Some(t.visual_bounding_rect().right())
-                }
-                _ => None,
-            })
-            .fold(f32::NEG_INFINITY, f32::max);
-        assert!(column.is_finite(), "the annular grid drew no labels");
-        replace_box_on_row(ctx, e, out, column, label, value);
-    }
-
     /// Clicks into the box on `label`'s row and replaces what it holds.
     fn replace_box_on_row(
         ctx: &egui::Context,
@@ -3403,155 +918,6 @@ pub(crate) mod tests {
         )
     }
 
-    #[test]
-    fn circle_edit_widgets_change_only_the_two_numbers_and_keep_the_draft() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let root = tempfile::tempdir().expect("directory");
-        let (source, reading) = saved_circle(root.path());
-        let saved = reading.circle_sketches[0]
-            .circle
-            .clone()
-            .expect("a supported circle");
-        let id = reading.circle_sketches[0].sketch;
-
-        let mut e = Editor::default();
-        assert!(
-            !e.begin_circle_edit(&source, &reading, ferritecad_types::ObjectId::new()),
-            "a Sketch this document does not have"
-        );
-        assert!(!e.active());
-        assert!(e.begin_circle_edit(&source, &reading, id));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        // The form opens on what is stored, and says which circle it is.
-        assert_eq!(e.circle.center, ["12".to_owned(), "-7".to_owned()]);
-        assert_eq!(e.circle.radius, "10");
-        assert_eq!(e.circle.height, "15");
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(
-            out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text().contains(&saved.curve_id.to_string()))),
-            "the saved circle is named by its own UUID"
-        );
-        assert!(
-            out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text().contains(&id.to_string()))),
-            "so is the Sketch that holds it"
-        );
-
-        // All three fields can change over many frames before one Apply.
-        let out = frame(&ctx, &mut e, vec![]);
-        type_into_grid_row(&ctx, &mut e, &out, "Center X", "-3.5");
-        let out = frame(&ctx, &mut e, vec![]);
-        type_into_grid_row(&ctx, &mut e, &out, "Center Y", "4.25");
-        let out = frame(&ctx, &mut e, vec![]);
-        type_into_grid_row(&ctx, &mut e, &out, "Radius", "6.75");
-        assert_eq!(e.circle.center, ["-3.5".to_owned(), "4.25".to_owned()]);
-        assert_eq!(e.circle.radius, "6.75");
-        assert_eq!(
-            e.circle.height, "15",
-            "the height is not this form's to change"
-        );
-
-        assert!(e.circle_undo.is_empty(), "typing is not an Apply");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
-        assert!(
-            e.take_circle_edit_request().is_none(),
-            "unapplied numbers cannot publish"
-        );
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
-        assert_eq!(e.circle_undo.len(), 1, "one Apply, one history step");
-        // Undo and redo walk the whole confirmed change.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_eq!(e.circle.radius, "10");
-        assert_eq!(e.circle.center, ["12", "-7"]);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.circle.radius, "6.75");
-
-        // A number the document will not store is refused in the form, and
-        // offers nothing to save.
-        for bad in ["0", "-2", "banana", ""] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_grid_row(&ctx, &mut e, &out, "Radius", bad);
-            let out = frame(&ctx, &mut e, vec![]);
-            assert!(e.circle_edit_request().is_err(), "radius {bad:?}");
-            assert!(
-                !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == "Save edited circle copy…")),
-                "radius {bad:?} still offered Save"
-            );
-            assert!(e.take_circle_edit_request().is_none());
-            assert!(e.active(), "a refusal keeps the draft");
-        }
-        let out = frame(&ctx, &mut e, vec![]);
-        type_into_grid_row(&ctx, &mut e, &out, "Radius", "6.75");
-
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
-        let request = e.take_circle_edit_request().expect("submit");
-        assert!(
-            e.take_circle_edit_request().is_none(),
-            "one press, one request"
-        );
-        assert_eq!(request.source, source, "the accepted scene's own path");
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(crate::transaction_tests::sketch(&request), id);
-        assert_eq!(
-            crate::transaction_tests::circle(&request).curve_id,
-            saved.curve_id,
-            "the saved identity, not a number read back out of a box"
-        );
-        assert_eq!(
-            crate::transaction_tests::circle(&request).center_mm,
-            [-3.5, 4.25]
-        );
-        assert_eq!(crate::transaction_tests::circle(&request).radius_mm, 6.75);
-        // A dialog that answers nothing leaves the same draft to try again.
-        assert!(e.active());
-        assert_eq!(e.circle.radius, "6.75");
-
-        // While a job is running the form is disabled: pressing Save again
-        // makes no second request, typing changes nothing, and the draft and
-        // its history stay exactly as they were.
-        let kept = e.circle.clone();
-        let history = (e.circle_undo.clone(), e.circle_redo.clone());
-        frame_running(&ctx, &mut e, vec![], true);
-        let out = frame_running(&ctx, &mut e, vec![], true);
-        let save = text_at(&out, "Save edited circle copy…");
-        for pressed in [true, false] {
-            frame_running(
-                &ctx,
-                &mut e,
-                vec![egui::Event::PointerButton {
-                    pos: save,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                }],
-                true,
-            );
-        }
-        assert!(
-            e.take_circle_edit_request().is_none(),
-            "a running job takes no second request"
-        );
-        assert_eq!(e.circle, kept, "and loses nothing that was typed");
-        assert_eq!((e.circle_undo.clone(), e.circle_redo.clone()), history);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
-        assert!(!e.active(), "Cancel ends the draft");
-        assert!(e.take_circle_edit_request().is_none());
-    }
-
     /// §27B through the real widgets: a saved Revolve profile opens in the
     /// ordinary coordinate editor with its axis and no height, a radius on the
     /// axis is refused and undone, and the shared worker and the peer CLI
@@ -3599,157 +965,33 @@ pub(crate) mod tests {
         };
         let reading =
             crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
-        let choice = &reading.sketches[0];
-        assert!(matches!(
-            choice.profile_use,
-            Some(SketchProfileUse::FullTurnRevolve { .. })
-        ));
-        let saved_ids: Vec<_> = choice
-            .vertices
-            .as_ref()
-            .expect("editable")
-            .iter()
-            .map(|v| v.curve_id)
-            .collect();
-
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&source, &reading, choice.sketch));
-        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-        assert_eq!(e.draft.as_ref().expect("draft").height, "", "no height");
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        let texts: Vec<String> = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
-                _ => None,
-            })
-            .collect();
-        for wanted in [
-            "axis (Y) at X = 0 · radius X →",
-            "Revolve: one full turn (360°) about the sketch Y axis, through X = 0.",
-            "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody",
-        ] {
-            assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
-        }
-        assert!(texts.iter().any(|t| t.contains("saved full turn about Y")));
-        for absent in ["Blind height mm", "Feature:", "Extrude", "Revolve 360°"] {
-            assert!(!texts.iter().any(|t| t == absent), "{absent} shown");
-        }
-
-        // Real fields: both inner vertices, then both outer ones.
-        replace_field(&ctx, &mut e, "4.5", "3.5");
-        replace_field(&ctx, &mut e, "4.5", "3.5");
-        replace_field(&ctx, &mut e, "10.5", "8.5");
-        replace_field(&ctx, &mut e, "10.5", "8.5");
-        let before_y = e.draft.clone().expect("draft");
-        for (i, y) in [(0, "2.5"), (1, "2.5"), (2, "12.5"), (3, "12.5")] {
-            e.draft.as_mut().expect("draft").points[i][1] = y.into();
-        }
-        e.record(before_y);
-        let valid = e.draft.clone().expect("draft");
-        assert_eq!(
-            valid.points,
-            [
-                ["3.5", "2.5"],
-                ["8.5", "2.5"],
-                ["8.5", "12.5"],
-                ["3.5", "12.5"]
-            ]
-            .map(|p| p.map(str::to_owned))
-            .to_vec()
-        );
-        // A radius on the wrong side of the axis: refused by the Revolve
-        // policy, shown, and undone through the real button.
-        replace_field(&ctx, &mut e, "3.5", "-0.5");
-        crate::transaction_tests::assert_refused(&e.edit_request().expect("payload"), &["Revolve"]);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_eq!(e.draft.as_ref(), Some(&valid));
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "-0.5");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_eq!(e.draft.as_ref(), Some(&valid));
-
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let request = e.take_edit_request().expect("submit");
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            saved_ids,
-            "the saved Lines, in saved order"
-        );
+        let literal = [[3.5, 2.5], [8.5, 2.5], [8.5, 12.5], [3.5, 12.5]];
+        let (mut window, request, literal_changes) =
+            crate::sketch_mode::tests::curve_edits::polygon(&source, &literal);
         assert_eq!(request.expected, reading.version);
-        let kept = e.draft.clone();
+        // Crossing the axis still refuses in the evaluator; the draft is a real gesture result.
+        let (refused_window, refused, _) = crate::sketch_mode::tests::curve_edits::polygon(
+            &source,
+            &[[-0.5, 2.5], [8.5, 2.5], [8.5, 12.5], [3.5, 12.5]],
+        );
+        crate::transaction_tests::assert_refused(&refused, &["Revolve"]);
+        drop(refused_window);
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request
+        ));
+        let destination = root.path().join("ui.fcad");
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(destination))
+                .published
+        );
 
-        let mut edits = crate::edits::Edits::default();
-        for occupied in [true, false] {
-            let mut request = request.clone();
-            request.destination =
-                root.path()
-                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
-            if occupied {
-                std::fs::write(&request.destination, b"keep").expect("sentinel");
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let generation = edits
-                .start(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_edit(
-                        r.source,
-                        r.expected,
-                        r.changes,
-                        r.destination,
-                        c,
-                        move |result| tx.send((g, result)).expect("reply"),
-                    )
-                })
-                .expect("worker");
-            assert!(
-                finish_edit(
-                    &mut e,
-                    &mut edits,
-                    generation + 1,
-                    Err(CadError::input("stale response"))
-                )
-                .is_none(),
-                "a reply for another request changes nothing"
-            );
-            assert_eq!(e.draft, kept);
-            let (g, result) = rx.recv().expect("completed");
-            let path = finish_edit(&mut e, &mut edits, g, result);
-            if occupied {
-                assert!(path.is_none(), "a taken destination publishes nothing");
-                assert_eq!(e.draft, kept, "and keeps the draft");
-                assert_eq!(
-                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
-                    b"keep"
-                );
-            } else {
-                let path = path.expect("published");
-                assert!(!e.active());
-                e.draft_load_finished(&path, false);
-                assert!(e.active(), "a failed Open restores the edited draft");
-                assert_eq!(e.draft, kept);
-                assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
-                e.draft_published(&path);
-                e.draft_load_finished(&path, true);
-                assert!(!e.active());
-            }
-        }
-
-        // The peer CLI, the same request, the same source.
         let edit = root.path().join("edit.json");
 
         std::fs::write(
             &edit,
-            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+            ferritecad_fixtures::edit_request_json(&literal_changes).to_string(),
         )
         .expect("edit request");
         let cli = root.path().join("cli.fcad");
@@ -3940,8 +1182,13 @@ pub(crate) mod tests {
         );
         let feature = angle.object;
         // §27F: the sector's coordinates are a separate, available edit.
-        let sketch = &reading.sketches[0];
-        assert_eq!(sketch.refusal, None);
+        let sketch = &reading.constraint_sketches[0];
+        assert!(crate::sketch_mode::tests::curve_edits::begin(
+            &mut Editor::default(),
+            &source,
+            &reading,
+            sketch.sketch,
+        ));
         assert!(matches!(
             sketch.profile_use,
             Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) if angle.radians().to_degrees() == 137.5
@@ -4055,6 +1302,12 @@ pub(crate) mod tests {
                 })
                 .expect("worker");
             assert!(
+                edits
+                    .start(request, |_, _, _| panic!("duplicate worker"))
+                    .is_none(),
+                "a running job takes no second request"
+            );
+            assert!(
                 finish_angle_edit(
                     &mut e,
                     &mut edits,
@@ -4079,16 +1332,20 @@ pub(crate) mod tests {
                 );
             } else {
                 let path = path.expect("published");
-                assert!(!e.active());
+                assert!(!e.active(), "published draft must not block async Open");
+                e.draft_load_finished(Path::new("another.fcad"), false);
+                assert!(!e.active(), "an unrelated load failure cannot restore it");
                 e.draft_load_finished(&path, false);
                 assert!(e.active(), "a failed Open restores the edited draft");
                 assert_eq!(
                     (e.angle.angle_edit.clone(), e.angle.angle_undo.clone()),
                     kept
                 );
+                assert_eq!(e.angle.angle_undo.len(), 1, "history survives failed Open");
                 e.draft_published(&path);
                 e.draft_load_finished(&path, true);
                 assert!(!e.active());
+                assert!(e.published_draft.is_none());
             }
         }
 
@@ -4173,92 +1430,25 @@ pub(crate) mod tests {
             .expect("metadata")
             .modified()
             .expect("mtime");
-        let id = reading.circle_sketches[0].sketch;
+        let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
 
-        let mut e = Editor::default();
-        assert!(e.begin_circle_edit(&source, &reading, id));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        for (label, value) in [
-            ("Center X", "-3.5"),
-            ("Center Y", "4.25"),
-            ("Radius", "6.75"),
-        ] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_grid_row(&ctx, &mut e, &out, label, value);
-        }
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
-        let request = e.take_circle_edit_request().expect("submit");
-        let kept = e.circle.clone();
-
-        let mut edits = crate::edits::Edits::default();
-        for occupied in [true, false] {
-            let mut request = request.clone();
-            request.destination =
-                root.path()
-                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
-            if occupied {
-                std::fs::write(&request.destination, b"keep").expect("sentinel");
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let generation = edits
-                .start(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_edit(
-                        r.source,
-                        r.expected,
-                        r.changes,
-                        r.destination,
-                        c,
-                        move |result| tx.send((g, result)).expect("reply"),
-                    )
-                })
-                .expect("worker");
-            assert!(
-                edits
-                    .start(request, |_, _, _| panic!("duplicate worker"))
-                    .is_none(),
-                "a running job takes no second request"
-            );
-            // A reply for a request that is no longer current changes nothing.
-            assert!(
-                finish_circle_edit(
-                    &mut e,
-                    &mut edits,
-                    generation + 1,
-                    Err(CadError::input("stale response"))
-                )
-                .is_none()
-            );
-            assert_eq!(e.circle, kept);
-            let (g, result) = rx.recv().expect("completed");
-            let path = finish_circle_edit(&mut e, &mut edits, g, result);
-            if occupied {
-                assert!(path.is_none(), "a taken destination publishes nothing");
-                assert_eq!(e.circle, kept, "and keeps the draft to retry with");
-                assert_eq!(
-                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
-                    b"keep"
-                );
-            } else {
-                assert_eq!(path, Some(root.path().join("ui.fcad")));
-                assert!(!e.active(), "published draft must not block async Open");
-                e.draft_load_finished(Path::new("another.fcad"), false);
-                assert!(!e.active(), "an unrelated load failure cannot restore it");
-                e.draft_load_finished(&root.path().join("ui.fcad"), false);
-                assert!(e.active(), "failed preparation restores the draft");
-                assert_eq!(e.circle, kept);
-                assert_eq!(e.circle_undo.len(), 1, "history survives failed Open");
-                e.draft_published(&root.path().join("ui.fcad"));
-                e.draft_load_finished(&root.path().join("ui.fcad"), true);
-                assert!(!e.active());
-                assert!(e.published_draft.is_none());
-            }
-        }
+        let (mut window, request) = crate::sketch_mode::tests::round_edits::edit(
+            &source,
+            id,
+            [-4., 4.],
+            &[6.75],
+            false,
+            || {},
+        );
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request.clone()
+        ));
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(root.path().join("ui.fcad")))
+                .published
+        );
 
         // The peer CLI applies the same request to the same source.
         let input = root.path().join("edit.json");
@@ -4376,213 +1566,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn annulus_edit_widgets_change_only_the_three_numbers_and_keep_the_draft() {
-        if !ferritecad_occt::is_available() {
-            ferritecad_fixtures::native_dependencies(&[(false, "OCCT")]);
-            return;
-        }
-        let root = tempfile::tempdir().expect("directory");
-        let (source, reading) = saved_annulus(root.path());
-        let saved = reading.annulus_sketches[0]
-            .annulus
-            .clone()
-            .expect("a supported annulus");
-        let id = reading.annulus_sketches[0].sketch;
-
-        let mut e = Editor::default();
-        // A Sketch this document does not have cannot be edited.
-        assert!(!e.begin_annulus_edit(&source, &reading, ferritecad_types::ObjectId::new()));
-        assert!(!e.active());
-        assert!(e.begin_annulus_edit(&source, &reading, id));
-        // And a second begin on a live draft is refused rather than retargeting.
-        assert!(!e.begin_annulus_edit(&source, &reading, id));
-
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        // The form opens on what is stored, and says which two circles it is.
-        assert_eq!(e.annulus.center, ["12".to_owned(), "-7".to_owned()]);
-        assert_eq!(e.annulus.outer_radius, "10");
-        assert_eq!(e.annulus.inner_radius, "4");
-        assert_eq!(e.annulus.height, "15");
-        let out = frame(&ctx, &mut e, vec![]);
-        let drawn: Vec<String> = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
-                _ => None,
-            })
-            .collect();
-        for needle in [
-            saved.outer_curve_id.to_string(),
-            saved.inner_curve_id.to_string(),
-            id.to_string(),
-        ] {
-            assert!(
-                drawn.iter().any(|line| line.contains(&needle)),
-                "the form does not name {needle}: {drawn:?}"
-            );
-        }
-        assert!(
-            drawn.iter().any(|l| l.contains("mm (retained)")),
-            "the height is shown as retained rather than editable"
-        );
-
-        for (label, value) in [
-            ("Center X", "-3.5"),
-            ("Center Y", "4.25"),
-            ("Outer radius", "6.75"),
-            ("Inner radius", "2.125"),
-        ] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(&ctx, &mut e, &out, label, value);
-        }
-        assert_eq!(e.annulus.center, ["-3.5".to_owned(), "4.25".to_owned()]);
-        assert_eq!(e.annulus.outer_radius, "6.75");
-        assert_eq!(e.annulus.inner_radius, "2.125");
-        assert_eq!(
-            e.annulus.height, "15",
-            "the height is not this form's to change"
-        );
-        assert!(e.annulus_undo.is_empty(), "typing is not an Apply");
-
-        // Save is unavailable until the numbers are applied, and submits nothing.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
-        assert!(
-            e.take_annulus_edit_request().is_none(),
-            "an unapplied draft submitted a request"
-        );
-
-        // One Apply is one history step for all three numbers together.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
-        assert_eq!(e.annulus_undo.len(), 1, "one Apply, one history step");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_eq!(e.annulus.outer_radius, "10");
-        assert_eq!(e.annulus.inner_radius, "4");
-        assert_eq!(e.annulus.center, ["12", "-7"]);
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
-        assert_eq!(e.annulus.outer_radius, "6.75");
-        assert_eq!(e.annulus.inner_radius, "2.125");
-        assert!(
-            e.take_annulus_edit_request().is_none(),
-            "undo and redo ask no job for anything"
-        );
-
-        // Every refusal is shown in the form and offers no Save.
-        for (field, bad) in [
-            ("Inner radius", "0"),
-            ("Inner radius", "-4"),
-            ("Inner radius", "banana"),
-            ("Outer radius", "0"),
-            ("Center X", "banana"),
-        ] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(&ctx, &mut e, &out, field, bad);
-            let out = frame(&ctx, &mut e, vec![]);
-            assert!(
-                e.annulus_edit_request().is_err(),
-                "{field} {bad:?} was accepted"
-            );
-            assert!(
-                !out.shapes.iter().any(|c| matches!(&c.shape,
-                    egui::Shape::Text(t) if t.galley.text() == "Save edited annulus copy…")),
-                "{field} {bad:?} still offered Save"
-            );
-            assert!(e.take_annulus_edit_request().is_none());
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(
-                &ctx,
-                &mut e,
-                &out,
-                field,
-                match field {
-                    "Inner radius" => "2.125",
-                    "Outer radius" => "6.75",
-                    _ => "-3.5",
-                },
-            );
-        }
-
-        // Back to a request, and the identities come from the reading rather
-        // than from anything typed.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
-        let request = e.take_annulus_edit_request().expect("submit");
-        assert!(
-            e.take_annulus_edit_request().is_none(),
-            "one press, one request"
-        );
-        assert_eq!(crate::transaction_tests::sketch(&request), id);
-        assert_eq!(request.source, source);
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(
-            crate::transaction_tests::annulus(&request).outer_curve_id,
-            saved.outer_curve_id
-        );
-        assert_eq!(
-            crate::transaction_tests::annulus(&request).inner_curve_id,
-            saved.inner_curve_id
-        );
-        assert_eq!(
-            crate::transaction_tests::annulus(&request).center_mm,
-            [-3.5, 4.25]
-        );
-        assert_eq!(
-            crate::transaction_tests::annulus(&request).outer_radius_mm,
-            6.75
-        );
-        assert_eq!(
-            crate::transaction_tests::annulus(&request).inner_radius_mm,
-            2.125
-        );
-
-        // While the request is saving, the form is disabled and no draft action
-        // discards it.
-        let kept = e.annulus.clone();
-        let history = (e.annulus_undo.clone(), e.annulus_redo.clone());
-        for label in ["Cancel draft", "Save edited annulus copy…", "Undo draft"] {
-            let out = frame_running(&ctx, &mut e, vec![], true);
-            let at = text_at(&out, label);
-            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
-            for pressed in [true, false] {
-                frame_running(
-                    &ctx,
-                    &mut e,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    }],
-                    true,
-                );
-            }
-            assert!(e.active(), "{label} discarded a saving annulus draft");
-            assert_eq!(e.annulus, kept, "{label}");
-            assert_eq!(
-                (e.annulus_undo.clone(), e.annulus_redo.clone()),
-                history,
-                "{label} changed the history"
-            );
-            assert!(e.take_annulus_edit_request().is_none(), "{label} submitted");
-        }
-
-        // Cancel ends the draft and leaves nothing pending.
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
-        assert!(!e.active());
-        assert!(e.take_annulus_edit_request().is_none());
-    }
-
-    #[test]
     fn native_annulus_edit_worker_and_cli_publish_equivalent_copies() {
         use crate::creates::tests::{ferritecad, read_semantics};
         use ferritecad_document::Document;
@@ -4597,93 +1580,25 @@ pub(crate) mod tests {
             .expect("metadata")
             .modified()
             .expect("mtime");
-        let id = reading.annulus_sketches[0].sketch;
+        let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
 
-        let mut e = Editor::default();
-        assert!(e.begin_annulus_edit(&source, &reading, id));
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            frame(&ctx, &mut e, vec![]);
-        }
-        for (label, value) in [
-            ("Center X", "-3.5"),
-            ("Center Y", "4.25"),
-            ("Outer radius", "6.75"),
-            ("Inner radius", "2.125"),
-        ] {
-            let out = frame(&ctx, &mut e, vec![]);
-            type_into_annulus_row(&ctx, &mut e, &out, label, value);
-        }
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Confirm draft numbers"));
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
-        let request = e.take_annulus_edit_request().expect("submit");
-        let kept = e.annulus.clone();
-
-        let mut edits = crate::edits::Edits::default();
-        for occupied in [true, false] {
-            let mut request = request.clone();
-            request.destination =
-                root.path()
-                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
-            if occupied {
-                std::fs::write(&request.destination, b"keep").expect("sentinel");
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let generation = edits
-                .start(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_edit(
-                        r.source,
-                        r.expected,
-                        r.changes,
-                        r.destination,
-                        c,
-                        move |result| tx.send((g, result)).expect("reply"),
-                    )
-                })
-                .expect("worker");
-            assert!(
-                edits
-                    .start(request, |_, _, _| panic!("duplicate worker"))
-                    .is_none(),
-                "a running job takes no second request"
-            );
-            // A reply for a request that is no longer current changes nothing.
-            assert!(
-                finish_annulus_edit(
-                    &mut e,
-                    &mut edits,
-                    generation + 1,
-                    Err(CadError::input("stale response"))
-                )
-                .is_none()
-            );
-            assert_eq!(e.annulus, kept);
-            let (g, result) = rx.recv().expect("completed");
-            let path = finish_annulus_edit(&mut e, &mut edits, g, result);
-            if occupied {
-                assert!(path.is_none(), "a taken destination publishes nothing");
-                assert_eq!(e.annulus, kept, "and keeps the draft to retry with");
-                assert_eq!(
-                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
-                    b"keep"
-                );
-            } else {
-                assert_eq!(path, Some(root.path().join("ui.fcad")));
-                assert!(!e.active(), "published draft must not block async Open");
-                e.draft_load_finished(Path::new("another.fcad"), false);
-                assert!(!e.active(), "an unrelated load failure cannot restore it");
-                e.draft_load_finished(&root.path().join("ui.fcad"), false);
-                assert!(e.active(), "failed preparation restores the draft");
-                assert_eq!(e.annulus, kept);
-                assert_eq!(e.annulus_undo.len(), 1, "history survives failed Open");
-                e.draft_published(&root.path().join("ui.fcad"));
-                e.draft_load_finished(&root.path().join("ui.fcad"), true);
-                assert!(!e.active());
-                assert!(e.published_draft.is_none());
-            }
-        }
+        let (mut window, request) = crate::sketch_mode::tests::round_edits::edit(
+            &source,
+            id,
+            [-4., 4.],
+            &[6.75, 2.125],
+            false,
+            || {},
+        );
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request.clone()
+        ));
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(root.path().join("ui.fcad")))
+                .published
+        );
 
         // The peer CLI applies the same request to the same source.
         let input = root.path().join("edit.json");
@@ -4800,90 +1715,6 @@ pub(crate) mod tests {
         out.textures_delta.clear();
         out
     }
-    fn open_base_from_full_document_ui(
-        ctx: &egui::Context,
-        e: &mut Editor,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        id: ferritecad_types::ObjectId,
-    ) {
-        let row = source
-            .sketches
-            .iter()
-            .find(|s| s.sketch == id)
-            .expect("base");
-        let label = format!(
-            "Edit Sketch {} — {}…",
-            row.name.as_deref().unwrap_or("Unnamed"),
-            id
-        );
-        let mut at = None;
-        for step in 0..100 {
-            let events = if step == 0 {
-                Vec::new()
-            } else {
-                vec![
-                    egui::Event::PointerMoved(egui::pos2(400., 200.)),
-                    egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Point,
-                        phase: egui::TouchPhase::Move,
-                        delta: egui::vec2(0., -60.),
-                        modifiers: Default::default(),
-                    },
-                ]
-            };
-            let mut out = document_frame(ctx, e, path, source, events);
-            for _ in 0..30 {
-                out = document_frame(ctx, e, path, source, vec![]);
-            }
-            at = out.shapes.iter().find_map(|s| match &s.shape {
-                egui::Shape::Text(t)
-                    if t.galley.text() == label
-                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
-                {
-                    Some(t.visual_bounding_rect().center())
-                }
-                _ => None,
-            });
-            if at.is_some() {
-                break;
-            }
-        }
-        let at = at.expect("16-Cut base action must be reachable in full viewport");
-        document_frame(ctx, e, path, source, vec![egui::Event::PointerMoved(at)]);
-        for pressed in [true, false] {
-            document_frame(
-                ctx,
-                e,
-                path,
-                source,
-                vec![egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                }],
-            );
-        }
-        assert!(e.active(), "base action starts coordinate editor");
-        for _ in 0..3 {
-            document_frame(ctx, e, path, source, vec![]);
-        }
-        let out = document_frame(ctx, e, path, source, vec![]);
-        for label in [
-            "Undo draft",
-            "Redo draft",
-            "Cancel draft",
-            "Save edited copy…",
-            "Blind height mm",
-        ] {
-            let at = text_at(&out, label);
-            assert!(
-                at.x >= 0. && at.x < 988. && at.y >= 0. && at.y < 768.,
-                "off-screen {label}"
-            );
-        }
-    }
     #[test]
     fn native_saved_sketch_draft_and_cli_preserve_same_model() {
         saved_sketch_and_cli(false);
@@ -4978,140 +1809,49 @@ pub(crate) mod tests {
         };
         let reading =
             crate::sketch_facts::Source::from(loaded.edit_source.expect("accepted edit facts"));
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("editable base")
-            .sketch;
-        let mut e = Editor::default();
-        assert!(!e.begin_edit(&source, &reading, ferritecad_types::ObjectId::new()));
-        assert!(!e.active());
-        let ctx = egui::Context::default();
-        if cuts == 16 {
-            open_base_from_full_document_ui(&ctx, &mut e, &source, &reading, id);
-        } else {
-            assert!(e.begin_edit(&source, &reading, id));
-        }
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        // Two distinct saved start vertices have the same X; replace each real
-        // field once, then undo/redo the second through the existing widgets.
-        if drag {
-            super::drag_tests::move_saved_l(&ctx, &mut e);
-        } else {
-            replace_field(&ctx, &mut e, "60", "80");
-            replace_field(&ctx, &mut e, "60", "80");
-        }
-        assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
-        assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "80");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Undo draft"));
-        assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "60");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Redo draft"));
         if cuts > 0 {
-            let valid = e.draft.clone().expect("draft");
-            e.draft.as_mut().expect("draft").points[1][0] = "55.5".into();
-            e.draft.as_mut().expect("draft").points[2][0] = "55.5".into();
-            e.record(valid.clone());
-            assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "55.5");
-            assert!(e.edit_request().is_ok(), "the rebuild judges the Cut");
-            e.undo();
-            assert_eq!(e.draft, Some(valid));
+            let (probe, request, literal_changes) = crate::sketch_mode::tests::curve_edits::polygon(
+                &source,
+                &[[0., 0.], [55.5, 0.], [55.5, 40.], [0., 40.]],
+            );
+            assert_eq!(
+                request.changes, literal_changes,
+                "the rebuild judges the Cut"
+            );
+            assert_eq!(std::fs::read(&source).expect("source"), bytes);
+            drop(probe);
         }
-        let kept = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Remove"));
-        assert_eq!(e.draft, kept, "disabled segment removal");
-        let out = frame(&ctx, &mut e, vec![]);
-        let canvas = out
-            .shapes
-            .iter()
-            .find_map(|c| {
-                if let egui::Shape::Rect(r) = &c.shape {
-                    ((r.rect.width() - 510.).abs() < 1. && (r.rect.height() - 250.).abs() < 1.)
-                        .then_some(r.rect)
-                } else {
-                    None
-                }
-            })
-            .expect("canvas");
-        click(&ctx, &mut e, canvas.center());
-        assert_eq!(e.draft, kept, "closed canvas cannot add");
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let request = e.take_edit_request().expect("submit");
-        assert!(e.take_edit_request().is_none());
-        assert_eq!(request.source, source);
+        let literal: &[[f64; 2]] = if cuts == 0 {
+            &[
+                [0., 0.],
+                [80., 0.],
+                [80., 20.],
+                [20., 20.],
+                [20., 40.],
+                [0., 40.],
+            ]
+        } else {
+            &[[0., 0.], [80., 0.], [80., 40.], [0., 40.]]
+        };
+        let (mut window, request, literal_changes) =
+            crate::sketch_mode::tests::curve_edits::polygon(&source, &literal);
         assert_eq!(request.expected, reading.version);
-        // No dialog result starts nothing; the same owned draft remains retryable.
-        assert_eq!(e.draft, kept);
-        let mut edits = crate::edits::Edits::default();
-        for occupied in [true, false] {
-            let mut request = request.clone();
-            request.destination =
-                root.path()
-                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
-            if occupied {
-                std::fs::write(&request.destination, b"keep").expect("sentinel");
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let generation = edits
-                .start(request.clone(), move |r, g, c| {
-                    crate::edits::spawn_edit(
-                        r.source,
-                        r.expected,
-                        r.changes,
-                        r.destination,
-                        c,
-                        move |result| tx.send((g, result)).expect("reply"),
-                    )
-                })
-                .expect("worker");
-            assert!(
-                edits
-                    .start(request, |_, _, _| panic!("duplicate worker"))
-                    .is_none()
-            );
-            assert!(
-                finish_edit(
-                    &mut e,
-                    &mut edits,
-                    generation + 1,
-                    Err(CadError::input("stale response"))
-                )
-                .is_none()
-            );
-            assert_eq!(e.draft, kept);
-            let (g, result) = rx.recv().expect("completed");
-            let path = finish_edit(&mut e, &mut edits, g, result);
-            if occupied {
-                assert!(path.is_none());
-                assert_eq!(e.draft, kept);
-                assert_eq!(
-                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
-                    b"keep"
-                );
-            } else {
-                assert_eq!(path, Some(root.path().join("ui.fcad")));
-                assert!(!e.active());
-                if cuts > 0 {
-                    let path = path.expect("published path");
-                    e.draft_load_finished(&path, false);
-                    assert_eq!(e.draft, kept, "failed async Open restores draft");
-                    e.draft_published(&path);
-                    e.draft_load_finished(&path, true);
-                    assert!(!e.active());
-                }
-            }
-        }
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request
+        ));
+        let destination = root.path().join("ui.fcad");
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(destination))
+                .published
+        );
         // IDs and finite numeric coordinates only; process JSON assertions live
         // in the CLI suite, avoiding an application dependency just for a test.
 
         std::fs::write(
             &input,
-            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+            ferritecad_fixtures::edit_request_json(&literal_changes).to_string(),
         )
         .expect("request");
         let cli = root.path().join("cli.fcad");
@@ -5186,7 +1926,7 @@ pub(crate) mod tests {
     /// §28J, native: the widgets' request through the app's worker and the
     /// same edit through the shipped `edit` publish one document
     /// under two Fillets: every SQL cell equal with no identifier mapped, and
-    /// byte-identical STL and FBX. A failed async Open restores the draft.
+    /// byte-identical STL and FBX. Copy failure recovery is covered by the retained angle form.
     #[test]
     fn native_two_fillet_base_sketch_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
@@ -5196,54 +1936,24 @@ pub(crate) mod tests {
         }
         let (root, path, reading) = crate::fillets::tests::rounded_twice(2.375, 3.0625);
         let before = std::fs::read(&path).expect("source");
-        let sketch = reading.sketches[0].sketch;
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        let kept = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let mut request = e.take_edit_request().expect("widget request");
+        let (mut window, request, literal_changes) =
+            crate::sketch_mode::tests::curve_edits::plate(&path);
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request
+        ));
         let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let mut edits = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        edits
-            .start(request.clone(), move |r, g, c| {
-                crate::edits::spawn_edit(
-                    r.source,
-                    r.expected,
-                    r.changes,
-                    r.destination,
-                    c,
-                    move |result| tx.send((g, result)).expect("reply"),
-                )
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        assert_eq!(
-            finish_edit(&mut e, &mut edits, generation, result),
-            Some(ui.clone())
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(ui.clone()))
+                .published
         );
-        e.draft_load_finished(&ui, false);
-        assert_eq!(e.draft, kept, "a failed async Open restores the draft");
-        e.draft_published(&ui);
-        e.draft_load_finished(&ui, true);
-        assert!(!e.active());
 
         let input = root.path().join("request.json");
 
         std::fs::write(
             &input,
-            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+            ferritecad_fixtures::edit_request_json(&literal_changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
@@ -5267,7 +1977,7 @@ pub(crate) mod tests {
     /// §28D, native: the widgets' request through the app's worker and the
     /// same edit through the shipped `edit` publish one document:
     /// every SQL cell equal with no identifier mapped (nothing is minted), and
-    /// byte-identical STL and FBX. A failed async Open restores the draft.
+    /// byte-identical STL and FBX. Copy failure recovery is covered by the retained angle form.
     #[test]
     fn native_fillet_base_sketch_widgets_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
@@ -5277,54 +1987,24 @@ pub(crate) mod tests {
         }
         let (root, path, reading) = crate::fillets::tests::rounded(2.375);
         let before = std::fs::read(&path).expect("source");
-        let sketch = reading.sketches[0].sketch;
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        let kept = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let mut request = e.take_edit_request().expect("widget request");
+        let (mut window, request, literal_changes) =
+            crate::sketch_mode::tests::curve_edits::plate(&path);
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request
+        ));
         let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let mut edits = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        edits
-            .start(request.clone(), move |r, g, c| {
-                crate::edits::spawn_edit(
-                    r.source,
-                    r.expected,
-                    r.changes,
-                    r.destination,
-                    c,
-                    move |result| tx.send((g, result)).expect("reply"),
-                )
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        assert_eq!(
-            finish_edit(&mut e, &mut edits, generation, result),
-            Some(ui.clone())
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(ui.clone()))
+                .published
         );
-        e.draft_load_finished(&ui, false);
-        assert_eq!(e.draft, kept, "a failed async Open restores the draft");
-        e.draft_published(&ui);
-        e.draft_load_finished(&ui, true);
-        assert!(!e.active());
 
         let input = root.path().join("request.json");
 
         std::fs::write(
             &input,
-            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+            ferritecad_fixtures::edit_request_json(&literal_changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
@@ -5385,7 +2065,7 @@ pub(crate) mod tests {
     /// §29C, native: the widgets' request through the app's worker and the same
     /// edit through the shipped `edit` publish one document: every
     /// SQL cell equal with no identifier mapped, and byte-identical STL and FBX.
-    /// A failed async Open restores the draft.
+    /// Copy failure recovery is covered by the retained angle form.
     #[test]
     fn native_chamfer_base_sketch_widgets_worker_and_cli_publish_the_same_part() {
         use crate::creates::tests::ferritecad;
@@ -5395,54 +2075,24 @@ pub(crate) mod tests {
         }
         let (root, path, reading) = crate::chamfers::tests::chamfered(2.375);
         let before = std::fs::read(&path).expect("source");
-        let sketch = reading.sketches[0].sketch;
-        let mut e = Editor::default();
-        assert!(e.begin_edit(&path, &reading, sketch));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        replace_field(&ctx, &mut e, "-4.5", "-1.25");
-        let kept = e.draft.clone();
-        let out = frame(&ctx, &mut e, vec![]);
-        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
-        let mut request = e.take_edit_request().expect("widget request");
+        let (mut window, request, literal_changes) =
+            crate::sketch_mode::tests::curve_edits::plate(&path);
+        assert!(crate::sketch_mode::tests::window::apply(
+            &mut window,
+            request
+        ));
         let ui = root.path().join("worker.fcad");
-        request.destination = ui.clone();
-        let mut edits = crate::edits::Edits::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        edits
-            .start(request.clone(), move |r, g, c| {
-                crate::edits::spawn_edit(
-                    r.source,
-                    r.expected,
-                    r.changes,
-                    r.destination,
-                    c,
-                    move |result| tx.send((g, result)).expect("reply"),
-                )
-            })
-            .expect("worker");
-        let (generation, result) = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("worker response");
-        assert_eq!(
-            finish_edit(&mut e, &mut edits, generation, result),
-            Some(ui.clone())
+        assert!(
+            window
+                .save(ferritecad_jobs::SaveTarget::As(ui.clone()))
+                .published
         );
-        e.draft_load_finished(&ui, false);
-        assert_eq!(e.draft, kept, "a failed async Open restores the draft");
-        e.draft_published(&ui);
-        e.draft_load_finished(&ui, true);
-        assert!(!e.active());
 
         let input = root.path().join("request.json");
 
         std::fs::write(
             &input,
-            ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+            ferritecad_fixtures::edit_request_json(&literal_changes).to_string(),
         )
         .expect("request");
         let peer = root.path().join("peer.fcad");
@@ -5500,596 +2150,9 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
-    fn assert_closing_edge(ctx: &egui::Context, editor: &mut Editor) {
-        let out = frame(ctx, editor, vec![]);
-        let rect = super::drag_tests::canvas(&out);
-        let points = Canvas::points(editor.draft.as_ref().expect("saved contour")).expect("points");
-        let closing = [
-            editor
-                .canvas
-                .screen(rect, *points.last().expect("last vertex")),
-            editor.canvas.screen(rect, points[0]),
-        ];
-        assert!(
-            out.shapes.iter().any(|drawn| matches!(
-                drawn.shape, egui::Shape::LineSegment { points, stroke } if points == closing
-                    && stroke.color == egui::Color32::LIGHT_BLUE
-            )),
-            "the restored contour must join its last vertex to the first"
-        );
-    }
-
     pub(crate) fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
         let out = frame(ctx, e, vec![]);
         click(ctx, e, text_at(&out, label));
-    }
-
-    fn open_saved(
-        path: &Path,
-        reading: &ExtrudeEditSource,
-        id: ferritecad_types::ObjectId,
-    ) -> (egui::Context, Editor) {
-        let mut e = Editor::default();
-        assert!(e.begin_edit(path, reading, id), "saved Line sketch");
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Edit saved Sketch"), "the coordinate editor");
-        text_at(&out, "Restore saved vertices");
-        (ctx, e)
-    }
-
-    /// §28D-1. Real widgets on the light rounded-plate fixture: several vertices,
-    /// including text that does not parse, come back in one Undo step. A draft
-    /// that already matches the `to_string()` snapshot does not spend Redo.
-    #[test]
-    fn restore_saved_vertices_is_one_widget_step_and_publishes_nothing() {
-        let (root, path, reading) = crate::fillets::tests::rounded(2.375);
-        let bytes = std::fs::read(&path).expect("source");
-        let choice = reading.sketches[0].clone();
-        let saved_ids: Vec<_> = choice
-            .vertices
-            .as_ref()
-            .expect("lines")
-            .iter()
-            .map(|v| v.curve_id)
-            .collect();
-        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
-        let opened = e.draft.clone().expect("opened on the snapshot");
-        assert_eq!(
-            opened.points,
-            Editor::saved_coordinate_text(&crate::transaction_tests::vertices(
-                &e.editing.as_ref().expect("request").0
-            ))
-        );
-        let view = (e.canvas.minimum, e.canvas.scale);
-        let identity = e.editing.clone().expect("request");
-
-        // Already the snapshot: the control is painted and does not touch Redo.
-        replace_field(&ctx, &mut e, "33", "40");
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.draft.as_ref(), Some(&opened));
-        assert!(e.undo.is_empty());
-        assert_eq!(e.redo.len(), 1);
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.draft.as_ref(), Some(&opened));
-        assert!(e.undo.is_empty(), "a matching draft is not a step");
-        assert_eq!(e.redo.len(), 1, "Redo survives the no-op");
-        click_label(&ctx, &mut e, "Redo draft");
-        assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "40");
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.redo.len(), 1);
-
-        // Parsable click selects a vertex. Invalid text would hide the contour.
-        let out = frame(&ctx, &mut e, vec![]);
-        let canvas = out
-            .shapes
-            .iter()
-            .find_map(|c| match &c.shape {
-                egui::Shape::Rect(r)
-                    if (r.rect.width() - 510.).abs() < 1.
-                        && (r.rect.height() - 250.).abs() < 1. =>
-                {
-                    Some(r.rect)
-                }
-                _ => None,
-            })
-            .expect("canvas");
-        let at = e.canvas.screen(
-            canvas,
-            Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[0],
-        );
-        click(&ctx, &mut e, at);
-        assert_eq!(e.canvas.selected, Some(0));
-        assert_eq!(e.redo.len(), 1, "selecting does not edit");
-
-        // Three vertices, four strings. `33.0` is not the stored `33`.
-        set_coordinate(&ctx, &mut e, "33", "33.0");
-        set_coordinate(&ctx, &mut e, "15.5", "-");
-        set_coordinate(&ctx, &mut e, "3.25", "");
-        set_coordinate(&ctx, &mut e, "-4.5", "1.");
-        let dirty = e.draft.clone().expect("dirty");
-        assert_eq!(
-            dirty.points,
-            [["33.0", "-"], ["33", ""], ["1.", "3.25"], ["-4.5", "15.5"],]
-                .map(|p| p.map(str::to_owned))
-                .to_vec()
-        );
-        assert_eq!(e.undo.len(), 4, "one step per field, not per vertex yet");
-        assert!(e.redo.is_empty(), "a real edit clears Redo");
-        assert!(e.edit_request().is_err(), "the draft need not parse");
-        assert!(e.take_edit_request().is_none());
-
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(
-            e.undo.len(),
-            5,
-            "every vertex is one checkpoint, not one each"
-        );
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-        assert_eq!(e.draft.as_ref().map(|d| d.feature), Some(opened.feature));
-        assert_eq!(
-            e.draft.as_ref().map(|d| d.height.as_str()),
-            Some(opened.height.as_str())
-        );
-        assert_eq!(
-            e.draft.as_ref().map(|d| d.angle.as_str()),
-            Some(opened.angle.as_str())
-        );
-        assert_closing_edge(&ctx, &mut e);
-        assert_eq!(e.canvas.selected, Some(0));
-        assert_eq!((e.canvas.minimum, e.canvas.scale), view);
-        let (request, kept_choice) = e.editing.as_ref().expect("still editing");
-        assert_eq!(request.source, identity.0.source);
-        assert_eq!(request.expected, identity.0.expected);
-        assert_eq!(
-            crate::transaction_tests::sketch(request),
-            crate::transaction_tests::sketch(&identity.0)
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(request)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            saved_ids
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(request),
-            crate::transaction_tests::vertices(&identity.0)
-        );
-        assert_eq!(kept_choice.stored, choice.stored);
-        let built = e.edit_request().expect("the snapshot is editable");
-        assert_eq!(built.source, path);
-        assert_eq!(built.expected, reading.version);
-        assert_eq!(
-            crate::transaction_tests::vertices(&built)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            saved_ids
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(&built)
-                .iter()
-                .map(|v| v.start_mm)
-                .collect::<Vec<_>>(),
-            crate::transaction_tests::vertices(&identity.0)
-                .iter()
-                .map(|v| v.start_mm)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            e.take_edit_request().is_none(),
-            "Restore does not ask to save"
-        );
-        assert_eq!(std::fs::read(&path).expect("source"), bytes);
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Rounded by Fillet"));
-
-        // One Undo returns every invalid string. One Redo returns the snapshot.
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.draft.as_ref(), Some(&dirty));
-        assert_eq!(e.redo.len(), 1);
-        assert!(e.edit_request().is_err());
-        click_label(&ctx, &mut e, "Redo draft");
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-
-        // A running job ignores the control. The same control works once it stops.
-        replace_field(&ctx, &mut e, "33", "40");
-        let held = e.draft.clone();
-        let history = (e.undo.clone(), e.redo.clone());
-        let out = frame_running(&ctx, &mut e, vec![], true);
-        let restore_at = text_at(&out, "Restore saved vertices");
-        frame_running(
-            &ctx,
-            &mut e,
-            vec![egui::Event::PointerMoved(restore_at)],
-            true,
-        );
-        for pressed in [true, false] {
-            frame_running(
-                &ctx,
-                &mut e,
-                vec![egui::Event::PointerButton {
-                    pos: restore_at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                }],
-                true,
-            );
-        }
-        assert_eq!(e.draft, held);
-        assert_eq!((e.undo.clone(), e.redo.clone()), history);
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-
-        // An ordinary edit after Restore keeps source, version, UUID and order.
-        replace_field(&ctx, &mut e, "33", "36.5");
-        replace_field(&ctx, &mut e, "33", "36.5");
-        let moved = e.draft.clone();
-        click_label(&ctx, &mut e, "Save edited copy…");
-        let request = e.take_edit_request().expect("Save edited copy");
-        assert!(e.take_edit_request().is_none());
-        assert_eq!(
-            e.draft, moved,
-            "Cancel Save keeps the restored-then-edited draft"
-        );
-        assert_eq!(request.source, path);
-        assert_eq!(request.expected, reading.version);
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            saved_ids
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)[0].start_mm,
-            [36.5, 15.5]
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)[1].start_mm,
-            [36.5, 3.25]
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)[2].start_mm,
-            [-4.5, 3.25]
-        );
-        assert_eq!(
-            crate::transaction_tests::vertices(&request)[3].start_mm,
-            [-4.5, 15.5]
-        );
-        assert_eq!(std::fs::read(&path).expect("source"), bytes);
-        assert!(!root.path().join("not-written.fcad").exists());
-
-        let mut pending = request.clone();
-        pending.destination = root.path().join("refused.fcad");
-        let mut edits = crate::edits::Edits::default();
-        let generation = edits
-            .start(pending, |_, _, _| std::thread::spawn(|| {}))
-            .expect("worker");
-        assert!(
-            finish_edit(
-                &mut e,
-                &mut edits,
-                generation,
-                Err(CadError::input("refused"))
-            )
-            .is_none()
-        );
-        assert_eq!(e.draft, moved, "a refusal keeps the draft");
-        assert!(!e.undo.is_empty(), "and its history");
-
-        let mut pending = request;
-        let published = root.path().join("not-written.fcad");
-        pending.destination = published.clone();
-        let generation = edits
-            .start(pending, |_, _, _| std::thread::spawn(|| {}))
-            .expect("worker");
-        assert_eq!(
-            finish_edit(
-                &mut e,
-                &mut edits,
-                generation,
-                Ok(ferritecad_jobs::EditedDocument {
-                    rebuild: Default::default(),
-                    destination: published.clone(),
-                    version: reading.version
-                })
-            ),
-            Some(published.clone())
-        );
-        assert!(
-            !published.exists(),
-            "the button's test does not write a file"
-        );
-        assert!(!e.active());
-        e.draft_load_finished(&published, false);
-        assert_eq!(e.draft, moved, "a failed Open gives the draft back");
-        assert!(!e.undo.is_empty());
-        e.draft_published(&published);
-        e.draft_load_finished(&published, true);
-        assert!(!e.active(), "an accepted Open ends the draft history");
-        assert_eq!(std::fs::read(&path).expect("source"), bytes);
-    }
-
-    fn plate_with_one_cut() -> (tempfile::TempDir, std::path::PathBuf, ExtrudeEditSource) {
-        let (root, path, source) = crate::fillets::tests::plate();
-        let body = source
-            .cut_bodies
-            .iter()
-            .find(|c| c.refusal.is_none())
-            .unwrap_or_else(|| {
-                panic!(
-                    "plate is not a cut target: {:?}",
-                    source
-                        .cut_bodies
-                        .iter()
-                        .map(|c| c.refusal.clone())
-                        .collect::<Vec<_>>()
-                )
-            })
-            .body;
-        let mut document = ferritecad_document::Document::open(&path).expect("plate");
-        let tool = crate::feature_facts::CircularCut {
-            center_mm: [14., 9.],
-            radius_mm: 1.,
-            extent: crate::feature_facts::CutExtent::Blind { depth_mm: 2. },
-        };
-        let prepared = ferritecad_fixtures::feature_changes::circular_tool(
-            &document,
-            body,
-            tool.center_mm,
-            tool.radius_mm,
-            tool.extent.end().expect("end"),
-        )
-        .expect("tool")
-        .changes;
-        document.write_changes(&prepared).expect("write");
-        let reading = crate::sketch_facts::Source::read(&document).expect("catalogue");
-        document.close().expect("close");
-        (root, path, reading)
-    }
-
-    /// The same button on a kernel-free Revolve and on a plate with one Cut.
-    /// Two edited vertices are still one checkpoint.
-    #[test]
-    fn restore_saved_vertices_on_a_revolve_and_a_cut_base() {
-        let root = tempfile::tempdir().expect("dir");
-        let path = root.path().join("sector.fcad");
-        crate::constraints::tests::revolve::write_sector(
-            &path,
-            &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
-            90.0,
-        );
-        let reading = crate::constraints::tests::revolve::reading(&path);
-        let choice = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none() && s.vertices.is_some())
-            .expect("profile")
-            .clone();
-        assert!(matches!(
-            choice.profile_use,
-            Some(SketchProfileUse::PartialRevolve { .. })
-        ));
-        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
-        let opened = e.draft.clone().expect("draft");
-        assert_eq!(opened.feature, Feature::RevolveAngle);
-        assert_eq!(opened.height, "");
-        set_coordinate(&ctx, &mut e, "4.5", "6.5");
-        set_coordinate(&ctx, &mut e, "15.25", "-");
-        let dirty = e.draft.clone().expect("two vertices");
-        assert_eq!(dirty.points[0][0], "6.5");
-        assert_eq!(dirty.points[2][1], "-");
-        assert_eq!(e.undo.len(), 2);
-        assert!(e.edit_request().is_err());
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.undo.len(), 3, "both vertices, one step");
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-        assert_eq!(
-            e.draft.as_ref().map(|d| d.feature),
-            Some(Feature::RevolveAngle)
-        );
-        assert_eq!(e.draft.as_ref().map(|d| d.height.as_str()), Some(""));
-        assert_eq!(
-            e.draft.as_ref().map(|d| d.angle.as_str()),
-            Some(opened.angle.as_str())
-        );
-        assert_closing_edge(&ctx, &mut e);
-        let built = e.edit_request().expect("snapshot");
-        assert_eq!(built.source, path);
-        assert_eq!(built.expected, reading.version);
-        assert_eq!(
-            crate::transaction_tests::vertices(&built)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            choice
-                .vertices
-                .expect("ids")
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>()
-        );
-        assert!(e.take_edit_request().is_none());
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.draft.as_ref(), Some(&dirty));
-        click_label(&ctx, &mut e, "Redo draft");
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-
-        let (_cut_root, path, reading) = plate_with_one_cut();
-        let choice = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("cut base")
-            .clone();
-        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
-        let opened = e.draft.clone().expect("draft");
-        frame(&ctx, &mut e, vec![]);
-        assert_eq!(e.draft.as_ref().expect("cut base").points.len(), 4);
-        set_coordinate(&ctx, &mut e, "33", "36");
-        set_coordinate(&ctx, &mut e, "-4.5", "-");
-        let dirty = e.draft.clone().expect("two vertices");
-        assert_eq!(dirty.points[0][0], "36");
-        assert_eq!(dirty.points[2][0], "-");
-        assert_eq!(e.undo.len(), 2);
-        assert!(
-            e.edit_request().is_err(),
-            "a cut base restores without parsing"
-        );
-        click_label(&ctx, &mut e, "Restore saved vertices");
-        assert_eq!(e.undo.len(), 3);
-        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
-        assert_eq!(
-            e.draft.as_ref().map(|d| d.height.as_str()),
-            Some(opened.height.as_str())
-        );
-        assert_closing_edge(&ctx, &mut e);
-        let built = e.edit_request().expect("snapshot");
-        assert_eq!(built.source, path);
-        assert_eq!(built.expected, reading.version);
-        assert_eq!(
-            crate::transaction_tests::vertices(&built)
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>(),
-            choice
-                .vertices
-                .expect("ids")
-                .iter()
-                .map(|v| v.curve_id)
-                .collect::<Vec<_>>()
-        );
-        assert!(e.take_edit_request().is_none());
-        frame(&ctx, &mut e, vec![]);
-        assert_eq!(e.draft.as_ref().expect("cut base").points.len(), 4);
-        click_label(&ctx, &mut e, "Undo draft");
-        assert_eq!(e.draft.as_ref(), Some(&dirty));
-    }
-
-    fn click_text(
-        ctx: &egui::Context,
-        e: &mut Editor,
-        path: &Path,
-        source: &ExtrudeEditSource,
-        needle: &str,
-    ) {
-        let mut at = None;
-        for _ in 0..8 {
-            let out = document_frame(ctx, e, path, source, vec![]);
-            at = out.shapes.iter().find_map(|s| match &s.shape {
-                egui::Shape::Text(t)
-                    if t.galley.text().contains(needle)
-                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
-                {
-                    Some(t.visual_bounding_rect().center())
-                }
-                _ => None,
-            });
-            if at.is_some() {
-                break;
-            }
-        }
-        let at = at.unwrap_or_else(|| panic!("{needle} was not painted"));
-        document_frame(ctx, e, path, source, vec![egui::Event::PointerMoved(at)]);
-        for pressed in [true, false] {
-            document_frame(
-                ctx,
-                e,
-                path,
-                source,
-                vec![egui::Event::PointerButton {
-                    pos: at,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                }],
-            );
-        }
-        for _ in 0..3 {
-            document_frame(ctx, e, path, source, vec![]);
-        }
-    }
-
-    /// The control belongs only to a saved Line sketch.
-    #[test]
-    fn restore_saved_vertices_is_absent_from_other_forms() {
-        let root = tempfile::tempdir().expect("dir");
-        let path = root.path().join("sector.fcad");
-        crate::constraints::tests::revolve::write_sector(
-            &path,
-            &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
-            90.0,
-        );
-        let reading = crate::constraints::tests::revolve::reading(&path);
-        let angle = reading
-            .expression_slots
-            .iter()
-            .filter(|s| s.slot == ferritecad_document::ExpressionSlot::RevolveAngle)
-            .cloned()
-            .collect::<Vec<_>>()
-            .iter()
-            .find(|c| c.refusal.is_none())
-            .expect("angle")
-            .object;
-        let mut e = Editor::default();
-        assert!(e.begin_angle_edit(&path, &reading, angle));
-        let ctx = egui::Context::default();
-        frame(&ctx, &mut e, vec![]);
-        let out = frame(&ctx, &mut e, vec![]);
-        assert!(painted(&out, "Saved partial Revolve · angle only"));
-        assert!(painted(&out, "Undo draft"));
-        assert!(!painted(&out, "Restore saved vertices"));
-
-        let sketch = reading
-            .constraint_sketches
-            .iter()
-            .find(|c| c.refusal.is_none())
-            .unwrap_or_else(|| {
-                panic!(
-                    "no constraint editor: {:?}",
-                    reading
-                        .constraint_sketches
-                        .iter()
-                        .map(|c| c.refusal.clone())
-                        .collect::<Vec<_>>()
-                )
-            })
-            .sketch;
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        click_text(&ctx, &mut e, &path, &reading, "Edit constraints");
-        let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
-        assert!(painted(&out, "Cancel constraints draft"));
-        assert!(painted(&out, &sketch.to_string()));
-        assert!(!painted(&out, "Restore saved vertices"));
-
-        let (_cut_root, path, reading) = plate_with_one_cut();
-        let cut = reading
-            .cut_features
-            .iter()
-            .find(|c| c.refusal.is_none() && c.saved.is_some())
-            .unwrap_or_else(|| {
-                panic!(
-                    "no cut editor: {:?}",
-                    reading
-                        .cut_features
-                        .iter()
-                        .map(|c| c.refusal.clone())
-                        .collect::<Vec<_>>()
-                )
-            })
-            .feature;
-        let mut e = Editor::default();
-        let ctx = egui::Context::default();
-        click_text(&ctx, &mut e, &path, &reading, &cut.to_string());
-        let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
-        assert!(painted(&out, "Cancel cut draft"));
-        assert!(!painted(&out, "Restore saved vertices"));
     }
 }
 
@@ -6099,9 +2162,6 @@ pub(crate) mod accepted_tests;
 #[cfg(test)]
 #[path = "sketch/analytic_tests.rs"]
 pub(crate) mod analytic_tests;
-#[cfg(test)]
-#[path = "sketch/anchor_tests.rs"]
-pub(crate) mod anchor_tests;
 #[cfg(test)]
 #[path = "sketch/dimension_tests.rs"]
 pub(crate) mod dimension_tests;

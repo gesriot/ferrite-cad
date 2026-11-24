@@ -1017,7 +1017,7 @@ fn recipe_on_owners(root: &Path) {
     assert!(!w.sessions.dirty(), "A is its saved file");
     let b = *w.tabs.order().last().expect("B");
     w.switch(b);
-    w.apply_circle([-3.5, 4.25], 8.0);
+    w.apply_circle([-3.5, 4.3], super::draft_circle_radius());
     let alias = w.sessions.suggestion().expect("alias");
     export_bytes(
         &w.sessions.export_path().expect("B"),
@@ -1146,7 +1146,13 @@ fn compare_reopen(root: &Path) {
         peer_bytes(b, work.path(), "b-saved") == (b_stl.clone(), b_fbx),
         "b.fcad exports differ from the unsaved ones"
     );
-    super::super::analytic::assert_round(&b_stl, [-3.5, 4.25], 8.0, None, 15.25);
+    super::super::analytic::assert_round(
+        &b_stl,
+        [-3.5, 4.3],
+        super::draft_circle_radius(),
+        None,
+        15.25,
+    );
     let (a_stl, _) = peer_bytes(a, work.path(), "a-saved");
     assert!(
         a_stl == peer_bytes(&a_peer, work.path(), "a").0,

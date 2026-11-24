@@ -2,6 +2,9 @@
 
 **Status:** accepted design.
 
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate saved vertex, circle
+and annulus forms; their replacements use the viewport sketch draft.
+
 ## Who owns the gesture
 
 In Select, use the existing point-selection hit test at the primary press position.

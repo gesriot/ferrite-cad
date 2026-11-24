@@ -389,14 +389,7 @@ fn gate(name: &str) {
         changes: crate::transaction_tests::vertex_changes(
             &(current),
             initial.profile,
-            &(reading
-                .sketches
-                .iter()
-                .find(|c| c.sketch == initial.profile)
-                .expect("base")
-                .vertices
-                .clone()
-                .expect("vertices")),
+            &(crate::transaction_tests::stored_vertices(&reading, initial.profile)),
         ),
         source: current,
         expected: reading.version,

@@ -165,6 +165,17 @@ pub(super) fn history(path: &Path) -> Vec<EdgeObservation> {
     crate::feature_tests::edge_history(path, false)
 }
 pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
+    let exact = width * depth * height
+        - (1. - std::f64::consts::PI / 4.)
+            * history(path)
+                .iter()
+                .map(|f| f.radius_mm.powi(2))
+                .sum::<f64>()
+            * height;
+    cold_with_volume(path, exact)
+}
+
+fn cold_with_volume(path: &Path, exact: f64) -> f64 {
     let d = Document::open_read_only(path).expect("document");
     let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
     let ctx = OperationContext::default();
@@ -176,13 +187,6 @@ pub(super) fn cold(path: &Path, width: f64, depth: f64, height: f64) -> f64 {
         k.identity().version(),
     )
     .expect("cache");
-    let exact = width * depth * height
-        - (1. - std::f64::consts::PI / 4.)
-            * history(path)
-                .iter()
-                .map(|f| f.radius_mm.powi(2))
-                .sum::<f64>()
-            * height;
     for pass in 0..3 {
         let built = if pass > 0 {
             ferritecad_eval::rebuild_cached(&d, &mut k, &mut cache, &ctx).map(|(built, events)| {
@@ -337,14 +341,7 @@ fn gate(count: usize, name: &str) {
         changes: crate::transaction_tests::vertex_changes(
             &(current),
             initial[0].profile,
-            &(reading
-                .sketches
-                .iter()
-                .find(|c| c.sketch == initial[0].profile)
-                .expect("base")
-                .vertices
-                .clone()
-                .expect("vertices")),
+            &(crate::transaction_tests::stored_vertices(&reading, initial[0].profile)),
         ),
         source: current,
         expected: reading.version,
@@ -844,7 +841,21 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
     form.finish_session_change();
     let accepted = session.export_path().expect("accepted");
     let accepted_cells = sql(&accepted);
-    cold(&accepted, 35.5, 12.25, 6.75);
+    let expected_points = [[31., 15.5], [31., 3.3], [-4.5, 3.25], [-4.5, 15.5]];
+    let changed = crate::sketch_facts::read(&accepted).expect("accepted geometry");
+    assert_eq!(
+        crate::transaction_tests::stored_vertices(&changed, fillet.profile)
+            .iter()
+            .map(|v| v.start_mm)
+            .collect::<Vec<_>>(),
+        expected_points,
+    );
+    // Only moved endpoints reach the 0.1 mm grid: the bottom is now slightly sloped.
+    // A convex corner removes r²(cot(theta/2) - (pi-theta)/2) from its two tangents.
+    let theta = std::f64::consts::FRAC_PI_2 + (0.05_f64 / 35.5).atan();
+    let cut = 2.375_f64.powi(2) * (1. / (theta / 2.).tan() - (std::f64::consts::PI - theta) / 2.);
+    let expected_volume = (crate::feature_tests::area(&expected_points) - cut) * 6.75;
+    cold_with_volume(&accepted, expected_volume);
     move_native(&mut session, true);
     assert!(!session.dirty());
     assert_eq!(sql(&session.export_path().expect("undo")), sql(&source));
@@ -854,15 +865,15 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
     saved(&mut session, SaveTarget::InPlace);
     let reopened = crate::sessions::test_open::open(&source).expect("reopen");
     assert_eq!(sql(reopened.current().path()), accepted_cells);
-    cold(reopened.current().path(), 35.5, 12.25, 6.75);
+    cold_with_volume(reopened.current().path(), expected_volume);
     drop(reopened);
 
     for whole_side in [false, true] {
         let path = session.export_path().expect("accepted");
         let reading = crate::sketch_facts::read(&path).expect("reading");
         let mut form = crate::sketch::Editor::default();
-        form.set_session(true, true, false);
-        assert!(form.begin_edit(&path, &reading, fillet.profile));
+        form.set_test_session(true, true, false);
+        assert!(form.begin_test_drawing(&path, &reading, fillet.profile));
         let ctx = egui::Context::default();
         let to = if whole_side { "-4" } else { "30" };
         if whole_side {
@@ -871,8 +882,8 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
             crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "31", to);
         }
         assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
-        crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
-        let request = form.take_apply_request().expect("Apply");
+        crate::sketch::tests::click_label(&ctx, &mut form, "Finish");
+        let request = form.viewport.take_request().expect("Apply");
         if !whole_side {
             assert!(matches!(apply(&mut session, &request), Edited::Show(_)));
             let path = session
@@ -910,16 +921,16 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
 
     // A single vertex of an ordinary plate is accepted by the same form and worker.
     let (_root, plain, reading) = crate::fillets::tests::plate();
-    let sketch = reading.sketches[0].sketch;
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
     let mut session = Sessions::default();
     session.adopt(crate::sessions::test_open::open(&plain).expect("plain"));
     let mut form = crate::sketch::Editor::default();
-    form.set_session(true, true, false);
-    assert!(form.begin_edit(&plain, &reading, sketch));
+    form.set_test_session(true, true, false);
+    assert!(form.begin_test_drawing(&plain, &reading, sketch));
     let ctx = egui::Context::default();
     crate::sketch::tests::replace_one_in_form(&ctx, &mut form, "33", "31");
-    crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
-    let request = form.take_apply_request().expect("Apply");
+    crate::sketch::tests::click_label(&ctx, &mut form, "Finish");
+    let request = form.viewport.take_request().expect("Apply");
     assert!(
         matches!(apply(&mut session, &request), Edited::Show(_)),
         "{}",
@@ -927,7 +938,10 @@ fn native_vertex_form_moves_a_filleted_side_and_keeps_refusals_atomic() {
     );
     let changed = session.export_path().expect("changed");
     let geometry = crate::sketch_facts::read(&changed).expect("new geometry");
-    let vertices = geometry.sketches[0].vertices.as_ref().expect("vertices");
+    let vertices = crate::transaction_tests::stored_vertices(
+        &geometry,
+        crate::transaction_tests::line_sketch(&geometry),
+    );
     assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 31.).count(), 1);
     assert_eq!(vertices.iter().filter(|v| v.start_mm[0] == 33.).count(), 1);
 }

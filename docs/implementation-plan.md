@@ -2447,7 +2447,7 @@ snapshot backup, version/copy guards, cold refs, cleanup и atomic Keep с edit-
 Height, metadata, объектные/curve/reference IDs и остальные SQL-данные сохраняются.
 CLI `edit-sketch-copy` имеет request v1 и opt-in response v1, exit 0/2/7.
 [Протокол и исполняемый рецепт](edit-sketch-copy.md),
-[локальная проверка diff](edit-sketch-copy-verification.md). §9/§10 остаются частичными:
+[локальная проверка diff](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/edit-sketch-copy-verification.md). §9/§10 остаются частичными:
 нет constraints UI, добавления/удаления сегментов, imported editing или persistent undo.
 CI базы и локальные проверки нового diff учитываются отдельно; следующий срез не начат.
 
@@ -2464,8 +2464,8 @@ nearest/order tie-break, hover/selection, точные поля mm, preview бе
 canvas завершает, Escape/focus loss/PointerGone отменяют до исходного State.
 Общая policy запрещает Save недопустимого preview. Сохранение и все CLI JSON
 requests остаются прежними, включая attached source claims и snapshot guards.
-[Поведение и границы](sketch-vertex-drag.md),
-[проверки незакоммиченного diff](sketch-vertex-drag-verification.md).
+[Поведение и границы](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-vertex-drag.md),
+[проверки незакоммиченного diff](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-vertex-drag-verification.md).
 CI базы учитывается отдельно; следующий срез не начат.
 
 Независимое ревью §25C воспроизвело потерю второго drag при release и следующем
@@ -2483,8 +2483,8 @@ GUI smoke подтвердил drag, Undo/Redo, Save Cancel, публикаци�
 документные координаты; половина шага — от нуля; поля X/Y, Off, no-op и нулевая
 ось сохраняют точные строки. Шаг фиксируется на press и не зависит от Fit/сетки.
 Жесты, Undo, policy и jobs/CLI — прежние §25C/§25B/§25A.
-[Поведение](sketch-snap-step.md),
-[проверки незакоммиченного diff](sketch-snap-step-verification.md).
+[Поведение](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-snap-step.md),
+[проверки незакоммиченного diff](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-snap-step-verification.md).
 CI базы учитывается отдельно; следующий срез не начат.
 
 Независимое ревью §25D исправило округление ниже половины шага, превращение NaN
@@ -2841,7 +2841,7 @@ identity окружности. Circle constraints, mouse drag, отверсти�
 профили, booleans, in-place Save и новая схема БД в срез не входят; контракты
 Line-редакторов не ослаблены.
 [Контракт и рецепт](edit-circle-copy.md),
-[локальные доказательства и ограничения](edit-circle-copy-verification.md).
+[локальные доказательства и ограничения](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/edit-circle-copy-verification.md).
 Независимое ревью исправило ложный отказ на граничной толщине, проверку
 концентричности по двум осям вместо расстояния и потерю черновика после
 публикации при отказе Open. Все три дефекта подтверждены failing-first тестами.
@@ -2913,7 +2913,7 @@ deflection по замкнутости, ориентации, внутренне
 circle constraints, in-place Save, рисование мышью, новая схема БД и новые FFI в
 срез не входят; контракты Line- и Circle-редакторов не ослаблены.
 [Контракт и рецепт](edit-annular-copy.md),
-[локальные доказательства и ограничения](edit-annular-copy-verification.md).
+[локальные доказательства и ограничения](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/edit-annular-copy-verification.md).
 Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы
 учитывается отдельно от нового diff. Интерактивный GUI smoke отложен по
 указанию пользователя и не считается пройденным.
@@ -3917,7 +3917,7 @@ The control is off while a job runs or a pointer gesture owns the draft, on
 the same gate as Undo. It is absent from a new contour, Circle, Annulus, the
 angle editor, and the constraint and cut forms. It does not save or publish;
 Save edited copy and the publication rules are unchanged.
-[Verification](restore-sketch-draft-vertices-verification.md).
+[Verification](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/restore-sketch-draft-vertices-verification.md).
 
 Independent review found no production defect. The full native sketch/drag
 suite (44) and edit workers (11) passed without skips. A real macOS window
@@ -4374,8 +4374,8 @@ clean document. A form applies only to the version it was opened on, forms about
 replaced picture end, and document Undo/Redo wait while a form is open (draft
 Undo/Redo are the form's own). A dimensioned plate still offers no vertex form. The
 CLI and every JSON are unchanged. The other saved-object editors are still copy
-workflows (obligation 1 above continues). [Contract](sketch-session-apply.md),
-[verification and the macOS handoff](sketch-session-apply-verification.md).
+workflows (obligation 1 above continues). [Contract](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-session-apply.md),
+[verification and the macOS handoff](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-session-apply-verification.md).
 
 **§30C — the existing constraints of a saved Sketch, inside the open document.** The
 existing *Edit constraints…* form gains **Apply constraints**: the reused
@@ -4410,8 +4410,8 @@ session's last line is drawn inside the form so a refusal is readable. No new id
 (the saved document equals the command line's copy in every cell but the write stamp),
 no constraint, geometry, solver need, command, JSON or format. The other copy-only
 editors remain (obligation 1 above continues).
-[Contract](analytic-sketch-session-apply.md),
-[verification and the macOS handoff](analytic-sketch-session-apply-verification.md).
+[Contract](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/analytic-sketch-session-apply.md),
+[verification and the macOS handoff](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/analytic-sketch-session-apply-verification.md).
 
 Independent macOS review of §30D completed the Circle and annulus window scenario:
 draft and document histories, unsaved export, Save/Save As, refusal and guarded
@@ -5067,7 +5067,7 @@ edit is an Undo step. The **circle centre is not available**: Circle and Annulus
 numeric forms, the canvas draws no circle, and no invisible candidate was added; it
 stays the next §31C addition. Quadrants, nearest, tangency, apparent crossings remain later. §31D-1 below adds fixed-origin gesture guides. Contract, rules for degenerate geometry, executed gates,
 mutations, resources and the independent window recipe:
-[sketch-object-snaps.md](sketch-object-snaps.md). Independent review fixed a
+[sketch-object-snaps.md](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-object-snaps.md). Independent review fixed a
 query-window boundary omission with a failing-first regression. The macOS window
 verified all three labels, saved drag/Undo/Redo, typed text, object-over-grid choice,
 Apply/Save and real STL/FBX exports against the CLI (14000 mm³; peak 204.892 MiB,
@@ -5110,7 +5110,7 @@ object snap), and the field is never read as zero. Off a guide it is unused. One
 point is one Undo step; Escape, lost focus and a vanished pointer restore the
 press-time strings. Nothing is a constraint, a Distance or a document field. Contract,
 constants, executed gates, mutations, resources and the independent window recipe:
-[sketch-gesture-guides.md](sketch-gesture-guides.md). **Not done:** acquiring another
+[sketch-gesture-guides.md](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-gesture-guides.md). **Not done:** acquiring another
 anchor by hovering with the hysteresis specified above (acquire inside the aperture,
 release outside twice it, replace only when nearer by more than one point), the
 circle centre (no circle is drawn on this canvas), angles and every constraint
@@ -5143,7 +5143,7 @@ press-time strings; the anchor is cleared when the pointer leaves, a tab's form 
 aside, the document changes or Guides go off. Without the mode every click and drag is the
 old one; with it a press is taken only on a shown ring. Contract, interaction table, the
 reachability proof by real egui events, executed gates, mutations, resources and the
-independent window recipe: [sketch-hover-guide-anchors.md](sketch-hover-guide-anchors.md).
+independent window recipe: [sketch-hover-guide-anchors.md](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-hover-guide-anchors.md).
 **Not done:** the circle centre (no circle is drawn on this canvas), quadrants, nearest,
 tangency, apparent crossings, keyboard cycling, a persistent dimension, every constraint
 adapter; so §31C, §30, Milestone 5C, the product and the OOM investigation stay open.
@@ -5355,7 +5355,7 @@ references, and the height is not edited here.
   profile** fit the profile; typing and gestures never re-centre.
 
 Contract, decisions, executed gates, mutations, resources and the independent window
-recipe: [analytic-sketch-canvas.md](analytic-sketch-canvas.md). Independent review corrected
+recipe: [analytic-sketch-canvas.md](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/analytic-sketch-canvas.md). Independent review corrected
 same-frame gesture history, routed presses over floating forms using the latest OS
 position and enabled exact f64 JSON request round-trips in the CLI. The macOS window
 checked New/saved Circle and annulus, refusal/recovery, draft and document history,
@@ -5404,7 +5404,7 @@ canvas itself, which costs the form no height.
   constraints, CLI, solver and schema. No new CAD operation, snap family or mixed profile.
 
 Contract, decisions, executed gates, mutations, resources and the independent window recipe:
-[sketch-canvas-navigation.md](sketch-canvas-navigation.md). **Remaining window checks:**
+[sketch-canvas-navigation.md](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-canvas-navigation.md). **Remaining window checks:**
 Shift/middle pan, pinch, held-input cancellation, Revolve/Fillet-history routes and Windows/Linux
 windows. The §31C circle-centre object snap (still no candidate on either canvas), snapping or
 guides on the analytic canvas, quadrants, mixed Line/Circle profiles, arcs, constraints made from

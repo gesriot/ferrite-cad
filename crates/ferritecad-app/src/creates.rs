@@ -279,20 +279,9 @@ impl Creates {
         self.held_new = None;
     }
 
-    /// The saved Sketch form is the caller of Apply, not an operation blocking it.
-    /// New and the other Sketch-family forms retain their existing exclusion.
-    pub(crate) fn can_apply_sketch(&self) -> bool {
-        !self.running() && self.form.is_none() && self.sketch.editing_saved_vertices()
-    }
-
-    /// The constraints form is the caller of its own Apply, like the Sketch form.
+    /// The constraints form is the caller of its own Apply, not an operation blocking it.
     pub(crate) fn can_apply_constraints(&self) -> bool {
         !self.running() && self.form.is_none() && self.sketch.constraints.active()
-    }
-
-    /// The saved Circle or annulus form is the caller of its own Apply.
-    pub(crate) fn can_apply_analytic(&self) -> bool {
-        !self.running() && self.form.is_none() && self.sketch.editing_analytic()
     }
 
     /// The angle form is the caller of its own Apply, not an operation blocking it.

@@ -59,7 +59,6 @@ mod sessions;
 mod sketch;
 mod sketch_facts;
 mod sketch_mode;
-mod sketch_transactions;
 mod sweeps;
 mod tabs;
 mod workspace;
@@ -287,14 +286,6 @@ enum AppEvent {
         result: Box<Result<ferritecad_jobs::EditedDocument>>,
     },
     SketchEdited {
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedDocument>,
-    },
-    CircleEdited {
-        generation: u64,
-        result: Result<ferritecad_jobs::EditedDocument>,
-    },
-    AnnulusEdited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
     },
@@ -1186,20 +1177,6 @@ fn document_io_idle(loads: &Loads, exports: &exports::Exports) -> bool {
         && !exports.configuring_stl()
 }
 
-/// Shared by the Sketch form's Apply button and the command that starts its worker.
-fn can_apply_sketch(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_sketch()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
 /// Shared by the constraints form's Apply button and the command that starts its worker.
 fn can_apply_constraints(
     creates: &creates::Creates,
@@ -1209,21 +1186,6 @@ fn can_apply_constraints(
     sessions: &sessions::Sessions,
 ) -> bool {
     creates.can_apply_constraints()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Shared by the saved Circle and annulus forms' Apply button and the commands
-/// that start their workers.
-fn can_apply_analytic(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_analytic()
         && document_io_idle(loads, exports)
         && !edits.busy()
         && sessions.takes_form_apply()
@@ -1388,7 +1350,7 @@ struct Sections<'a> {
     /// changes (ADR 0005): the form says so rather than leaving buttons grey.
     held_back: bool,
     /// The session's own last line (what Apply, Undo or Save last did), shown
-    /// inside the Circle and annulus forms so a refusal is not hidden behind them.
+    /// inside open forms so a refusal is not hidden behind them.
     document_outcome: &'a str,
     /// What the last export did.
     export: Option<ferritecad_ui::ExportOutcome<'a>>,
@@ -3104,32 +3066,8 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
-            AppEvent::CircleEdited { generation, result } => {
-                if let Some(path) = sketch::finish_circle_edit(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
             AppEvent::RevolveAngleEdited { generation, result } => {
                 if let Some(path) = sketch::finish_angle_edit(
-                    &mut self.creates.sketch,
-                    &mut self.edits,
-                    generation,
-                    result,
-                ) {
-                    self.open(path);
-                }
-                self.input.request_redraw();
-                self.request_frame_now(event_loop);
-            }
-            AppEvent::AnnulusEdited { generation, result } => {
-                if let Some(path) = sketch::finish_annulus_edit(
                     &mut self.creates.sketch,
                     &mut self.edits,
                     generation,
@@ -3590,21 +3528,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.loads,
                     &self.exports,
                 );
-                let sketch_apply = can_apply_sketch(
-                    &self.creates,
-                    &self.loads,
-                    &self.exports,
-                    &self.edits,
-                    &self.sessions,
-                );
                 let constraints_apply = can_apply_constraints(
-                    &self.creates,
-                    &self.loads,
-                    &self.exports,
-                    &self.edits,
-                    &self.sessions,
-                );
-                let analytic_apply = can_apply_analytic(
                     &self.creates,
                     &self.loads,
                     &self.exports,
@@ -3707,28 +3631,29 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     self.model_confirmation.is_some(),
                 );
+                let sketch_apply = numeric::can_apply(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
                 let create_line = creates::words(self.creates.status());
                 let created = creates::shown(self.creates.status(), &create_line);
                 let creating = self.creates.running() || self.sessions.busy();
-                // The saved Sketch editor applies into the open document: it may be
-                // opened while there are unsaved changes, and it applies whenever
-                // nothing else is replacing or reading the document.
+                // Saved-object forms may open while the session is dirty; Apply waits
+                // until nothing else is replacing or reading the document.
                 let session_idle = self.sessions.has_session() && settled;
-                self.creates.sketch.set_session(
-                    session_idle && !self.edits.busy(),
-                    sketch_apply,
-                    self.sessions.dirty(),
-                );
-                self.creates.sketch.viewport.set_apply(
-                    session_idle && self.sessions.takes_form_apply() && !self.edits.running(),
-                );
+                self.creates
+                    .sketch
+                    .set_session(session_idle && !self.edits.busy(), self.sessions.dirty());
+                self.creates.sketch.viewport.set_apply(sketch_apply);
                 self.creates.sketch.sweeps.set_apply(
                     session_idle && self.sessions.takes_form_apply() && !self.edits.running(),
                 );
-                self.creates.sketch.set_analytic_apply(analytic_apply);
                 self.creates.sketch.set_angle_apply(angle_apply);
                 self.creates.sketch.cuts.set_session(
                     session_idle && !self.edits.busy(),
@@ -4069,41 +3994,8 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some(request) = self.creates.sketch.viewport.take_request() {
                             self.apply_expressions(request.expected, request.changes);
                         }
-                        if let Some(request) = self.creates.sketch.take_apply_request() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
-                        if let Some(request) = self.creates.sketch.take_apply_circle_request() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
-                        if let Some(request) = self.creates.sketch.take_apply_annulus_request() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
                         if let Some(request) = self.creates.sketch.take_apply_angle_request() {
                             self.apply_expressions(request.expected, request.changes);
-                        }
-                        if let Some(request) = self.creates.sketch.take_edit_request() {
-                            self.ask_where_to_edit(
-                                numeric::Form::Sketch,
-                                request.source,
-                                request.expected,
-                                request.changes,
-                            );
-                        }
-                        if let Some(request) = self.creates.sketch.take_circle_edit_request() {
-                            self.ask_where_to_edit(
-                                numeric::Form::Circle,
-                                request.source,
-                                request.expected,
-                                request.changes,
-                            );
-                        }
-                        if let Some(request) = self.creates.sketch.take_annulus_edit_request() {
-                            self.ask_where_to_edit(
-                                numeric::Form::Annulus,
-                                request.source,
-                                request.expected,
-                                request.changes,
-                            );
                         }
                         if let Some(request) = self.creates.sketch.take_angle_edit_request() {
                             self.ask_where_to_edit(
@@ -19182,13 +19074,8 @@ mod tests {
         sketch.dismiss();
         assert!(!form_open(&edits, &sketch));
         let (_root, path, reading) = fillets::tests::plate();
-        let id = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
-        assert!(sketch.begin_edit(&path, &reading, id));
+        let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+        assert!(sketch.begin_test_drawing(&path, &reading, id));
         assert!(
             form_open(&edits, &sketch),
             "an open Sketch form did not hold Undo"

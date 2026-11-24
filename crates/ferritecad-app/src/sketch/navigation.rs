@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §31J: zoom about the pointer and pan, shared by the three Sketch canvases.
+//! Zoom about the pointer and pan for the retained constraint canvas.
 //!
 //! A view is the lower-left corner in mm and the scale in logical points per mm: the
 //! transform of `canvas_point` / `canvas_mm`. This module owns the view arithmetic and
@@ -320,19 +320,6 @@ impl Navigation {
         }
         if let Some(next) = zoomed(*view, surface.rect, at, ln) {
             *view = next;
-        }
-    }
-
-    /// The words painted on the canvas.
-    pub(super) fn hint(&self, open: bool, frozen: bool) -> &'static str {
-        if self.pan.is_some() {
-            "Panning · Esc puts the view back"
-        } else if frozen {
-            "View locked while you drag"
-        } else if !open {
-            "View locked while the form is busy"
-        } else {
-            "Wheel or pinch: zoom · Shift+drag or middle-drag: pan"
         }
     }
 }

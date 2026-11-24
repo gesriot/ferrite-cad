@@ -309,7 +309,7 @@ fn distance_busy_guard_proves_changed_idle_request_and_excludes_other_work() {
         }
     }
     c = creates::Creates::default();
-    assert!(c.sketch.begin_edit(&path, &reading, chosen.profile));
+    assert!(c.sketch.begin_test_drawing(&path, &reading, chosen.profile));
     assert!(!ready(&c, &s), "another editor");
     c.sketch.dismiss();
     assert!(

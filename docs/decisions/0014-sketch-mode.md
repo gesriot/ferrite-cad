@@ -2,7 +2,8 @@
 
 **Status:** accepted design.
 
-[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form.
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form,
+and the saved vertex, circle and annulus forms.
 The window creates sketches in the viewport and applies a sweep to the accepted sketch.
 
 The viewport sketch editor is a saved-object form owned by `sketch::Editor`.

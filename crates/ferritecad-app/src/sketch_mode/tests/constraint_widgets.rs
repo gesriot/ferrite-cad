@@ -21,7 +21,7 @@ fn native_without_solver_saved_circle_has_no_radius_edit() {
     assert!(!ferritecad_eval::solver_available());
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("circle.fcad");
-    crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
+    crate::feature_tests::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
     let before = std::fs::read(&path).expect("source bytes");
     let mut w = open(&path, Drawn::Native);
     let source = w.scene.edit_source.as_ref().expect("source");
@@ -77,7 +77,7 @@ fn native_temporary_radius_matches_the_exact_cli_geometry_without_saved_constrai
     }
     let root = tempfile::tempdir().expect("directory");
     let path = root.path().join("circle.fcad");
-    crate::sketch::tests::analytic_apply::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
+    crate::feature_tests::write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
     let mut w = open(&path, Drawn::Native);
     let source = w.scene.edit_source.as_ref().expect("source");
     let sketch = source.built_sketches[0];

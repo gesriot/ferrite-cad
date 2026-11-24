@@ -8,8 +8,8 @@ verification record of the slice.
 
 Open A and B. In A, open **Edit extrusion…**, type a height — even one that is not a
 number yet, such as `2..6` — and press B's tab without Apply or Cancel. B shows its own
-document with none of A's form. Open B's circle (or constraints, or any other form
-below), type, and press A's tab: A's form is back exactly as it was left — the same
+document with none of A's form. Open B's sketch (or constraints, or any other form
+below), make a draft edit, and press A's tab: A's form is back exactly as it was left — the same
 text, the same picks, the same draft Undo/Redo. Apply, Cancel and every other button of
 a form act on the tab the form belongs to. Switching is never Apply, Cancel or Save.
 
@@ -21,15 +21,15 @@ moved whole, as values, in the statement that hides or shows a tab.
 | Form | Real owner in the window | What it keeps | Its foreground work |
 |---|---|---|---|
 | Extrude height | `edits::Edits.form` (`edits::Form`) | chosen extrusion, height text, refusal, the reading it was opened on | Apply: the tab's `Sessions` operation; *Save new file…*: `Edits.running` |
-| Saved Sketch vertices | `sketch::Editor` (`draft`, `undo`/`redo`, `next`, `canvas`, `editing`) | every coordinate as typed, closed flag, draft history, canvas pick/zoom/snap | Apply: `Sessions`; a vertex drag: `Canvas.gesture` |
-| Saved Circle / Annulus | `sketch::Editor` (`circle`/`annulus`, `editing_*`, `*_undo`/`*_redo`/`*_applied`) | centre and radii as typed, draft history | `Sessions` |
-| Revolve angle | `sketch::Editor` (`angle_edit`, `editing_angle`, `angle_*`) | angle text, draft history | `Sessions` |
+| Saved Sketch lines | `sketch::Editor.viewport` (`sketch_mode::Editor`) | drawn curves, selection, draft history, grid/guides | Finish: `Sessions`; a handle drag: viewport gesture |
+| Saved Circle / Annulus | `sketch::Editor.viewport` (`sketch_mode::Editor`) | drawn centres and radii, selection, draft history | `Sessions` |
+| Revolve angle | `sketch::Editor.angle` (`sketch::revolve_angle::Draft`) | angle text, draft history | `Sessions` |
 | Constraints | `sketch::Editor.constraints` (`constraints::Editor.draft`) | pending removals and additions (stored ids), picked Line and pair, typed length/radius/point, request Undo/Redo | `Sessions` |
 | Cut Add / Edit | `sketch::Editor.cuts` | numbers as typed, picks, draft history | `Sessions` |
 | Fillet Add / Edit | `sketch::Editor.fillets` | picked edges, radius text, draft history | `Sessions` |
 | Chamfer Add / Edit | `sketch::Editor.chamfers` | picked edges, distance text, request history | `Sessions` |
 | **New** form | `creates::Creates.form` | — not a tab's; holds the window | `Creates.running` |
-| New drawing (polygon, circle, annulus) | `sketch::Editor.draft` with no `editing` | — not a tab's; holds the window | `Creates.running` |
+| New sketch | `sketch::Editor.viewport` (`sketch_mode::Editor`) | tab-owned curves, constraints, selection and draft history | Finish: `Sessions` |
 | STL options / export question | `exports::Exports` | — holds the window | export worker |
 
 ## Rules
@@ -54,7 +54,7 @@ moved whole, as values, in the statement that hides or shows a tab.
 3. **What holds the window.** One predicate, `can_leave_tab`, answers for the tab row
    and for the handlers: showing or closing another tab waits for any session operation
    (Apply, Add, Undo, Redo, Save, Save As, a checkpoint, a switch, Recover), a load, an
-   export or its question, the STL options form, **New** (its form, drawing or worker),
+   export or its question, the STL options form, **New** (its form or worker),
    a *Save new file…* copy, and a pointer gesture (camera drag or vertex drag). Native
    dialogs are modal and run before the window draws again. An idle form does not hold
    the window. A document that is clean is no proof that no form is open.
@@ -89,7 +89,7 @@ moved whole, as values, in the statement that hides or shows a tab.
    no file. Closing a tab after its form/model decisions frees only its own
    files and crash copy. CLI, document schema, capabilities and JSON v1 are unchanged.
 
-**Still blocking.** A **New** form or drawing, an export in progress (or its question,
+**Still blocking.** A **New** form, an export in progress (or its question,
 or the STL options form), any native dialog, any operation and any gesture. Open, New
 and Recover also still wait while the shown tab has a form, as before §30P. *Since §30Q
 they no longer wait for an idle form: Open and Recover move it with its tab, and New sets
@@ -252,12 +252,17 @@ empty `recovery/`; it refuses a root inside a checkout and makes no window outpu
 1. `a.fcad` opens. **Open…** `$ROOT/b.fcad`: a second tab, shown.
 2. Press `a.fcad`. **Edit extrusion…** → choose the extrusion → type `2..6` (the form
    says why it is not a height). Do not Apply.
-3. Press `b.fcad` (allowed with A's form open). No height form is shown. **Edit circle
-   …** → centre −3.5, 4.25, radius 8. Do not Apply.
+3. Press `b.fcad` (allowed with A's form open). No height form is shown.
+   Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet. Do not Finish.
 4. Press `a.fcad`: the form shows `2..6` exactly. Replace it with `26` → **Apply**.
-5. **Edit Sketch Profile …** → replace both `80` with `90`. Do not Apply.
-6. Press `*b.fcad`: the circle form shows −3.5, 4.25, 8 → **Apply circle**.
-7. Press `*a.fcad`: both `90` are there → **Apply vertices**. **Undo**, **Redo**.
+5. Select A's sketch and **Edit sketch…**. With grid **0.1 mm**, guides **Off**,
+   move each endpoint at X `80` to X `90`, preserving its Y. Do not Finish.
+6. Press `*b.fcad`: the drawing still has centre `(-3.5, 4.3)` and its chosen radius
+   → **Finish**.
+7. Press `*a.fcad`: both corners at X `90` are there → **Finish**. **Undo**, **Redo**.
    **Export STL…** → `$ROOT/a-unsaved.stl`; **Export FBX…** → `$ROOT/a-unsaved.fbx`.
 8. **Edit extrusion…** → type `30`. Do not Apply.
 9. Press `*b.fcad`. Export `$ROOT/b-unsaved.stl` and `.fbx`.
@@ -278,7 +283,8 @@ requires `FCAD_30P_GUI_COMPARE_OK negative_controls=6 all_SQL_cells=true`: `a.fc
 equals the CLI's `edit-extrude 26` + `edit-sketch-copy` (80 → 90) copy and `b.fcad` the
 CLI's `edit-circle` copy in every SQL cell but the write stamp; UUIDs and references
 kept; the four unsaved exports byte-equal to the CLI's exports of those copies, and the
-saved files export the same bytes; A 26 high, 93 600 mm³; B a closed cylinder r 8; no
+saved files export the same bytes; A 26 high, 93 600 mm³; B a closed cylinder at
+(−3.5, 4.3), r 8 with PlaneGCS or its saved r 10.5 without it; no
 recovery record left. Controls (on copies of the real outputs): a missing output (no peer
 job may run first), an unsaved `b.fcad`, `a.fcad` holding B's model, `a.fcad` with the
 form left open at Quit applied (30), swapped exports, a recovery record left behind.

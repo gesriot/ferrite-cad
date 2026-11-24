@@ -469,8 +469,10 @@ Second launch (no document named):
 6. **Reopen saved files**: `a.fcad` then `b.fcad` open in that order and `a.fcad` is
    shown; *2 of 2 saved files are open, each as it is saved on disk now.* A is 26 mm.
 7. **Reopen saved files** again: no new tab; still 2 of 2.
-8. Press `b.fcad`. **Edit circle …** → centre −3.5, 4.25, radius 8 → **Apply circle**
-   (`*b.fcad`).
+8. Press `b.fcad`. Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet. Press **Finish** (`*b.fcad`).
 9. **Export STL…** → `$ROOT/b-unsaved.stl`; **Export FBX…** → `$ROOT/b-unsaved.fbx`.
    **Save** (`Cmd+S`).
 10. Quit (`Cmd+Q`) with `b.fcad` shown: nothing is asked; check the owned PID is gone.

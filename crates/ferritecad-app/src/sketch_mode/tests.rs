@@ -501,6 +501,7 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
 
 mod buttons;
 mod constraint_widgets;
+pub(crate) mod curve_edits;
 mod gpu;
 mod prediction;
 pub(crate) mod round_edits;

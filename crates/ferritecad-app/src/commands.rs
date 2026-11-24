@@ -98,25 +98,6 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
     {
         out.push(ModelEdit::Parameters);
     }
-    if source.sketches.iter().any(|c| {
-        c.sketch == id && c.refusal.is_none() && c.vertices.is_some() && c.profile_use.is_some()
-    }) {
-        out.push(ModelEdit::Vertices);
-    }
-    if source
-        .circle_sketches
-        .iter()
-        .any(|c| c.sketch == id && c.refusal.is_none())
-    {
-        out.push(ModelEdit::Circle);
-    }
-    if source
-        .annulus_sketches
-        .iter()
-        .any(|c| c.sketch == id && c.refusal.is_none())
-    {
-        out.push(ModelEdit::Annulus);
-    }
     if source
         .constraint_sketches
         .iter()
@@ -190,9 +171,6 @@ fn open_editor(
         ModelEdit::NewSketch => creates.sketch.viewport.begin_new(path, source, Some(id)),
         ModelEdit::Parameters => creates.sketch.parameters.begin(source),
         ModelEdit::Height => edits.begin_selected(path, source, id),
-        ModelEdit::Vertices => creates.sketch.begin_edit(path, source, id),
-        ModelEdit::Circle => creates.sketch.begin_circle_edit(path, source, id),
-        ModelEdit::Annulus => creates.sketch.begin_annulus_edit(path, source, id),
         ModelEdit::Constraints => creates
             .sketch
             .constraints

@@ -325,25 +325,25 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     let opened = crate::sketch_facts::read(&source).expect("reading");
     let original_refs = crate::test_names::names(&Document::open_read_only(&source).expect("doc"));
     let axis_line = opened
-        .sketches
+        .objects
         .iter()
-        .find_map(|s| match s.profile_use {
-            Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
-                axis: revolve_axis,
-                ..
-            }) => Some(revolve_axis),
+        .find_map(|o| match &o.payload {
+            ferritecad_document::ObjectPayload::Revolve(r) => Some(r.axis),
             _ => None,
         })
         .expect("partial profile");
     assert_eq!(axis_line, ferritecad_document::RevolveAxis::SketchY);
     // First step: the profile changes, leaving the user's file untouched.
-    let mut vertices = opened.sketches[0].vertices.clone().expect("vertices");
+    let mut vertices = crate::transaction_tests::stored_vertices(
+        &opened,
+        crate::transaction_tests::line_sketch(&opened),
+    );
     vertices[1].start_mm[0] = 8.75;
     vertices[2].start_mm[0] = 8.75;
     let v = ferritecad_jobs::EditRequest {
         changes: crate::transaction_tests::vertex_changes(
             &(s.export_path().expect("current")),
-            opened.sketches[0].sketch,
+            crate::sketch_mode::tests::curve_edits::sketch_id(&opened),
             &(vertices),
         ),
         source: s.export_path().expect("current"),
@@ -714,14 +714,14 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     for (name, axis) in [("radial", false), ("axis", true)] {
         let source = directory.join("source").join(format!("{name}.fcad"));
         let reading = crate::sketch_facts::read(&source).expect("source");
-        let choice = &reading.sketches[0];
-        let mut vertices = choice.vertices.clone().expect("vertices");
+        let choice = crate::transaction_tests::line_sketch(&reading);
+        let mut vertices = crate::transaction_tests::stored_vertices(&reading, choice);
         vertices[1].start_mm[0] = 8.75;
         vertices[2].start_mm[0] = 8.75;
         let r = ferritecad_jobs::EditRequest {
             changes: crate::transaction_tests::vertex_changes(
                 &(source.clone()),
-                choice.sketch,
+                choice,
                 &(vertices),
             ),
             source: source.clone(),

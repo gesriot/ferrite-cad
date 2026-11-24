@@ -385,3 +385,100 @@ pub(crate) fn reach(end: CutExtent, height: f64) -> f64 {
         CutExtent::ThroughAll => height,
     }
 }
+
+/// One analytic circle (`radii` of one) or two concentric ones (the boundary
+/// first, or the bore first when `swapped`), written through the document API: a
+/// build with no kernel has no `create-*` command, and these tests need none.
+pub(crate) fn write_round(
+    path: &std::path::Path,
+    center: [f64; 2],
+    radii: &[f64],
+    height: f64,
+    swapped: bool,
+) {
+    use ferritecad_document::{
+        Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
+        ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    };
+    use ferritecad_types::{ObjectId, StableEntityId, Transform};
+    let mut d = Document::create(path).expect("document");
+    let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
+    let drawn: Vec<StableEntityId> = radii.iter().map(|_| StableEntityId::new()).collect();
+    d.write(|w| {
+        w.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        let mut curves = Vec::new();
+        for (id, radius) in drawn.iter().zip(radii) {
+            curves.push(SketchCurve {
+                id: *id,
+                construction: false,
+                geometry: SketchGeometry::Circle {
+                    center: Point2::new(center[0], center[1])?,
+                    radius: *radius,
+                },
+            });
+        }
+        if swapped {
+            curves.reverse();
+        }
+        w.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
+        )?;
+        w.put_object(
+            extrude,
+            None,
+            2,
+            Some("Extrude1"),
+            &ObjectPayload::Extrude(Extrude {
+                regions: Vec::new(),
+                profile: sketch,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(height)?,
+                },
+                reversed: false,
+                operation: SolidOperation::NewBody,
+                previous: None,
+            }),
+        )?;
+        w.put_object(
+            body,
+            None,
+            3,
+            Some("Body"),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(extrude),
+                rollback: None,
+            }),
+        )?;
+        for (dependent, dependency, role) in [
+            (sketch, plane, DependencyRole::Plane),
+            (extrude, sketch, DependencyRole::Profile),
+            (body, extrude, DependencyRole::BodyTip),
+        ] {
+            w.add_dependency(Dependency {
+                dependent,
+                dependency,
+                role,
+            })?;
+        }
+
+        Ok(())
+    })
+    .expect("round document");
+    d.close().expect("close");
+}

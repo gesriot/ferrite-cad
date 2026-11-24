@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{EndCondition, ObjectPayload, Sketch, SketchGeometry, SketchVertex};
-use ferritecad_types::{ObjectId, Result, StableEntityId};
+use ferritecad_document::{EndCondition, ObjectPayload, Sketch, SketchGeometry};
+use ferritecad_types::{ObjectId, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Source {
@@ -18,10 +18,7 @@ pub(crate) struct Source {
     pub cut_features: Vec<crate::feature_facts::CutParameterChoice>,
     pub fillet_bodies: Vec<crate::feature_facts::EdgeChoice>,
     pub chamfer_bodies: Vec<crate::feature_facts::EdgeChoice>,
-    pub sketches: Vec<SketchChoice>,
     pub constraint_sketches: Vec<ConstraintSketchChoice>,
-    pub circle_sketches: Vec<CircleChoice>,
-    pub annulus_sketches: Vec<AnnulusChoice>,
 }
 impl std::ops::Deref for Source {
     type Target = ferritecad_document::ExtrudeEditSource;
@@ -63,16 +60,6 @@ pub(crate) enum SketchProfileUse {
     },
 }
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SketchChoice {
-    pub details: Vec<String>,
-    pub sketch: ObjectId,
-    pub name: Option<String>,
-    pub stored: Option<Sketch>,
-    pub vertices: Option<Vec<SketchVertex>>,
-    pub profile_use: Option<SketchProfileUse>,
-    pub refusal: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ConstraintSketchChoice {
     pub sketch: ObjectId,
     pub name: Option<String>,
@@ -96,37 +83,6 @@ impl ConstraintSketchChoice {
         .map(|_| ())
     }
 }
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CircleChoice {
-    pub sketch: ObjectId,
-    pub name: Option<String>,
-    pub circle: Option<SavedCircle>,
-    pub refusal: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SavedCircle {
-    pub curve_id: StableEntityId,
-    pub center_mm: [f64; 2],
-    pub radius_mm: f64,
-    pub height_mm: Option<f64>,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AnnulusChoice {
-    pub sketch: ObjectId,
-    pub name: Option<String>,
-    pub annulus: Option<SavedAnnulus>,
-    pub refusal: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SavedAnnulus {
-    pub outer_curve_id: StableEntityId,
-    pub inner_curve_id: StableEntityId,
-    pub center_mm: [f64; 2],
-    pub inner_center_mm: [f64; 2],
-    pub outer_radius_mm: f64,
-    pub inner_radius_mm: f64,
-    pub height_mm: Option<f64>,
-}
 impl From<ferritecad_document::ExtrudeEditSource> for Source {
     fn from(mut facts: ferritecad_document::ExtrudeEditSource) -> Self {
         // The document's numeric_form_refusal remains the only literal check.
@@ -148,10 +104,7 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
             built_sketches: Vec::new(),
             datum_planes: Vec::new(),
             profile_failures: Vec::new(),
-            sketches: vec![],
             constraint_sketches: vec![],
-            circle_sketches: vec![],
-            annulus_sketches: vec![],
         };
         for object in &result.facts.objects {
             let ObjectPayload::Sketch(sketch) = &object.payload else {
@@ -218,70 +171,6 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                 Some(SketchProfileUse::BlindExtrude { height_mm, .. }) => Some(height_mm),
                 _ => None,
             };
-            let vertices: Option<Vec<_>> = sketch
-                .curves
-                .iter()
-                .enumerate()
-                .map(|(i, curve)| {
-                    let next = &sketch.curves[(i + 1) % sketch.curves.len()];
-                    match curve.geometry {
-                        SketchGeometry::Line { start, end }
-                            if !curve.construction
-                                && matches!(next.geometry, SketchGeometry::Line { start, .. } if start == end) =>
-                        {
-                            Some(SketchVertex {
-                                curve_id: curve.id,
-                                start_mm: [start.x, start.y],
-                            })
-                        }
-                        _ => None,
-                    }
-                })
-                .collect::<Option<Vec<_>>>()
-                .filter(|vertices| !vertices.is_empty());
-            let base = result.facts.objects.iter().find_map(|o| match &o.payload {
-                ObjectPayload::Extrude(e) if e.profile == object.id => Some(o.id),
-                _ => None,
-            });
-            let mut details = vec![];
-            for feature in &result.facts.objects {
-                match &feature.payload {
-                    ObjectPayload::Fillet(f)
-                        if f.edges
-                            .iter()
-                            .any(|edge| Some(edge.meaning.producer) == base) =>
-                    {
-                        details.push(format!(
-                            "Rounded by Fillet {} · radius {} mm",
-                            feature.id,
-                            f.radius_mm.value()
-                        ))
-                    }
-                    ObjectPayload::Chamfer(c)
-                        if c.edges
-                            .iter()
-                            .any(|edge| Some(edge.meaning.producer) == base) =>
-                    {
-                        details.push(format!(
-                            "Chamfer {} · distance {} mm",
-                            feature.id,
-                            c.distance_mm.value()
-                        ))
-                    }
-                    _ => {}
-                }
-            }
-            result.sketches.push(SketchChoice {
-                details,
-                sketch: object.id,
-                name: object.name.clone(),
-                stored: Some(sketch.clone()),
-                refusal: vertices
-                    .is_none()
-                    .then(|| "This form draws closed Line profiles.".into()),
-                vertices,
-                profile_use,
-            });
             let drawable = sketch.curves.iter().all(|c| {
                 matches!(
                     c.geometry,
@@ -295,56 +184,6 @@ impl From<ferritecad_document::ExtrudeEditSource> for Source {
                 height_mm: height,
                 profile_use,
                 refusal: (!drawable).then(|| "This form draws Lines and Circles.".into()),
-            });
-            let circles: Option<Vec<_>> = sketch
-                .curves
-                .iter()
-                .map(|c| match c.geometry {
-                    SketchGeometry::Circle { center, radius } => {
-                        Some((c.id, [center.x, center.y], radius))
-                    }
-                    _ => None,
-                })
-                .collect();
-            let circle = circles.as_deref().and_then(|cs| match cs {
-                [(id, center, radius)] => Some(SavedCircle {
-                    curve_id: *id,
-                    center_mm: *center,
-                    radius_mm: *radius,
-                    height_mm: height,
-                }),
-                _ => None,
-            });
-            result.circle_sketches.push(CircleChoice {
-                sketch: object.id,
-                name: object.name.clone(),
-                refusal: circle
-                    .is_none()
-                    .then(|| "This form draws one Circle.".into()),
-                circle,
-            });
-            let annulus = circles.as_deref().and_then(|cs| match cs {
-                [a, b] => {
-                    let (outer, inner) = if a.2 >= b.2 { (a, b) } else { (b, a) };
-                    Some(SavedAnnulus {
-                        outer_curve_id: outer.0,
-                        inner_curve_id: inner.0,
-                        center_mm: outer.1,
-                        inner_center_mm: inner.1,
-                        outer_radius_mm: outer.2,
-                        inner_radius_mm: inner.2,
-                        height_mm: height,
-                    })
-                }
-                _ => None,
-            });
-            result.annulus_sketches.push(AnnulusChoice {
-                sketch: object.id,
-                name: object.name.clone(),
-                refusal: annulus
-                    .is_none()
-                    .then(|| "This form draws two Circles.".into()),
-                annulus,
             });
         }
         result

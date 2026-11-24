@@ -405,16 +405,12 @@ fn gate(name: &str) {
     };
     let current = s.export_path().expect("current");
     let reading = crate::sketch_facts::read(&current).expect("reading");
-    let base = reading
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
+    let base = crate::transaction_tests::line_sketch(&reading);
     let mut v = ferritecad_jobs::EditRequest {
         changes: crate::transaction_tests::vertex_changes(
             &(current),
-            base.sketch,
-            &(base.vertices.clone().expect("vertices")),
+            base,
+            &(crate::transaction_tests::stored_vertices(&reading, base)),
         ),
         source: current,
         expected: reading.version,
@@ -846,23 +842,15 @@ fn compare_gui(root: &Path) {
         ])
     };
     let reading = crate::sketch_facts::read(&height).expect("height reading");
-    let sketch = reading
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
-    let mut vertices = sketch.vertices.clone().expect("vertices");
+    let sketch = crate::transaction_tests::line_sketch(&reading);
+    let mut vertices = crate::transaction_tests::stored_vertices(&reading, sketch);
     for p in &mut vertices {
         if p.start_mm[0] == -2.5 {
             p.start_mm[0] = -3.75;
         }
     }
     let v = ferritecad_jobs::EditRequest {
-        changes: crate::transaction_tests::vertex_changes(
-            &(height.clone()),
-            sketch.sketch,
-            &(vertices),
-        ),
+        changes: crate::transaction_tests::vertex_changes(&(height.clone()), sketch, &(vertices)),
         source: height.clone(),
         expected: reading.version,
         destination: PathBuf::new(),
@@ -1076,22 +1064,19 @@ fn native_constrained_base_accepts_add_after_an_unsaved_constraint_apply() {
     );
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    let base = opened
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
+    let base = crate::transaction_tests::line_sketch(&opened);
     apply_constraints_native(
         &mut s,
         &ferritecad_jobs::EditRequest {
             changes: crate::transaction_tests::constraint_changes(
                 &(source.clone()),
-                base.sketch,
+                base,
                 &(ferritecad_document::SketchConstraintEdits {
                     remove: vec![],
                     add: vec![ferritecad_document::AddSketchConstraint::Line(
                         ferritecad_document::AddLineConstraint::Line {
-                            curve: base.vertices.as_ref().expect("vertices")[0].curve_id,
+                            curve: crate::transaction_tests::stored_vertices(&opened, base)[0]
+                                .curve_id,
                             kind: ferritecad_document::LineConstraintKind::Horizontal,
                         },
                     )],
