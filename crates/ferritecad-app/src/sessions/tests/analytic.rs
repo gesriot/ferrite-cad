@@ -722,7 +722,7 @@ fn annulus_gate(name: &str, root: &Path, source: &Path) {
     );
 }
 
-// ---- §31I: the canvas of the forms, through the same route -------------------
+// Viewport geometry edits through the same publication route.
 
 /// The walls of a cold rebuild of `path`, each under its own saved reference: the
 /// curve UUID the reference was raised from and the surface the kernel reports.
@@ -746,10 +746,10 @@ fn walls_by_reference(
     walls
 }
 
-/// §31I: the form's canvas dragged by real events (`draft`), the window's own Apply on
-/// the real worker, an export before Save, Undo, Redo, Save and a cold reopen of
-/// `source`, each against the command line given the numbers the canvas wrote. The
-/// height, every identity and reference and the source file (until Save) are kept.
+/// Viewport geometry edited through real events (`draft`), applied by the session
+/// worker, exported before Save, undone, redone, saved and cold reopened. Each step
+/// is compared with the CLI; height, identities, references and the source file
+/// (until Save) are kept.
 fn canvas_gate(
     name: &str,
     root: &Path,
@@ -1003,9 +1003,8 @@ fn native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_r
     assert_annulus_viewport_result("annulus-canvas", &source, &before, request, &stl);
 }
 
-/// §31J: what navigating the canvas alone leaves alone, checked once the view has moved
-/// and before anything is dragged: the session's file and the source file (cells and bytes),
-/// the command line's exports of the source, and the version the form was read from.
+/// What viewport navigation leaves alone before geometry is dragged: the session
+/// and source files (cells and bytes), the CLI exports and the draft's source version.
 struct Untouched {
     cells: std::collections::BTreeMap<String, Vec<String>>,
     bytes: Vec<u8>,
@@ -1058,10 +1057,9 @@ impl Untouched {
     }
 }
 
-/// §31J: the §31I route with the canvas zoomed and panned first (and Fit pressed once): that
-/// alone leaves every SQL cell, the file and its exports as they were; the drag is then
-/// made at the new scale, applied on the real worker, exported before Save, undone,
-/// redone and saved, each against the command line given the computed numbers.
+/// Zoom and pan the viewport before editing geometry. Navigation leaves SQL, files
+/// and exports unchanged; the edit at the new scale follows the same session,
+/// unsaved export, Undo, Redo and Save comparisons with the CLI.
 #[test]
 fn native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_command_line() {
     if !native() {

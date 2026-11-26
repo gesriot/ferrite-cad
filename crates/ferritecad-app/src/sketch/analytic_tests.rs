@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Round drawings retain the input-owner checks of the retired analytic canvases.
+//! Round drawings keep viewport handle input separate from other window work.
 use super::Editor;
 use crate::sketch_mode::tests::curve_edits;
 use ferritecad_ui::{PointerButton, ViewportEvent};

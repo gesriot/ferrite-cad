@@ -2157,8 +2157,7 @@ pub(crate) mod tests {
         assert!(!private.join("out.stl").exists());
     }
 
-    /// What the saved Sketch form asks for when the right-hand vertices of the
-    /// plate it was opened on move `by` millimetres.
+    /// A session request moving the plate's stored right-hand vertices by `by` millimetres.
     fn vertex_request(path: &Path, by: f64) -> ferritecad_jobs::EditRequest {
         let reading = crate::sketch_facts::read(path).expect("reading");
         let choice = crate::transaction_tests::line_sketch(&reading);
@@ -3002,10 +3001,9 @@ pub(crate) mod tests {
         native_vertex_gate(root.path(), &path, "33", "41.3", 9.5);
     }
 
-    /// §31D-2: the plate's vertex 2 moved with the mouse from another point as the anchor,
-    /// at a typed Length, then Apply, Undo, Redo, an unsaved export, Save and a cold
-    /// reopen, each against the command line given the coordinates the mouse made. The
-    /// marker is printed after the last assertion, so a skip cannot print it.
+    /// Move the plate's stored endpoints in the viewport, then apply, undo, redo,
+    /// export before Save and cold reopen, each compared with the CLI. Keep the
+    /// published geometry artifact for the independent reader.
     #[test]
     fn native_a_vertex_moved_from_another_anchor_is_applied_undone_exported_and_saved_like_the_command_line()
      {

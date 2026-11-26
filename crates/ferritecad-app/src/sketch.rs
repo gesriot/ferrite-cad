@@ -531,7 +531,7 @@ pub(crate) mod tests {
         click(ctx, e, text_at(&out, label));
     }
 
-    /// §30P: the vertex draft as typed, and the depth of its Undo and Redo.
+    /// The visible sketch geometry and the depth of its draft Undo and Redo.
     pub(crate) fn sketch_draft(
         e: &Editor,
     ) -> Option<(Vec<ferritecad_document::SketchCurve>, usize, usize)> {

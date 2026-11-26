@@ -627,9 +627,9 @@ fn a_typed_diameter_and_the_picked_circle_follow_their_tab() {
     );
 }
 
-/// §31I: two copies of one ring keep each their canvas view, the strings their canvas
-/// wrote and their draft history through every switch; a gesture, Fit or Undo in one
-/// tab changes nothing in the other. The picture of a ring in a tab needs OCCT.
+/// Two copies of a ring keep independent tab cameras, dragged geometry and draft
+/// history. Moving the camera or undoing a draft step in one tab changes neither
+/// the other tab's view nor its draft; the accepted mock scene needs no kernel.
 #[test]
 fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
     use crate::sketch_mode::tests::{curve_edits, window};
@@ -835,7 +835,7 @@ fn running_work_holds_the_window_and_failed_or_foreign_answers_keep_both_drafts(
     crate::sketch::drag_tests::release_vertex(&ctx, &mut held.sketch, at);
     assert!(!held.sketch.gesturing());
     assert!(leave(&held, &w.edits, &w), "its idle form does not");
-    // §31I: so does a handle held on a saved Circle's canvas.
+    // A circle centre held in sketch mode also holds the transition.
     let mut circled = crate::creates::Creates::default();
     assert!(crate::sketch::analytic_tests::begin_saved_circle(
         &mut circled.sketch,
@@ -1230,8 +1230,8 @@ fn sketch_drafts_of_two_copies_keep_their_own_text_and_draft_history() {
     assert!(w.tabs.has_draft(b) && !w.sessions.dirty() && !w.hidden(b).dirty());
 }
 
-/// §31C: Object snap and a snapped draft belong to their tab's editor, like the
-/// grid step and the typed text: hidden with it, shown with it, no second store.
+/// Grid and guide settings and snapped geometry belong to their tab's editor;
+/// switching restores them without a second draft store.
 #[test]
 fn object_snap_and_its_snapped_draft_follow_their_tab() {
     use crate::sketch_mode::tests::curve_edits;
@@ -1283,9 +1283,8 @@ fn object_snap_and_its_snapped_draft_follow_their_tab() {
     assert_eq!(curve_edits::settings(&w.creates.sketch), ("0.1 mm", "Off"));
 }
 
-/// §31D-1: the Guides choice, the Length text and a guided draft belong to their
-/// tab's editor, like Object snap, the grid step and the typed text: hidden with it,
-/// shown with it, no second store.
+/// Guide settings and geometry follow their tab's editor with its draft history;
+/// transient pointer hints belong only to the visible viewport.
 #[test]
 fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
     use crate::sketch_mode::tests::curve_edits;

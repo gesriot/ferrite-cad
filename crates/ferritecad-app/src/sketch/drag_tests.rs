@@ -363,9 +363,9 @@ fn native_dragged_sketch_worker_and_cli_preserve_identity_and_geometry() {
     super::tests::saved_sketch_and_cli(true);
 }
 
-/// §27C: a solid cylinder drawn on the real canvas and published by the
-/// window's worker and the peer CLI alike, then reopened and reshaped into a
-/// frustum by one drag, with the saved axis Line held on the axis.
+/// A cylinder created through viewport sketch and sweep widgets, compared with
+/// the independent CLI, then reshaped into a frustum through endpoint drags.
+/// The saved axis Line stays on the axis.
 #[test]
 fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     use crate::creates::tests::{ferritecad, read_semantics};

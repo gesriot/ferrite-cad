@@ -1153,7 +1153,7 @@ fn a_refused_switch_upload_keeps_the_shown_tab() {
 // --- native: Open CASCADE and PlaneGCS, against the shipped command line ---------
 
 impl Window {
-    /// The shown tab's Circle Apply, through the window's circle worker.
+    /// Apply a circle geometry change through the shown tab's session.
     fn apply_circle(&mut self, center: [f64; 2], radius: f64) {
         let reading = crate::sketch_facts::read(&self.sessions.export_path().expect("shown"))
             .expect("reading");
