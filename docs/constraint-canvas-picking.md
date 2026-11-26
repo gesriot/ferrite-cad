@@ -120,7 +120,7 @@ position never chooses between them:
 
 Zoom about the cursor (wheel, two-finger scroll, pinch), pan (middle button, or Shift + primary), and
 **Fit** reuse §31J's bounded view arithmetic and `Navigation` unchanged ([sketch-canvas-navigation.md](
-sketch-canvas-navigation.md)): scale in [1e-5, 1e8] points/mm, at most 8x an event, nothing non-finite
+https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-canvas-navigation.md)): scale in [1e-5, 1e8] points/mm, at most 8x an event, nothing non-finite
 changes the view, an event is read against the view the person saw and a wheel before a press that is still
 held at the end of the frame is dropped. The view, the held pan, the held press, the target and the circle
 part belong to the **form** (`Draft`), so to its tab; nothing is saved, nothing is in request history,

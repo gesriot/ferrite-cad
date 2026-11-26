@@ -1197,7 +1197,7 @@ fn sketch_drafts_of_two_copies_keep_their_own_text_and_draft_history() {
     };
     w.open(&a_file);
     let a = w.sessions.tab();
-    let a_draft = draft(&mut w, "41.25");
+    let a_draft = draft(&mut w, "41.3");
     assert!(a_draft.1 > 0, "dragging made draft history");
     w.open(&b_file);
     let b = w.sessions.tab();
@@ -1532,7 +1532,7 @@ fn native_drafts_of_two_models_apply_after_returning_and_save_like_the_command_l
     assert_eq!(height_in(&w.sessions), 9.5);
     let current = w.sessions.export_path().expect("A");
     let reading = crate::sketch_facts::read(&current).expect("A");
-    let (editor, _) = crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", "41.25");
+    let (editor, _) = crate::sketch::tests::typed_apply(&current, &reading, sketch, "33", "41.3");
     w.creates.sketch = editor;
     let polygon = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("A");
     w.round(b);

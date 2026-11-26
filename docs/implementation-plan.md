@@ -3007,7 +3007,7 @@ Miss/Hit с изменённым внутренним радиусом, замк
 `--features`. Отказ воспроизведён настоящим Cargo; явный sentinel и исполнение
 всех шести пакетных gates подтвердили исправление. Повторены native/stub,
 UI/CLI headless, writer/identity/atomicity, рецепт и три strict ufbx чтения.
-[Отдельный протокол ревью](edit-annular-copy-verification.md#независимое-ревью--2026-09-16).
+[Отдельный протокол ревью](https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/edit-annular-copy-verification.md#независимое-ревью--2026-09-16).
 
 
 **§25N — реализована параметрическая окружность: сохранённый радиус и

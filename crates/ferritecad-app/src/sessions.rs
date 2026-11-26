@@ -2999,7 +2999,7 @@ pub(crate) mod tests {
             return;
         }
         let (root, path, _) = crate::fillets::tests::plate();
-        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+        native_vertex_gate(root.path(), &path, "33", "41.3", 9.5);
     }
 
     /// §31D-2: the plate's vertex 2 moved with the mouse from another point as the anchor,
@@ -3057,7 +3057,7 @@ pub(crate) mod tests {
             return;
         }
         let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
-        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+        native_vertex_gate(root.path(), &path, "33", "41.3", 9.5);
     }
 
     /// What the document refuses it refuses whole: the form keeps its draft, the

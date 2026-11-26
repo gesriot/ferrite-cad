@@ -428,7 +428,7 @@ pub(super) fn form_families(quit: bool) {
                     &reading,
                     crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
                     "33",
-                    " 41.25 ",
+                    " 41.3 ",
                 )
                 .0;
                 crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
