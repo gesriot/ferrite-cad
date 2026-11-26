@@ -709,8 +709,7 @@ fn native_circle_radius_and_pinned_centre_drive_the_solid() {
     }
     std::fs::remove_file(&cache).expect("private cache closed and removed");
 
-    // Removing both constraints hands the sketch back to the unconstrained
-    // circle editor, and the geometry returns to the stored starting guess
+    // Removing both constraints returns the geometry to the stored starting guess
     // rather than to the last radius the solver found.
     let freed = f.root.path().join("freed.fcad");
     let catalog = inspect(&replaced);

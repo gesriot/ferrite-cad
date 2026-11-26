@@ -1084,7 +1084,7 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
     w.input.handle(ViewportEvent::GestureCancelled, false);
-    // §31I: a handle held on a Circle's canvas holds Close as a vertex does.
+    // A circle-centre handle in sketch mode holds Close as a line endpoint does.
     assert!(crate::sketch::analytic_tests::begin_saved_circle(
         &mut w.creates.sketch,
         root.path()
@@ -1093,7 +1093,7 @@ fn close_request_preserves_foreground_work_and_gesture_holds() {
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);
     crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
-    // §31J: and a pan of its view.
+    // A viewport pan also holds Close.
     crate::sketch::navigation_tests::hold_camera(&mut w.input);
     assert!(request(&mut w, &loads, &exports).is_none());
     kept(&w);

@@ -695,9 +695,8 @@ fn the_canvas_view_its_dragged_numbers_and_their_history_follow_their_tab() {
     assert!(!w.sessions.dirty() && !w.hidden(b).dirty());
 }
 
-/// The zoom and pan of each tab's viewport are that tab's own and survive every switch;
-/// Fit in one tab moves nothing in the other; a held pan holds the window and ends clean. A
-/// view is no change of the document. The picture of a ring in a tab needs OCCT.
+/// Each tab keeps its viewport zoom and pan through every switch. A held pan blocks
+/// transitions until release; navigation changes neither the document nor the sketch draft.
 #[test]
 fn the_canvas_zoom_and_pan_follow_their_tab_and_a_held_pan_holds_the_window() {
     use crate::sketch_mode::tests::{curve_edits, window};
@@ -1338,10 +1337,8 @@ fn guides_a_typed_length_and_the_guided_draft_follow_their_tab() {
     assert_eq!(curve_edits::settings(&w.creates.sketch), ("0.1 mm", "Off"));
 }
 
-/// §31D-2: the From object mode is the tab's editor setting, like Guides and the grid
-/// step: hidden with it, shown with it. The anchor a resting pointer holds is nobody's
-/// setting: it is forgotten whenever the form is hidden, so it cannot come alive over
-/// another tab.
+/// Guide settings follow the tab, while hover and snap hints are cleared when it is
+/// hidden. A resting pointer in one tab cannot restore a hint over another tab.
 #[test]
 fn the_anchor_mode_follows_its_tab_and_the_resting_anchor_follows_nobody() {
     use crate::sketch_mode::tests::curve_edits;

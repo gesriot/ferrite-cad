@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Literal grid movement retains the former guide test's publication witnesses.
-/// rebuild cold and export the same bytes, which an independent reader measures.
+/// Rebuild cold and export identical bytes for independent reader measurements.
 #[test]
 fn native_guided_length_drag_worker_and_cli_agree_on_ids_sql_and_geometry() {
     use super::drag_tests::{Published, attach_source_claim, sql_facts, verify_published};

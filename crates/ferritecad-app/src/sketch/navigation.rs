@@ -10,7 +10,7 @@
 use super::{canvas_mm, pointer_over};
 
 /// Fewest and most logical points per mm a view may have. The largest drawable extent is
-/// 2·10⁶ mm (`DRAWABLE_MM` either side of 0), which the Fit of either canvas shows in at
+/// 2·10⁶ mm (`DRAWABLE_MM` either side of 0), which the constraint canvas fits in at
 /// least 170 points (≥ 8.5·10⁻⁵ points/mm), so no Fit is below the lower limit. A Fit of a
 /// degenerate profile reaches 4.5·10⁷ points/mm (its extent floor is 10⁻⁵ mm in 450
 /// points), so no Fit is above the upper limit, where one point is 10⁻⁸ mm: still far

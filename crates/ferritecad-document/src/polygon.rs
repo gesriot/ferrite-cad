@@ -252,7 +252,7 @@ pub struct AnnularExtrusion {
 }
 
 impl AnnularExtrusion {
-    /// The same bound as the polygon and circle editors, for the same reason.
+    /// The same coordinate bound as polygon and circle extrusion inputs.
     pub const MAX_MM: f64 = CircleExtrusion::MAX_MM;
     /// Thinnest wall this slice will publish, in mm. See the type's own note.
     pub const MIN_WALL_MM: f64 = 1e-3;
