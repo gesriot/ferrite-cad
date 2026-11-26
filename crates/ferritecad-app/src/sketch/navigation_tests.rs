@@ -5,80 +5,139 @@ use crate::sketch_mode::tests::curve_edits;
 use ferritecad_ui::{PointerButton, ViewportEvent};
 
 #[test]
-fn a_pan_ends_without_a_trace_by_release_outside_escape_focus_pointer_gone_or_a_busy_form() {
-    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-    let (root, path, source) = crate::fillets::tests::plate();
-    for end in [
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Middle,
-        },
-        WindowEvent::Focused(false),
-    ] {
-        let mut e = Editor::default();
-        assert!(e.begin_test_drawing(&path, &source, curve_edits::sketch_id(&source)));
-        let before = curve_edits::state(&e);
-        let mut input = curve_edits::input(&e);
-        input.handle(ViewportEvent::PointerMoved { x: 400., y: 300. }, false);
-        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
-        input.handle(ViewportEvent::PointerMoved { x: 440., y: 325. }, false);
-        assert!(input.is_dragging());
-        e.viewport
-            .window_event(&mut input, &end, false, false, true, false);
-        assert!(!input.is_dragging());
-        assert_eq!(
-            curve_edits::state(&e),
-            before,
-            "navigation cannot edit the draft"
+fn a_viewport_pan_holds_transitions_until_release_or_focus_loss_and_edits_nothing() {
+    use crate::sessions::tests::tabs::Drawn;
+    use crate::sketch_mode::tests::window;
+    use ferritecad_ui::ModelEdit;
+    use winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, ElementState, MouseButton, WindowEvent},
+    };
+    let (_root, path, source) = crate::fillets::tests::plate();
+    let saved = std::fs::read(&path).expect("source bytes");
+    for lost_focus in [false, true] {
+        let mut w = window::open(&path, Drawn::Mock);
+        window::enter(&mut w, curve_edits::sketch_id(&source), ModelEdit::Sketch);
+        let before = curve_edits::state(&w.creates.sketch);
+        let start = *w.input.camera();
+        assert!(crate::idle_but_for_new(
+            &w.creates,
+            &w.edits,
+            &w.sessions,
+            &w.input
+        ));
+        hold_camera(&mut w.input);
+        w.creates.sketch.viewport.window_event(
+            &mut w.input,
+            &WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(1400., 1100.),
+            },
+            false,
+            true,
+            true,
+            false,
         );
-        assert!(!e.gesturing());
+        let held = *w.input.camera();
+        assert_ne!(held, start, "a pan continues beyond the picture");
+        w.creates.sketch.viewport.window_event(
+            &mut w.input,
+            &WindowEvent::CursorLeft {
+                device_id: DeviceId::dummy(),
+            },
+            false,
+            true,
+            true,
+            false,
+        );
+        assert!(
+            w.input.is_dragging(),
+            "leaving the window keeps the held button"
+        );
+        assert!(!crate::idle_but_for_new(
+            &w.creates,
+            &w.edits,
+            &w.sessions,
+            &w.input
+        ));
+        assert_eq!(*w.input.camera(), held);
+        let end = if lost_focus {
+            WindowEvent::Focused(false)
+        } else {
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Middle,
+            }
+        };
+        w.creates
+            .sketch
+            .viewport
+            .window_event(&mut w.input, &end, false, true, true, false);
+        assert!(!w.input.is_dragging());
+        assert_eq!(*w.input.camera(), held, "ending a pan keeps its final view");
+        assert!(crate::idle_but_for_new(
+            &w.creates,
+            &w.edits,
+            &w.sessions,
+            &w.input
+        ));
+        assert_eq!(curve_edits::state(&w.creates.sketch), before);
+        assert!(!w.creates.sketch.gesturing());
+        assert!(w.creates.sketch.viewport.take_request().is_none());
+        assert!(!w.sessions.dirty());
     }
-    let mut e = Editor::default();
-    assert!(e.begin_test_drawing(&path, &source, curve_edits::sketch_id(&source)));
-    let before = curve_edits::state(&e);
-    let mut input = curve_edits::input(&e);
-    hold_camera(&mut input);
-    input.handle(ViewportEvent::PointerMoved { x: 50., y: 40. }, false);
-    let held = *input.camera();
-    e.viewport.window_event(
-        &mut input,
-        &WindowEvent::CursorLeft {
-            device_id: DeviceId::dummy(),
+
+    let mut w = window::open(&path, Drawn::Mock);
+    window::enter(&mut w, curve_edits::sketch_id(&source), ModelEdit::Sketch);
+    let before = curve_edits::state(&w.creates.sketch);
+    let at = curve_edits::screen(
+        &w.creates.sketch,
+        &w.input,
+        curve_edits::first_handle(&w.creates.sketch),
+    );
+    for event in [
+        ViewportEvent::PointerMoved { x: at.0, y: at.1 },
+        ViewportEvent::PointerPressed(PointerButton::Middle),
+        ViewportEvent::PointerPressed(PointerButton::Primary),
+        ViewportEvent::PointerMoved {
+            x: at.0 + 40.,
+            y: at.1 + 30.,
         },
-        false,
+    ] {
+        w.creates
+            .sketch
+            .viewport
+            .route(&mut w.input, event, false, true, false);
+        assert!(
+            !w.creates.sketch.gesturing(),
+            "a camera gesture cannot acquire a handle"
+        );
+    }
+    assert!(w.creates.sketch.viewport.take_hover(&mut w.input));
+    assert_eq!(curve_edits::state(&w.creates.sketch), before);
+    w.creates.sketch.viewport.route(
+        &mut w.input,
+        ViewportEvent::GestureCancelled,
         false,
         true,
         false,
     );
-    assert!(e.viewport.take_hover(&mut input));
-    assert!(!input.is_dragging(), "PointerGone must end the pan");
-    assert_eq!(
-        *input.camera(),
-        held,
-        "pointer loss keeps the view where it was"
-    );
-    assert_eq!(curve_edits::state(&e), before);
-    let (ctx, _) = curve_edits::hold(&mut e);
-    super::tests::frame(
-        &ctx,
-        &mut e,
-        vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Default::default(),
-        }],
-    );
-    assert!(!e.gesturing());
-    assert_eq!(curve_edits::state(&e), before);
-    drop(root);
+    assert!(!w.input.is_dragging());
+    assert!(crate::idle_but_for_new(
+        &w.creates,
+        &w.edits,
+        &w.sessions,
+        &w.input
+    ));
+    assert_eq!(curve_edits::state(&w.creates.sketch), before);
+    assert!(w.creates.sketch.viewport.take_request().is_none());
+    assert!(!w.sessions.dirty());
+    assert_eq!(std::fs::read(&path).expect("unchanged source"), saved);
 }
 
 #[test]
-fn navigation_over_a_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_form()
-{
+fn sketch_handles_own_input_and_a_viewport_drag_still_crosses_the_form() {
     use winit::{
         dpi::PhysicalPosition,
         event::{DeviceId, ElementState, MouseButton, WindowEvent},

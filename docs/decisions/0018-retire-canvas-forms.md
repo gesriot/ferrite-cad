@@ -37,6 +37,7 @@ surviving commands.
 | Write a sketch copy while keeping the open tab at its original revision | Save As before editing or use CLI `edit … -o COPY`. Numeric feature editors retain their copy workflow. |
 | Keep three alternative drawing drafts and publish sketch and solid together | Empty document, finished sketch and applied sweep have separate accepted versions and Undo steps. |
 | Keep an independent fitted 2D view for each draft | Sketch mode uses the tab camera and offers **Look at sketch**. |
+| Cancel a pan with Escape to restore the view, or end it by leaving the window or starting a job | A pan ends on release wherever the pointer is, or on focus loss; the view stays where it ended. |
 
 ## Known gaps
 
