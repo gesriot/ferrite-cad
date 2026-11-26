@@ -829,31 +829,6 @@ pub(crate) mod tests {
             ],
         );
     }
-    /// Replaces one coordinate through the same widgets, including an empty box.
-    pub(super) fn set_coordinate(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
-        let out = frame(ctx, e, vec![]);
-        click(ctx, e, text_at(&out, label));
-        let mut events = vec![
-            egui::Event::Key {
-                key: egui::Key::A,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::COMMAND,
-            },
-            egui::Event::Key {
-                key: egui::Key::Backspace,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Default::default(),
-            },
-        ];
-        if !value.is_empty() {
-            events.push(egui::Event::Text(value.into()));
-        }
-        frame(ctx, e, events);
-    }
     /// Clicks into the box on `label`'s row and replaces what it holds.
     fn replace_box_on_row(
         ctx: &egui::Context,
@@ -1834,7 +1809,7 @@ pub(crate) mod tests {
             &[[0., 0.], [80., 0.], [80., 40.], [0., 40.]]
         };
         let (mut window, request, literal_changes) =
-            crate::sketch_mode::tests::curve_edits::polygon(&source, &literal);
+            crate::sketch_mode::tests::curve_edits::polygon(&source, literal);
         assert_eq!(request.expected, reading.version);
         assert!(crate::sketch_mode::tests::window::apply(
             &mut window,

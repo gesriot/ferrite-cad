@@ -975,7 +975,7 @@ fn native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("circle-canvas", root.path(), &source, |path, reading| {
-        let sketch = curve_edits::sketch_id(&reading);
+        let sketch = curve_edits::sketch_id(reading);
         let (form, request) = round_edits::edit(path, sketch, [-3.5, 4.3], &[6.75], false, || {});
         (form, Request::Circle(request))
     });
@@ -995,7 +995,7 @@ fn native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_r
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("annulus-canvas", root.path(), &source, |path, reading| {
-        let sketch = curve_edits::sketch_id(&reading);
+        let sketch = curve_edits::sketch_id(reading);
         let (form, request) =
             round_edits::edit(path, sketch, [-3.5, 4.3], &[9.25, 3.125], false, || {});
         (form, Request::Annulus(request))
@@ -1075,7 +1075,7 @@ fn native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_co
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("circle-navigated", root.path(), &source, |path, reading| {
-        let sketch = curve_edits::sketch_id(&reading);
+        let sketch = curve_edits::sketch_id(reading);
         let untouched =
             Untouched::before(&source, root.path(), "circle-navigated", reading.version);
         let (form, request) = round_edits::edit(path, sketch, [-3.5, 4.3], &[6.75], true, || {
@@ -1103,7 +1103,7 @@ fn native_an_annulus_dragged_at_a_navigated_scale_keeps_each_wall_under_its_refe
         root.path(),
         &source,
         |path, reading| {
-            let sketch = curve_edits::sketch_id(&reading);
+            let sketch = curve_edits::sketch_id(reading);
             let untouched =
                 Untouched::before(&source, root.path(), "annulus-navigated", reading.version);
             let (form, request) =

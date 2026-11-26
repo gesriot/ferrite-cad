@@ -102,10 +102,6 @@ fn snap_step_rounds_pointer_input_without_changing_fields_or_off_precision() {
     assert_eq!(Snap::Ten.round(15.), 20_f64);
 }
 
-pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
-    crate::sketch_mode::tests::curve_edits::move_coordinate(ctx, e, "60", "80");
-}
-
 pub(crate) fn attach_source_claim(source: &std::path::Path) {
     let db = rusqlite::Connection::open(source).expect("SQL");
     let bytes = b"attached Sketch source must remain owned after pointer editing";
