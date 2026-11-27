@@ -209,9 +209,9 @@ no-solver step of the same workflow.
   the reason.
 * **macOS review.** The AppKit `Cmd+Q` hook is included; the real-window result is
   recorded in the verification document.
-* **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [contract](sketch-session-apply.md).
+* **Next (§30B).** The vertices of a saved Line Sketch are applied inside the open document: [sketch mode](sketch-mode.md).
 * **Next (§30C).** The existing constraints of a saved Sketch are applied inside the open document: [contract](constraint-session-apply.md).
-* **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [contract](analytic-sketch-session-apply.md).
+* **Next (§30D).** The geometry of a saved Circle or annulus is applied inside the open document: [sketch mode](sketch-mode.md).
 
 * **Next (§30E).** The angle of a saved partial Revolve is applied inside the open document: [contract](generic-sweeps.md).
 

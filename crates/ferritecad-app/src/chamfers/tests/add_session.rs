@@ -280,7 +280,7 @@ fn add_chamfer_busy_guard_proves_idle_request_then_excludes_other_work_and_forms
     // Another editor's form, no session, a closed form: never Add.
     let base = crate::feature_tests::fixture_target(&reading).profile;
     let mut c = creates::Creates::default();
-    assert!(c.sketch.begin_edit(&path, &reading, base));
+    assert!(c.sketch.begin_test_drawing(&path, &reading, base));
     assert!(!ready(&c, &s));
     let mut c = creates::Creates::default();
     assert!(

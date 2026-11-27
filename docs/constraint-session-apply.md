@@ -2,7 +2,7 @@
 
 Marker `FCAD_30C_CONSTRAINT_SESSION_APPLY`. This moves **one existing family of
 editors** (*Edit constraints…*) onto the document session of
-[§30A](document-session.md) and [§30B](sketch-session-apply.md), and nothing else:
+[§30A](document-session.md) and [sketch mode](sketch-mode.md), and nothing else:
 no new constraint kind, no new geometry, no change to the solver policy, to
 `edit-sketch-constraints-copy`, to any JSON or to the document format.
 [Verification and the macOS window scenario](constraint-session-apply-verification.md).
@@ -60,7 +60,7 @@ lease for exports, and the private-folder protections. Not introduced: a second 
 solver path, evaluator, history or writer, or any write to the logical file before Save.
 The other copy-only editors (creating Revolve, Add Fillet until [§30J](fillets-and-chamfers.md), Add Chamfer until [§30K](fillets-and-chamfers.md),
 *Edit extrusion…* copy) stay copy workflows; the Circle and annulus editors joined the
-session in [§30D](analytic-sketch-session-apply.md), and a saved partial Revolve
+session in [sketch mode](sketch-mode.md), and a saved partial Revolve
 angle in [§30E](generic-sweeps.md).
 
 ## Review finding fixed here

@@ -327,7 +327,7 @@ fn add_cut_busy_guard_proves_idle_request_then_excludes_other_work_and_forms() {
     let mut c = creates::Creates::default();
     assert!(
         c.sketch
-            .begin_edit(&path, &reading, selected(&reading, 0).profile_sketch)
+            .begin_test_drawing(&path, &reading, selected(&reading, 0).profile_sketch)
     );
     assert!(!ready(&c, &s));
     let mut c = creates::Creates::default();
@@ -466,16 +466,12 @@ fn add_cut_dirty_discovery_refusals_keep_text_status_dismissal_and_unsupported_b
             .begin(&path16, &full, full.cut_bodies[0].body)
     );
     let (_rootc, pathc, plain) = fixture(0);
-    let base = plain
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
-    let first = &base.vertices.as_ref().expect("vertices")[0];
+    let base = crate::transaction_tests::line_sketch(&plain);
+    let first = &crate::transaction_tests::stored_vertices(&plain, base)[0];
     let mut d = Document::open(&pathc).expect("document");
     let prepared = ferritecad_fixtures::constraint_changes(
         &d,
-        base.sketch,
+        base,
         &ferritecad_document::SketchConstraintEdits {
             remove: vec![],
             add: vec![ferritecad_document::AddSketchConstraint::Line(

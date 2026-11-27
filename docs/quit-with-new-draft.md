@@ -58,8 +58,11 @@ python3 tools/watch-viewer-memory.py --log "$ROOT/watch.jsonl" --limit-mib 1536 
 ```
 
 1. A: Apply height `18`, reopen height and leave literal ` 26x `. Open B;
-   Apply its extrusion height `22`; Edit Circle → centre `-3.5`, `4.25`,
-   radius `8`. Confirm draft numbers, Undo/Redo without Apply. Return to A.
+   apply its extrusion height `22`. Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet.
+   Confirm the drawing, Undo/Redo without Finish, then return to A.
 2. Press **New…** over A's form. Choose **Sample plate**, enter width ` 50x `,
    depth ` 30.0 ` and height ` 7e0 `, then switch to **Empty**.
 3. Cmd+Q → **Discard New and continue Quit** → confirm A's form → **Save**.

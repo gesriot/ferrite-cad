@@ -69,9 +69,7 @@ fn typed(ctx: &egui::Context, key: u64, creates: &mut Creates, text: &str) {
 
 #[test]
 fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
-    let root = tempfile::tempdir().expect("root");
-    let path = root.path().join("circle.fcad");
-    analytic_apply::write_round(&path, [12.0, -7.0], &[10.0], 15.0, false);
+    let (root, path, _) = super::angle_apply::fixture();
     let mut sessions = Sessions::default();
     sessions.adopt(
         crate::sessions::test_open::open_in(root.path(), &path, HistoryLimits::default())
@@ -83,23 +81,29 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
     let (mut tabs, mut edits, mut creates) =
         (Tabs::new(None), Edits::default(), Creates::default());
     let mut input = ViewportInput::new();
-    assert!(creates.sketch.begin_circle_edit(
-        &current,
-        &reading,
-        reading.circle_sketches[0].sketch
-    ));
+    assert!(
+        creates.sketch.begin_angle_edit(
+            &current,
+            &reading,
+            ferritecad_fixtures::expression_slot(
+                &reading,
+                ferritecad_document::ExpressionSlot::RevolveAngle
+            )
+            .object
+        )
+    );
     let ctx = egui::Context::default();
 
-    // A's floating Circle form takes the keyboard.
+    // A's floating angle form takes the keyboard.
     window_frame(&ctx, key, &mut creates, vec![]);
     let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
-    press_at(&ctx, key, &mut creates, text_at(&out, "12"));
+    press_at(&ctx, key, &mut creates, text_at(&out, "137.5"));
     typed(&ctx, key, &mut creates, "5");
-    let a_typed = creates.sketch.circle.clone();
-    assert_ne!(a_typed.center[0], "12", "A's field took the keyboard");
+    let a_typed = creates.sketch.angle.angle_edit.clone();
+    assert_ne!(a_typed, "137.5", "A's field took the keyboard");
     let a_history = (
-        creates.sketch.circle_undo.clone(),
-        creates.sketch.circle_redo.clone(),
+        creates.sketch.angle.angle_undo.clone(),
+        creates.sketch.angle.angle_redo.clone(),
     );
     let (out, _) = window_frame(&ctx, key, &mut creates, vec![]);
     assert!(!painted(&out, "Create sketch + Extrude…"));
@@ -142,11 +146,14 @@ fn new_opened_over_a_floating_form_shares_no_focus_or_text_with_it() {
         window_frame(&ctx, key, &mut creates, vec![]);
     }
     typed(&ctx, key, &mut creates, "4");
-    assert_eq!(creates.sketch.circle, a_typed, "New's focus typed into A");
+    assert_eq!(
+        creates.sketch.angle.angle_edit, a_typed,
+        "New's focus typed into A"
+    );
     assert_eq!(
         (
-            creates.sketch.circle_undo.clone(),
-            creates.sketch.circle_redo.clone()
+            creates.sketch.angle.angle_undo.clone(),
+            creates.sketch.angle.angle_redo.clone()
         ),
         a_history
     );

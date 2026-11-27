@@ -381,14 +381,14 @@ fn open_over_unfinished_forms_keeps_them_with_their_tab_through_every_answer() {
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     );
     w.creates.sketch = editor;
-    let typed = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("C");
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    let c_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("C");
+    let typed = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("C");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
+    let c_draft = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("C");
     assert_eq!((c_draft.1, c_draft.2), (typed.1 - 1, typed.2 + 1));
 
     // B over the copy's form; B's document Undo and Redo move B only.
@@ -442,12 +442,12 @@ fn open_over_unfinished_forms_keeps_them_with_their_tab_through_every_answer() {
     // The copy's draft and its history came back as they were left.
     w.switch(c);
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(c_draft)
     );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Redo");
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(typed)
     );
 
@@ -766,18 +766,18 @@ fn recover_over_an_unfinished_form_keeps_the_record_on_every_refusal() {
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     );
     w.creates.sketch = editor;
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    let a_draft = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
+    let a_draft = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("A");
     assert!(a_draft.2 > 0, "a draft Redo to keep");
     let kept = |w: &Window| {
         assert_eq!(w.sessions.tab(), a);
         assert_eq!(
-            crate::sketch::tests::vertex_draft(&w.creates.sketch),
+            crate::sketch::tests::sketch_draft(&w.creates.sketch),
             Some(a_draft.clone())
         );
         assert!(w.sessions.dirty() && !w.sessions.busy());
@@ -863,9 +863,9 @@ fn recover_over_an_unfinished_form_keeps_the_record_on_every_refusal() {
     // tab retires its record only.
     w.switch(a);
     kept_after(&w, a, &a_draft);
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Redo");
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch)
+        crate::sketch::tests::sketch_draft(&w.creates.sketch)
             .expect("A")
             .2,
         a_draft.2 - 1
@@ -888,10 +888,10 @@ fn recover_over_an_unfinished_form_keeps_the_record_on_every_refusal() {
     assert_eq!(contents(&[&a_file, &c_file]), originals);
 }
 
-fn kept_after(w: &Window, a: TabId, draft: &(Vec<[String; 2]>, usize, usize)) {
+fn kept_after(w: &Window, a: TabId, draft: &(Vec<ferritecad_document::SketchCurve>, usize, usize)) {
     assert_eq!(w.sessions.tab(), a);
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch).as_ref(),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch).as_ref(),
         Some(draft)
     );
     assert!(w.sessions.dirty() && w.sessions.takes_form_apply());
@@ -1109,18 +1109,18 @@ fn recipe_on_owners(root: &Path) {
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     );
     w.creates.sketch = editor;
-    let polygon = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A");
+    let polygon = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("A");
     // 6: New beside it, then Cancel: A's form is back.
     assert!(w.begin_new());
     assert!(w.tabs.has_aside());
     assert!(w.answer_new(NewChoice::Cancel).is_none());
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(polygon.clone())
     );
     // 7: New: a 50 × 30 × 7 plate in an Untitled tab.
@@ -1147,7 +1147,7 @@ fn recipe_on_owners(root: &Path) {
     // 9: A: the vertices as left; Apply; unsaved exports; Save.
     w.round(a);
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(polygon)
     );
     w.apply_vertices_form();
@@ -1328,7 +1328,7 @@ fn compare_recipe_with_controls(root: &Path) {
     control("unsaved a", "a.fcad was never saved", &|r| {
         std::fs::write(r.join("a.fcad"), file(r, "inputs/a.fcad")).expect("w");
     });
-    // A's vertex form lost to New: only the height reached the file.
+    // A's sketch draft lost to New: only the height reached the file.
     control(
         "draft lost at New",
         "a.fcad is not the command line's model",

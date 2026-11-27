@@ -243,7 +243,7 @@ fn radius_busy_guard_proves_changed_idle_request_and_excludes_other_work() {
     c = creates::Creates::default();
     assert!(
         c.sketch
-            .begin_edit(&path, &reading, selected(&reading, 0).profile)
+            .begin_test_drawing(&path, &reading, selected(&reading, 0).profile)
     );
     assert!(!ready(&c, &s), "another editor");
     c.sketch.dismiss();

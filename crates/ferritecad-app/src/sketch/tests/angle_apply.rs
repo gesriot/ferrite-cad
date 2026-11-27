@@ -46,15 +46,13 @@ impl Window {
     }
     fn tell(&mut self) {
         self.creates.sketch.set_angle_apply(self.ready());
-        self.creates
-            .sketch
-            .set_session(true, false, self.sessions.dirty());
+        self.creates.sketch.set_session(true, self.sessions.dirty());
     }
     fn form(&mut self) -> &mut Editor {
         &mut self.creates.sketch
     }
 }
-fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
     crate::constraints::tests::revolve::write_sector(&path, &RADIAL, 137.5);
@@ -112,7 +110,7 @@ pub(crate) fn typed_angle(
     );
     assert!(ready, "the form's own Apply must be available in idle");
     creates.sketch.set_angle_apply(ready);
-    creates.sketch.set_session(true, false, sessions.dirty());
+    creates.sketch.set_session(true, sessions.dirty());
     let ctx = egui::Context::default();
     settle(&ctx, &mut creates.sketch);
     type_angle(&ctx, &mut creates.sketch, value);
@@ -163,25 +161,25 @@ fn angle_apply_uses_current_fields_and_confirmation_is_only_draft_history() {
         )
         .object
     );
-    assert!(w.form().angle_undo.is_empty());
+    assert!(w.form().angle.angle_undo.is_empty());
     assert!(w.form().editing_saved_angle());
     let out = frame(&ctx, w.form(), vec![]);
     assert!(!painted(&out, "Apply angle change"));
     press(&ctx, w.form(), "Confirm draft numbers");
     assert!(w.form().take_apply_angle_request().is_none());
-    assert_eq!(w.form().angle_undo, ["137.5"]);
+    assert_eq!(w.form().angle.angle_undo, ["137.5"]);
     press(&ctx, w.form(), "Undo draft");
-    assert_eq!(w.form().angle_edit, "137.5");
+    assert_eq!(w.form().angle.angle_edit, "137.5");
     press(&ctx, w.form(), "Apply angle");
     assert!(w.form().take_apply_angle_request().is_none());
-    assert_eq!(w.form().angle_redo, ["212.25"]);
+    assert_eq!(w.form().angle.angle_redo, ["212.25"]);
     type_angle(&ctx, w.form(), "137.500");
     assert!(painted(&frame(&ctx, w.form(), vec![]), "nothing to apply"));
     press(&ctx, w.form(), "Apply angle");
     assert!(w.form().take_apply_angle_request().is_none());
-    assert_eq!(w.form().angle_redo.len(), 1);
+    assert_eq!(w.form().angle.angle_redo.len(), 1);
     press(&ctx, w.form(), "Redo draft");
-    assert_eq!(w.form().angle_edit, "212.25");
+    assert_eq!(w.form().angle.angle_edit, "212.25");
     type_angle(&ctx, w.form(), "198.125");
     press(&ctx, w.form(), "Apply angle");
     assert_eq!(
@@ -321,8 +319,8 @@ fn angle_apply_requires_its_own_form_and_session_and_supported_kind() {
     let (_root, path, reading) = fixture();
     let mut w = Window::open(&path);
     assert!(!w.ready());
-    let sketch = reading.sketches[0].sketch;
-    assert!(w.form().begin_edit(&path, &reading, sketch));
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
+    assert!(w.form().begin_test_drawing(&path, &reading, sketch));
     assert!(!w.ready());
     w.form().dismiss();
     assert!(
@@ -390,7 +388,11 @@ fn angle_range_refusal_status_and_accepted_scene_dismissal_are_visible() {
     for value in ["360", "0", "-90", "359.991", "0.009", "NaN", "abc"] {
         type_angle(&ctx, w.form(), value);
         assert!(w.form().angle_edit_request().is_err(), "{value}");
-        assert_eq!(w.form().angle_edit, value, "refusal keeps typed draft");
+        assert_eq!(
+            w.form().angle.angle_edit,
+            value,
+            "refusal keeps typed draft"
+        );
         assert!(w.form().take_apply_angle_request().is_none());
     }
     let status = "Could not apply the change: the document changed after this form was opened";
@@ -519,8 +521,8 @@ fn angle_form_opens_dirty_and_withholds_only_the_copy_workflow() {
 pub(crate) fn draft_state(e: &Editor) -> (bool, String, Vec<String>, Vec<String>) {
     (
         e.editing_saved_angle(),
-        e.angle_edit.clone(),
-        e.angle_undo.clone(),
-        e.angle_redo.clone(),
+        e.angle.angle_edit.clone(),
+        e.angle.angle_undo.clone(),
+        e.angle.angle_redo.clone(),
     )
 }

@@ -389,16 +389,12 @@ fn gate(count: usize, height: bool, name: &str) {
     }
     let current = s.export_path().expect("current");
     let reading = crate::sketch_facts::read(&current).expect("reading");
-    let base = reading
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
+    let base = crate::transaction_tests::line_sketch(&reading);
     let mut v = ferritecad_jobs::EditRequest {
         changes: crate::transaction_tests::vertex_changes(
             &(current),
-            base.sketch,
-            &(base.vertices.clone().expect("vertices")),
+            base,
+            &(crate::transaction_tests::stored_vertices(&reading, base)),
         ),
         source: current,
         expected: reading.version,
@@ -898,23 +894,15 @@ fn native_compare_real_cut_gui_artifacts_with_negative_controls() {
         ])
     };
     let reading = crate::sketch_facts::read(&height).expect("height reading");
-    let base = reading
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
-    let mut vertices = base.vertices.clone().expect("vertices");
+    let base = crate::transaction_tests::line_sketch(&reading);
+    let mut vertices = crate::transaction_tests::stored_vertices(&reading, base);
     for p in &mut vertices {
         if p.start_mm[0] == -2.5 {
             p.start_mm[0] = -3.75;
         }
     }
     let v = ferritecad_jobs::EditRequest {
-        changes: crate::transaction_tests::vertex_changes(
-            &(height.clone()),
-            base.sketch,
-            &(vertices),
-        ),
+        changes: crate::transaction_tests::vertex_changes(&(height.clone()), base, &(vertices)),
         source: height.clone(),
         expected: reading.version,
         destination: PathBuf::new(),
@@ -1004,12 +992,8 @@ fn native_open_slot_radius_form_applies_and_survives_history_and_save() {
     let original = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(crate::sessions::test_open::open(&source).expect("session"));
-    let base = reading
-        .sketches
-        .iter()
-        .find(|c| c.vertices.is_some())
-        .expect("base");
-    let mut vertices = base.vertices.clone().expect("vertices");
+    let base = crate::transaction_tests::line_sketch(&reading);
+    let mut vertices = crate::transaction_tests::stored_vertices(&reading, base);
     for v in &mut vertices {
         if v.start_mm[0] == -2.5 {
             v.start_mm[0] = 6.5;
@@ -1018,7 +1002,7 @@ fn native_open_slot_radius_form_applies_and_survives_history_and_save() {
     let wall = EditRequest {
         source: source.clone(),
         expected: reading.version,
-        changes: crate::transaction_tests::vertex_changes(&source, base.sketch, &vertices),
+        changes: crate::transaction_tests::vertex_changes(&source, base, &vertices),
         destination: PathBuf::new(),
     };
     apply_sketch_native(&mut s, wall);

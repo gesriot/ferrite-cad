@@ -17,10 +17,21 @@ pub(crate) enum Form {
     Angle,
     Radius,
     Distance,
-    Sketch,
-    Circle,
-    Annulus,
     Constraints,
+}
+
+/// The open form may apply while its session and document I/O are idle.
+pub(crate) fn can_apply(
+    creates: &crate::creates::Creates,
+    loads: &crate::Loads,
+    exports: &crate::exports::Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    !creates.making_new()
+        && !edits.running()
+        && crate::document_io_idle(loads, exports)
+        && sessions.takes_form_apply()
 }
 
 impl App {
@@ -29,11 +40,13 @@ impl App {
         expected: DocumentVersion,
         changes: Vec<EditChange>,
     ) {
-        if self.creates.making_new()
-            || self.edits.running()
-            || !crate::document_io_idle(&self.loads, &self.exports)
-            || !self.sessions.takes_form_apply()
-        {
+        if !can_apply(
+            &self.creates,
+            &self.loads,
+            &self.exports,
+            &self.edits,
+            &self.sessions,
+        ) {
             self.input.request_redraw();
             return;
         }
@@ -70,9 +83,6 @@ impl App {
             Form::Cut => "cut.fcad",
             Form::Fillet => "fillet.fcad",
             Form::Chamfer => "chamfer.fcad",
-            Form::Sketch => "edited-sketch.fcad",
-            Form::Circle => "edited-circle.fcad",
-            Form::Annulus => "edited-annulus.fcad",
             Form::Constraints => "sketch-constraints.fcad",
             Form::Height => "edited.fcad",
             Form::Angle => "edited-revolve.fcad",
@@ -111,9 +121,6 @@ impl App {
                             Form::Cut => AppEvent::SketchEdited { generation, result },
                             Form::Fillet => AppEvent::SketchEdited { generation, result },
                             Form::Chamfer => AppEvent::SketchEdited { generation, result },
-                            Form::Sketch => AppEvent::SketchEdited { generation, result },
-                            Form::Circle => AppEvent::CircleEdited { generation, result },
-                            Form::Annulus => AppEvent::AnnulusEdited { generation, result },
                             Form::Constraints => AppEvent::SketchConstraintsEdited {
                                 generation,
                                 result: Box::new(result),

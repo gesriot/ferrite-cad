@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! §31J: zoom about the pointer and pan, shared by the three Sketch canvases.
+//! Zoom about the pointer and pan for the retained constraint canvas.
 //!
 //! A view is the lower-left corner in mm and the scale in logical points per mm: the
 //! transform of `canvas_point` / `canvas_mm`. This module owns the view arithmetic and
@@ -10,7 +10,7 @@
 use super::{canvas_mm, pointer_over};
 
 /// Fewest and most logical points per mm a view may have. The largest drawable extent is
-/// 2·10⁶ mm (`DRAWABLE_MM` either side of 0), which the Fit of either canvas shows in at
+/// 2·10⁶ mm (`DRAWABLE_MM` either side of 0), which the constraint canvas fits in at
 /// least 170 points (≥ 8.5·10⁻⁵ points/mm), so no Fit is below the lower limit. A Fit of a
 /// degenerate profile reaches 4.5·10⁷ points/mm (its extent floor is 10⁻⁵ mm in 450
 /// points), so no Fit is above the upper limit, where one point is 10⁻⁸ mm: still far
@@ -320,19 +320,6 @@ impl Navigation {
         }
         if let Some(next) = zoomed(*view, surface.rect, at, ln) {
             *view = next;
-        }
-    }
-
-    /// The words painted on the canvas.
-    pub(super) fn hint(&self, open: bool, frozen: bool) -> &'static str {
-        if self.pan.is_some() {
-            "Panning · Esc puts the view back"
-        } else if frozen {
-            "View locked while you drag"
-        } else if !open {
-            "View locked while the form is busy"
-        } else {
-            "Wheel or pinch: zoom · Shift+drag or middle-drag: pan"
         }
     }
 }

@@ -91,9 +91,8 @@ struct Draft {
     /// still required, but its first Undo returns to this starting point.
     initial: Numbers,
     typed: Numbers,
-    /// The last set of numbers a confirmed Apply accepted. One Apply is one
-    /// history step over all four, exactly as the annulus editor treats its
-    /// three, because they describe one tool and half of one is not a cut.
+    /// The last set of numbers a confirmed Apply accepted. All four describe one
+    /// tool, so Apply records them together as one history step.
     applied: Option<Numbers>,
     history: History,
     refusal: Option<String>,

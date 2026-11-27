@@ -34,7 +34,7 @@ Chamfer histories) and **one analytic Circle**. Not covered, and stated as such 
 The drawing is `SketchPresentation` — the curves, with their `StableEntityId`s, in the document's order,
 at the coordinates **the rebuild built the profile from** (solved when the Sketch has constraints, the
 stored ones when it has none) — produced by the same one rebuild as the picture
-(`LoadedScene.sketch_presentations`, [analytic-sketch-canvas.md](analytic-sketch-canvas.md) and the
+(`LoadedScene.sketch_presentations`, [sketch mode](sketch-mode.md) and the
 presentation module of `ferritecad-eval`). It is read through the type `ferritecad-scene` already
 re-exports; the app's dev-dependency on `ferritecad-eval` is not promoted. Nothing is re-read from the
 `.fcad`, no solver is asked, no arc or circle is rebuilt from a mesh.
@@ -120,7 +120,7 @@ position never chooses between them:
 
 Zoom about the cursor (wheel, two-finger scroll, pinch), pan (middle button, or Shift + primary), and
 **Fit** reuse §31J's bounded view arithmetic and `Navigation` unchanged ([sketch-canvas-navigation.md](
-sketch-canvas-navigation.md)): scale in [1e-5, 1e8] points/mm, at most 8x an event, nothing non-finite
+https://github.com/gesriot/ferrite-cad/blob/ae483877e84c76f95425c8fa6b938e9b6a19d816/docs/sketch-canvas-navigation.md)): scale in [1e-5, 1e8] points/mm, at most 8x an event, nothing non-finite
 changes the view, an event is read against the view the person saw and a wheel before a press that is still
 held at the end of the frame is dropped. The view, the held pan, the held press, the target and the circle
 part belong to the **form** (`Draft`), so to its tab; nothing is saved, nothing is in request history,

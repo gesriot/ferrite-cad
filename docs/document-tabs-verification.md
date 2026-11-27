@@ -159,8 +159,10 @@ empty `recovery/`; it refuses a root inside a checkout and makes no window outpu
 3. **Edit extrusion…** → 20 → **Apply**; close the form.
 4. **Open…** `$ROOT/b.fcad`: no question; a second tab `b.fcad` is selected, `*a.fcad`
    stays in the row.
-5. **Edit circle …** → centre −3.5, 4.25, radius 8 → **Apply circle**; close the form.
-   Tab `*b.fcad`.
+5. Select B's sketch and **Edit sketch…**. Set the grid to **0.1 mm** and guides to
+   **Off**; drag the centre to `(-3.5, 4.3)`. With PlaneGCS, select the circle, add
+   **Radius**, set **Value** to `8`, then select and delete that dimension. Without
+   PlaneGCS keep the saved radius `10.5`; rim dragging is not available yet. Press **Finish**; tab `*b.fcad`.
 6. Press the `*a.fcad` tab: the 20 mm plate appears. **Edit extrusion…** → 26 →
    **Apply**; close. **Undo** (20), **Redo** (26). **Restore** on `A 12` (12 mm plate),
    **Undo** (26 again). **Export STL…** → `$ROOT/a-unsaved.stl`; **Export FBX…** →

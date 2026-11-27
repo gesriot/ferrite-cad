@@ -513,15 +513,15 @@ fn recovery_child_entry() {
             );
             let current = s.export_path().expect("current");
             let reading = crate::sketch_facts::read(&current).expect("reading");
-            let sketch = &reading.sketches[0];
-            let mut vertices = sketch.vertices.clone().expect("an editable polygon");
+            let sketch = crate::transaction_tests::line_sketch(&reading);
+            let mut vertices = crate::transaction_tests::stored_vertices(&reading, sketch);
             vertices[2].start_mm = [62.0, 21.0];
             apply_sketch_native(
                 &mut s,
                 ferritecad_jobs::EditRequest {
                     changes: crate::transaction_tests::vertex_changes(
                         &(current),
-                        sketch.sketch,
+                        sketch,
                         &(vertices),
                     ),
                     source: current,

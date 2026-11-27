@@ -207,14 +207,7 @@ fn dirty_base(
         changes: crate::transaction_tests::vertex_changes(
             &(current),
             target.profile,
-            &(reading
-                .sketches
-                .iter()
-                .find(|c| c.sketch == target.profile)
-                .expect("base")
-                .vertices
-                .clone()
-                .expect("vertices")),
+            &(crate::transaction_tests::stored_vertices(&reading, target.profile)),
         ),
         source: current,
         expected: reading.version,
@@ -884,14 +877,7 @@ fn compare_gui(root: &Path) {
         ])
     };
     let reading = crate::sketch_facts::read(&height).expect("height reading");
-    let mut vertices = reading
-        .sketches
-        .iter()
-        .find(|c| c.sketch == target.profile)
-        .expect("base")
-        .vertices
-        .clone()
-        .expect("vertices");
+    let mut vertices = crate::transaction_tests::stored_vertices(&reading, target.profile);
     for p in &mut vertices {
         if p.start_mm[0] == -4.5 {
             p.start_mm[0] = -5.75;

@@ -6,7 +6,8 @@ how the other editors join (those are the next slices and are listed at the end)
 The executable contract and its checks are in [../document-session.md](../document-session.md)
 and [../document-session-verification.md](../document-session-verification.md).
 
-[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form.
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate sketch creation form,
+and the saved vertex, circle and annulus forms.
 The window creates sketches in the viewport and applies a sweep to the accepted sketch.
 
 ## The problem

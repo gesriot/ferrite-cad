@@ -36,17 +36,8 @@ impl Snap {
             Self::Five => (value / 5.0).round() * 5.0,
             Self::Ten => (value / 10.0).round() * 10.0,
         };
-        // Keep invalid input invalid for the shared polygon policy. A
+        // Keep invalid pointer coordinates invalid. A
         // float-to-integer cast would turn NaN into zero or saturate it.
         if snapped.is_finite() { snapped } else { value }
-    }
-
-    pub(super) fn apply(self, value: f64) -> String {
-        let rounded = self.round(value);
-        if self != Self::Off && rounded == 0.0 {
-            "0".into()
-        } else {
-            rounded.to_string()
-        }
     }
 }

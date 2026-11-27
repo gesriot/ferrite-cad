@@ -5,7 +5,62 @@
 //! every SQL cell: no Sketch row and no payload is set aside.
 
 use super::*;
-use crate::sketch::tests::analytic_apply::{typed_annulus, typed_circle, write_round};
+use crate::feature_tests::write_round;
+use crate::sketch_mode::tests::{curve_edits, round_edits};
+
+fn edited_radius(saved: f64, requested: f64) -> f64 {
+    if ferritecad_eval::solver_available() {
+        requested
+    } else {
+        saved
+    }
+}
+
+fn typed_circle(
+    path: &Path,
+    reading: &crate::sketch_facts::Source,
+    sketch: ObjectId,
+    center: [&str; 2],
+    radius: &str,
+) -> (tabs::Window, ferritecad_jobs::EditRequest) {
+    let center =
+        center.map(|n| (n.parse::<f64>().expect("fixture coordinate") * 10.).round() / 10.);
+    let answer = round_edits::edit(
+        path,
+        sketch,
+        center,
+        &[radius.parse().expect("fixture radius")],
+        false,
+        || {},
+    );
+    assert_eq!(answer.1.expected, reading.version);
+    answer
+}
+
+fn typed_annulus(
+    path: &Path,
+    reading: &crate::sketch_facts::Source,
+    sketch: ObjectId,
+    center: [&str; 2],
+    outer: &str,
+    inner: &str,
+) -> (tabs::Window, ferritecad_jobs::EditRequest) {
+    let center =
+        center.map(|n| (n.parse::<f64>().expect("fixture coordinate") * 10.).round() / 10.);
+    let stored = stored_curves(path);
+    let (outer, inner) = (
+        outer.parse().expect("outer radius"),
+        inner.parse().expect("inner radius"),
+    );
+    let radii = if stored[0].2 > stored[1].2 {
+        [outer, inner]
+    } else {
+        [inner, outer]
+    };
+    let answer = round_edits::edit(path, sketch, center, &radii, false, || {});
+    assert_eq!(answer.1.expected, reading.version);
+    answer
+}
 
 enum Request {
     Circle(ferritecad_jobs::EditRequest),
@@ -73,7 +128,7 @@ fn start(
     (generation, rx)
 }
 
-/// The window's own Apply of the Circle or annulus: the edit, the picture of the
+/// The window's own Finish of a circle or annulus: the edit, the picture of the
 /// new version, then the version becoming current. Returns what the edit meant.
 fn apply_analytic(sessions: &mut Sessions, request: &Request) -> Edited {
     let (generation, rx) = start(sessions, request);
@@ -283,6 +338,24 @@ fn assert_identity_kept(original: &Path, edited: &Path) {
     assert_eq!(ids(original), ids(edited), "an object id or name moved");
 }
 
+fn set_requested_circle(
+    request: &mut ferritecad_jobs::EditRequest,
+    id: ferritecad_types::StableEntityId,
+    center: [f64; 2],
+    radius: f64,
+) {
+    let index = request
+        .changes
+        .iter()
+        .position(|change| {
+            matches!(change,
+                ferritecad_document::EditChange::SetCurveGeometry { curve, .. } if *curve == id
+            )
+        })
+        .expect("the request edits this curve identity");
+    crate::transaction_tests::set_circle(request, index, center, radius);
+}
+
 struct Numbers {
     height: f64,
     after: f64,
@@ -297,7 +370,7 @@ fn analytic_gate(
     root: &Path,
     source: &Path,
     numbers: &Numbers,
-    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (crate::sketch::Editor, Request),
+    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (tabs::Window, Request),
     check_mesh: impl Fn(&[u8], bool),
 ) {
     let original = std::fs::read(source).expect("source");
@@ -354,9 +427,12 @@ fn analytic_gate(
         Edited::Show(_)
     ));
     let mut form = form;
-    assert!(form.editing_analytic());
-    form.finish_session_change();
-    assert!(!form.active(), "the form outlived the picture it described");
+    assert!(form.creates.sketch.viewport.active());
+    form.creates.sketch.finish_session_change();
+    assert!(
+        !form.creates.sketch.active(),
+        "the form outlived the picture it described"
+    );
     assert!(sessions.dirty());
     assert_eq!(
         std::fs::read(source).expect("source"),
@@ -477,7 +553,7 @@ fn analytic_gate(
         }
         Request::Annulus(mut r) => {
             let v = crate::transaction_tests::annulus(&r);
-            crate::transaction_tests::set_circle(&mut r, 1, v.center_mm, v.outer_radius_mm);
+            set_requested_circle(&mut r, v.inner_curve_id, v.center_mm, v.outer_radius_mm);
             Request::Annulus(r)
         }
     };
@@ -494,13 +570,9 @@ fn analytic_gate(
                 Request::Circle(r)
             }
             Request::Annulus(mut r) => {
-                let (outer, inner) = if curves[0].2 > curves[1].2 {
-                    (curves[0], curves[1])
-                } else {
-                    (curves[1], curves[0])
-                };
-                crate::transaction_tests::set_circle(&mut r, 0, outer.1, outer.2);
-                crate::transaction_tests::set_circle(&mut r, 1, inner.1, inner.2);
+                for (id, center, radius) in curves {
+                    set_requested_circle(&mut r, id, center, radius);
+                }
                 Request::Annulus(r)
             }
         }
@@ -549,10 +621,7 @@ fn native_a_circle_with_a_fractional_offset_is_applied_like_the_command_line() {
         "create-circle-extrude",
         r#"{"schema_version":1,"center_mm":[12.5,-7.25],"radius_mm":10.5,"height_mm":15.25}"#,
     );
-    let sketch = crate::sketch_facts::read(&source)
-        .expect("reading")
-        .circle_sketches[0]
-        .sketch;
+    let sketch = curve_edits::stored(&source).0;
     analytic_gate(
         "circle-session",
         root.path(),
@@ -567,15 +636,15 @@ fn native_a_circle_with_a_fractional_offset_is_applied_like_the_command_line() {
         },
         |stl, applied| {
             if applied {
-                assert_round(stl, [-3.5, 4.25], 6.75, None, 8.5);
+                assert_round(stl, [-3.5, 4.3], edited_radius(10.5, 6.75), None, 8.5);
             }
         },
     );
     // The same circle keeps its own UUIDs: the Sketch, the curve, the feature.
     let curves = stored_curves(&source);
     assert_eq!(curves.len(), 1);
-    assert_eq!(curves[0].1, [-3.5, 4.25]);
-    assert_eq!(curves[0].2, 6.75);
+    assert_eq!(curves[0].1, [-3.5, 4.3]);
+    assert_eq!(curves[0].2, edited_radius(10.5, 6.75));
 }
 
 #[test]
@@ -611,16 +680,21 @@ fn native_an_annulus_stored_bore_first_keeps_its_roles_by_curve_uuid() {
         stored.iter().map(|c| c.0).collect::<Vec<_>>(),
         "the stored order or a UUID changed"
     );
-    assert_eq!(after[0].2, 3.125, "the bore UUID holds the new bore radius");
-    assert_eq!(after[1].2, 9.25, "the boundary UUID holds the new radius");
-    assert!(after.iter().all(|c| c.1 == [-3.5, 4.25]));
+    assert_eq!(
+        after[0].2,
+        edited_radius(4.75, 3.125),
+        "the bore UUID keeps its role"
+    );
+    assert_eq!(
+        after[1].2,
+        edited_radius(10.5, 9.25),
+        "the boundary UUID keeps its role"
+    );
+    assert!(after.iter().all(|c| c.1 == [-3.5, 4.3]));
 }
 
 fn annulus_gate(name: &str, root: &Path, source: &Path) {
-    let sketch = crate::sketch_facts::read(source)
-        .expect("reading")
-        .annulus_sketches[0]
-        .sketch;
+    let sketch = curve_edits::stored(source).0;
     analytic_gate(
         name,
         root,
@@ -636,13 +710,19 @@ fn annulus_gate(name: &str, root: &Path, source: &Path) {
         },
         |stl, applied| {
             if applied {
-                assert_round(stl, [-3.5, 4.25], 9.25, Some(3.125), 8.5);
+                assert_round(
+                    stl,
+                    [-3.5, 4.3],
+                    edited_radius(10.5, 9.25),
+                    Some(edited_radius(4.75, 3.125)),
+                    8.5,
+                );
             }
         },
     );
 }
 
-// ---- §31I: the canvas of the forms, through the same route -------------------
+// Viewport geometry edits through the same publication route.
 
 /// The walls of a cold rebuild of `path`, each under its own saved reference: the
 /// curve UUID the reference was raised from and the surface the kernel reports.
@@ -666,15 +746,15 @@ fn walls_by_reference(
     walls
 }
 
-/// §31I: the form's canvas dragged by real events (`draft`), the window's own Apply on
-/// the real worker, an export before Save, Undo, Redo, Save and a cold reopen of
-/// `source`, each against the command line given the numbers the canvas wrote. The
-/// height, every identity and reference and the source file (until Save) are kept.
+/// Viewport geometry edited through real events (`draft`), applied by the session
+/// worker, exported before Save, undone, redone, saved and cold reopened. Each step
+/// is compared with the CLI; height, identities, references and the source file
+/// (until Save) are kept.
 fn canvas_gate(
     name: &str,
     root: &Path,
     source: &Path,
-    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (crate::sketch::Editor, Request),
+    draft: impl FnOnce(&Path, &crate::sketch_facts::Source) -> (tabs::Window, Request),
 ) -> (Request, Vec<u8>) {
     let original = std::fs::read(source).expect("source");
     let private = tempfile::tempdir().expect("private root");
@@ -701,8 +781,11 @@ fn canvas_gate(
         apply_analytic(&mut sessions, &request),
         Edited::Show(_)
     ));
-    form.finish_session_change();
-    assert!(!form.active(), "the form outlived the picture it described");
+    form.creates.sketch.finish_session_change();
+    assert!(
+        !form.creates.sketch.active(),
+        "the form outlived the picture it described"
+    );
     assert_eq!(
         std::fs::read(source).expect("source"),
         original,
@@ -767,25 +850,19 @@ fn canvas_gate(
 
 /// A height of the saved Extrude, read back.
 fn saved_height(path: &Path) -> f64 {
-    let reading = crate::sketch_facts::read(path).expect("reading");
-    reading
-        .circle_sketches
-        .iter()
-        .filter_map(|c| c.circle.as_ref().and_then(|c| c.height_mm))
-        .chain(
-            reading
-                .annulus_sketches
-                .iter()
-                .filter_map(|a| a.annulus.as_ref().and_then(|a| a.height_mm)),
-        )
-        .next()
-        .expect("one round profile")
+    let source = crate::sketch_facts::read(path).expect("reading");
+    ferritecad_fixtures::expression_slot(
+        &source,
+        ferritecad_document::ExpressionSlot::ExtrudeDistance,
+    )
+    .expression
+    .value()
 }
 
-/// §31I/§31J: what a saved Circle is after the canvas's numbers were applied and saved:
+/// §31I/§31J: what a saved Circle is after viewport geometry was applied and saved:
 /// an offset, fractional centre and radius, the same curve UUID and height, the wall
 /// under the saved reference a cylinder of that radius, and a mesh of that cylinder.
-fn assert_circle_canvas_result(
+fn assert_circle_viewport_result(
     name: &str,
     source: &Path,
     before: &[(ferritecad_types::StableEntityId, [f64; 2], f64)],
@@ -799,8 +876,8 @@ fn assert_circle_canvas_result(
     let (centre, radius) = (curves[0].1, curves[0].2);
     eprintln!("{name} centre={centre:?} radius={radius} height=15.25");
     // An offset, fractional centre and radius, as the pointer made them.
-    assert!(centre[0] != 12.5 && centre[1] != -7.25 && centre.iter().all(|c| c.fract() != 0.));
-    assert!(radius != 10.5 && radius.fract() != 0.);
+    assert_eq!(centre, [-3.5, 4.3]);
+    assert_eq!(radius, edited_radius(10.5, 6.75));
     let after = stored_curves(source);
     assert_eq!(
         (after.len(), after[0].0),
@@ -819,7 +896,7 @@ fn assert_circle_canvas_result(
 
 /// §31I/§31J: the same for a saved annulus: each curve UUID keeps its role and holds its
 /// own new radius about the new centre, each wall under its saved reference.
-fn assert_annulus_canvas_result(
+fn assert_annulus_viewport_result(
     name: &str,
     source: &Path,
     before: &[(ferritecad_types::StableEntityId, [f64; 2], f64)],
@@ -842,9 +919,9 @@ fn assert_annulus_canvas_result(
         "{name} centre={:?} outer={} bore={} height=15.25",
         edit.center_mm, edit.outer_radius_mm, edit.inner_radius_mm
     );
-    assert!(edit.center_mm.iter().all(|c| c.fract() != 0.));
-    assert!(edit.outer_radius_mm != 10.5 && edit.inner_radius_mm != 4.75);
-    assert!(edit.outer_radius_mm.fract() != 0. && edit.inner_radius_mm.fract() != 0.);
+    assert_eq!(edit.center_mm, [-3.5, 4.3]);
+    assert_eq!(edit.outer_radius_mm, edited_radius(10.5, 9.25));
+    assert_eq!(edit.inner_radius_mm, edited_radius(4.75, 3.125));
     assert!(edit.outer_radius_mm > edit.inner_radius_mm + 1.);
     // Each UUID keeps its role and holds its own new radius about the new centre.
     let after = stored_curves(source);
@@ -898,12 +975,11 @@ fn native_a_circle_moved_and_resized_on_its_canvas_is_applied_and_saved_like_the
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("circle-canvas", root.path(), &source, |path, reading| {
-        let sketch = reading.circle_sketches[0].sketch;
-        let (form, request) =
-            crate::sketch::analytic_tests::dragged_circle_apply(path, reading, sketch);
+        let sketch = curve_edits::sketch_id(reading);
+        let (form, request) = round_edits::edit(path, sketch, [-3.5, 4.3], &[6.75], false, || {});
         (form, Request::Circle(request))
     });
-    assert_circle_canvas_result("circle-canvas", &source, &before, request, &stl);
+    assert_circle_viewport_result("circle-canvas", &source, &before, request, &stl);
 }
 
 #[test]
@@ -919,17 +995,16 @@ fn native_an_annulus_moved_and_resized_on_its_canvas_keeps_each_wall_under_its_r
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("annulus-canvas", root.path(), &source, |path, reading| {
-        let sketch = reading.annulus_sketches[0].sketch;
+        let sketch = curve_edits::sketch_id(reading);
         let (form, request) =
-            crate::sketch::analytic_tests::dragged_annulus_apply(path, reading, sketch);
+            round_edits::edit(path, sketch, [-3.5, 4.3], &[9.25, 3.125], false, || {});
         (form, Request::Annulus(request))
     });
-    assert_annulus_canvas_result("annulus-canvas", &source, &before, request, &stl);
+    assert_annulus_viewport_result("annulus-canvas", &source, &before, request, &stl);
 }
 
-/// §31J: what navigating the canvas alone leaves alone, checked once the view has moved
-/// and before anything is dragged: the session's file and the source file (cells and bytes),
-/// the command line's exports of the source, and the version the form was read from.
+/// What viewport navigation leaves alone before geometry is dragged: the session
+/// and source files (cells and bytes), the CLI exports and the draft's source version.
 struct Untouched {
     cells: std::collections::BTreeMap<String, Vec<String>>,
     bytes: Vec<u8>,
@@ -982,10 +1057,9 @@ impl Untouched {
     }
 }
 
-/// §31J: the §31I route with the canvas zoomed and panned first (and Fit pressed once): that
-/// alone leaves every SQL cell, the file and its exports as they were; the drag is then
-/// made at the new scale, applied on the real worker, exported before Save, undone,
-/// redone and saved, each against the command line given the computed numbers.
+/// Zoom and pan the viewport before editing geometry. Navigation leaves SQL, files
+/// and exports unchanged; the edit at the new scale follows the same session,
+/// unsaved export, Undo, Redo and Save comparisons with the CLI.
 #[test]
 fn native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_command_line() {
     if !native() {
@@ -999,16 +1073,15 @@ fn native_a_circle_dragged_at_a_navigated_scale_is_applied_and_saved_like_the_co
     );
     let before = stored_curves(&source);
     let (request, stl) = canvas_gate("circle-navigated", root.path(), &source, |path, reading| {
-        let sketch = reading.circle_sketches[0].sketch;
+        let sketch = curve_edits::sketch_id(reading);
         let untouched =
             Untouched::before(&source, root.path(), "circle-navigated", reading.version);
-        let (form, request) =
-            crate::sketch::navigation_tests::navigated_circle_apply(path, reading, sketch, || {
-                untouched.after(&source, path, root.path(), "circle-navigated")
-            });
+        let (form, request) = round_edits::edit(path, sketch, [-3.5, 4.3], &[6.75], true, || {
+            untouched.after(&source, path, root.path(), "circle-navigated")
+        });
         (form, Request::Circle(request))
     });
-    assert_circle_canvas_result("circle-navigated", &source, &before, request, &stl);
+    assert_circle_viewport_result("circle-navigated", &source, &before, request, &stl);
 }
 
 #[test]
@@ -1028,19 +1101,17 @@ fn native_an_annulus_dragged_at_a_navigated_scale_keeps_each_wall_under_its_refe
         root.path(),
         &source,
         |path, reading| {
-            let sketch = reading.annulus_sketches[0].sketch;
+            let sketch = curve_edits::sketch_id(reading);
             let untouched =
                 Untouched::before(&source, root.path(), "annulus-navigated", reading.version);
-            let (form, request) = crate::sketch::navigation_tests::navigated_annulus_apply(
-                path,
-                reading,
-                sketch,
-                || untouched.after(&source, path, root.path(), "annulus-navigated"),
-            );
+            let (form, request) =
+                round_edits::edit(path, sketch, [-3.5, 4.3], &[9.25, 3.125], true, || {
+                    untouched.after(&source, path, root.path(), "annulus-navigated")
+                });
             (form, Request::Annulus(request))
         },
     );
-    assert_annulus_canvas_result("annulus-navigated", &source, &before, request, &stl);
+    assert_annulus_viewport_result("annulus-navigated", &source, &before, request, &stl);
 }
 
 /// A kernel refusal during an analytic edit preserves the accepted tab and source.
@@ -1050,7 +1121,7 @@ fn a_refused_circle_apply_keeps_the_document_clean() {
     let source = root.path().join("circle.fcad");
     write_round(&source, [12.5, -7.25], &[10.5], 15.25, false);
     let reading = crate::sketch_facts::read(&source).expect("reading");
-    let sketch = reading.circle_sketches[0].sketch;
+    let sketch = curve_edits::sketch_id(&reading);
     let (_form, request) = typed_circle(&source, &reading, sketch, ["1", "2"], "3");
     let original = std::fs::read(&source).expect("bytes");
     let private = tempfile::tempdir().expect("private");
@@ -1072,12 +1143,9 @@ fn a_refused_circle_apply_keeps_the_document_clean() {
     test_open::retry(&mut sessions, &request, "extrude_count", 1, shapes);
 }
 
-/// The geometry editors are for unconstrained profiles. A constraint applied
-/// through the session withdraws the Circle editor from the next catalogue, and
-/// removing it through the session offers the editor again: availability follows
-/// the accepted version, not the form that was open.
+/// Adding and removing a saved rule keeps Edit sketch available on each accepted version.
 #[test]
-fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_editor_available() {
+fn native_constraints_applied_and_removed_through_the_session_keep_the_sketch_editor_available() {
     if !native() {
         return;
     }
@@ -1092,8 +1160,13 @@ fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_ed
         r#"{"schema_version":1,"center_mm":[12.5,-7.25],"radius_mm":10.5,"height_mm":15.25}"#,
     );
     let opened = crate::sketch_facts::read(&source).expect("reading");
-    let sketch = opened.constraint_sketches[0].sketch;
-    assert!(opened.circle_sketches[0].refusal.is_none());
+    let sketch = curve_edits::sketch_id(&opened);
+    assert!(curve_edits::begin(
+        &mut crate::sketch::Editor::default(),
+        &source,
+        &opened,
+        sketch
+    ));
     let private = tempfile::tempdir().expect("private root");
     let mut sessions = Sessions::default();
     sessions.adopt(
@@ -1110,13 +1183,13 @@ fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_ed
     apply_constraints_native(&mut sessions, &constraints);
     let constrained =
         crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
-    assert!(constrained.circle_sketches[0].refusal.is_none());
     let accepted = sessions.export_path().expect("accepted");
     let mut form = crate::sketch::Editor::default();
-    assert!(form.begin_circle_edit(
+    assert!(curve_edits::begin(
+        &mut form,
         &accepted,
         &constrained,
-        constrained.circle_sketches[0].sketch
+        curve_edits::sketch_id(&constrained)
     ));
 
     // The same transaction path removes the constraints while keeping the editor available.
@@ -1143,12 +1216,12 @@ fn native_constraints_applied_and_removed_through_the_session_keep_the_circle_ed
     );
     let restored =
         crate::sketch_facts::read(&sessions.export_path().expect("accepted")).expect("reading");
-    assert!(restored.circle_sketches[0].refusal.is_none());
     form.dismiss();
-    assert!(form.begin_circle_edit(
+    assert!(curve_edits::begin(
+        &mut form,
         &sessions.export_path().expect("accepted"),
         &restored,
-        restored.circle_sketches[0].sketch
+        curve_edits::sketch_id(&restored)
     ));
 }
 

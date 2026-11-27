@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
-//! §30D: the saved Circle and annulus forms' Apply, through the window's own
-//! availability predicate and the forms' real widgets, never a hand-set flag.
-//! Kernel-free: the documents are written and read without Open CASCADE.
+//! Saved round drawings use the same Finish gate as the window's handler.
+//! Copy-specific guards stay on the surviving Revolve angle form.
 
 use super::*;
+use crate::feature_tests::write_round;
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use crate::{Loads, can_apply_analytic, creates, edits, exports, sessions};
+use crate::sketch_mode::tests::{curve_edits, round_edits};
+use crate::{Loads, creates, edits, exports, numeric, sessions};
 use ferritecad_types::ObjectId;
 
 struct Window {
@@ -16,7 +17,6 @@ struct Window {
     exports: exports::Exports,
     edits: edits::Edits,
 }
-
 impl Window {
     fn open(path: &Path) -> Self {
         let private = tempfile::tempdir().expect("private root");
@@ -32,299 +32,118 @@ impl Window {
         Self {
             _private: private,
             sessions,
-            creates: creates::Creates::default(),
-            loads: Loads::default(),
-            exports: exports::Exports::default(),
-            edits: edits::Edits::default(),
+            creates: Default::default(),
+            loads: Default::default(),
+            exports: Default::default(),
+            edits: Default::default(),
         }
     }
     fn ready(&self) -> bool {
-        can_apply_analytic(
-            &self.creates,
-            &self.loads,
-            &self.exports,
-            &self.edits,
-            &self.sessions,
-        )
+        self.creates.sketch.viewport.active()
+            && numeric::can_apply(
+                &self.creates,
+                &self.loads,
+                &self.exports,
+                &self.edits,
+                &self.sessions,
+            )
     }
-    /// What the window says to the forms every frame.
-    fn tell(&mut self, unsaved: bool) {
+    fn tell(&mut self) {
         let ready = self.ready();
-        self.creates.sketch.set_analytic_apply(ready);
-        self.creates.sketch.set_session(true, false, unsaved);
+        self.creates.sketch.viewport.set_apply(ready);
     }
     fn form(&mut self) -> &mut Editor {
         &mut self.creates.sketch
     }
+    fn begin(&mut self, path: &Path, source: &ExtrudeEditSource) {
+        assert!(
+            self.form()
+                .begin_test_drawing(path, source, curve_edits::sketch_id(source))
+        );
+        self.tell();
+    }
 }
-
-/// One analytic circle (`radii` of one) or two concentric ones (the boundary
-/// first, or the bore first when `swapped`), written through the document API: a
-/// build with no kernel has no `create-*` command, and these tests need none.
-pub(crate) fn write_round(
-    path: &Path,
-    center: [f64; 2],
-    radii: &[f64],
-    height: f64,
-    swapped: bool,
-) {
-    use ferritecad_document::{
-        Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
-        ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+fn document(root: &Path, annulus: bool) -> (PathBuf, ExtrudeEditSource) {
+    let path = root.join(if annulus {
+        "annulus.fcad"
+    } else {
+        "circle.fcad"
+    });
+    let radii = if annulus {
+        vec![10.5, 4.75]
+    } else {
+        vec![10.5]
     };
-    use ferritecad_types::{ObjectId, StableEntityId, Transform};
-    let mut d = Document::create(path).expect("document");
-    let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
-    let drawn: Vec<StableEntityId> = radii.iter().map(|_| StableEntityId::new()).collect();
-    d.write(|w| {
-        w.put_object(
-            plane,
-            None,
-            0,
-            Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
-                placement: Transform::IDENTITY,
-            }),
-        )?;
-        let mut curves = Vec::new();
-        for (id, radius) in drawn.iter().zip(radii) {
-            curves.push(SketchCurve {
-                id: *id,
-                construction: false,
-                geometry: SketchGeometry::Circle {
-                    center: Point2::new(center[0], center[1])?,
-                    radius: *radius,
-                },
-            });
-        }
-        if swapped {
-            curves.reverse();
-        }
-        w.put_object(
-            sketch,
-            None,
-            1,
-            Some("Profile"),
-            &ObjectPayload::Sketch(Sketch {
-                plane,
-                curves,
-                constraints: Vec::new(),
-            }),
-        )?;
-        w.put_object(
-            extrude,
-            None,
-            2,
-            Some("Extrude1"),
-            &ObjectPayload::Extrude(Extrude {
-                regions: Vec::new(),
-                profile: sketch,
-                end_condition: EndCondition::Blind {
-                    distance: Expression::constant(height)?,
-                },
-                reversed: false,
-                operation: SolidOperation::NewBody,
-                previous: None,
-            }),
-        )?;
-        w.put_object(
-            body,
-            None,
-            3,
-            Some("Body"),
-            &ObjectPayload::Body(Body {
-                tip_feature: Some(extrude),
-                rollback: None,
-            }),
-        )?;
-        for (dependent, dependency, role) in [
-            (sketch, plane, DependencyRole::Plane),
-            (extrude, sketch, DependencyRole::Profile),
-            (body, extrude, DependencyRole::BodyTip),
-        ] {
-            w.add_dependency(Dependency {
-                dependent,
-                dependency,
-                role,
-            })?;
-        }
-
-        Ok(())
-    })
-    .expect("round document");
-    d.close().expect("close");
-}
-
-fn circle_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
-    let path = root.join("circle.fcad");
-    write_round(&path, [12.5, -7.25], &[10.5], 15.25, false);
+    write_round(&path, [12.5, -7.25], &radii, 15.25, false);
     let source = crate::sketch_facts::read(&path).expect("reading");
     (path, source)
 }
-
-fn annulus_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
-    let path = root.join("annulus.fcad");
-    write_round(&path, [12.5, -7.25], &[10.5, 4.75], 15.25, false);
-    let source = crate::sketch_facts::read(&path).expect("reading");
-    (path, source)
-}
-
-fn plate_document(root: &Path) -> (PathBuf, ExtrudeEditSource) {
-    let path = root.join("plate.fcad");
-    ferritecad_jobs::create_document(
-        ferritecad_jobs::CreateDocumentRequest::new(
-            &path,
-            ferritecad_jobs::NewDocument::SamplePlate(Default::default()),
-            "test",
-        ),
-        &ferritecad_kernel::OperationContext::default(),
-    )
-    .expect("plate");
-    let source = crate::sketch_facts::read(&path).expect("reading");
-    (path, source)
-}
-
-fn settle(ctx: &egui::Context, e: &mut Editor) {
-    for _ in 0..3 {
-        frame(ctx, e, vec![]);
-    }
-}
-
-fn type_circle(ctx: &egui::Context, e: &mut Editor, x: &str, y: &str, radius: &str) {
-    for (label, value) in [("Center X", x), ("Center Y", y), ("Radius", radius)] {
-        let out = frame(ctx, e, vec![]);
-        type_into_grid_row(ctx, e, &out, label, value);
-    }
-}
-
-fn type_annulus(ctx: &egui::Context, e: &mut Editor, x: &str, y: &str, outer: &str, inner: &str) {
-    for (label, value) in [
-        ("Center X", x),
-        ("Center Y", y),
-        ("Outer radius", outer),
-        ("Inner radius", inner),
-    ] {
-        let out = frame(ctx, e, vec![]);
-        type_into_annulus_row(ctx, e, &out, label, value);
-    }
-}
-
-fn press(ctx: &egui::Context, e: &mut Editor, label: &str) {
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, label));
-}
-
-fn shows(ctx: &egui::Context, e: &mut Editor, text: &str) -> bool {
-    let out = frame(ctx, e, vec![]);
-    painted(&out, text)
+fn move_center(ctx: &egui::Context, e: &mut Editor) {
+    curve_edits::move_coordinate(ctx, e, "12.5", "-3.5");
+    curve_edits::move_coordinate(ctx, e, "-7.3", "4.3");
 }
 
 #[test]
 fn the_open_forms_apply_through_the_windows_own_predicate_and_keep_their_drafts() {
     let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(!w.ready(), "nothing to apply before a form is open");
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    assert!(w.creates.busy(), "New and Open still wait for this form");
-    assert!(
-        w.ready(),
-        "the form's own Apply must not be blocked by the form"
-    );
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_circle(&ctx, w.form(), "-3.5", "4.25", "6.75");
-
-    // The window says "not ready": the button is there and does nothing.
-    w.form().set_analytic_apply(false);
-    press(&ctx, w.form(), "Apply circle");
-    assert!(
-        w.form().take_apply_circle_request().is_none(),
-        "disabled asked"
-    );
-
-    // The window says what it computes: one press, one request, with the typed
-    // numbers whether or not the draft was confirmed.
-    w.tell(true);
-    press(&ctx, w.form(), "Apply circle");
-    let request = w.form().take_apply_circle_request().expect("Apply asked");
-    assert_eq!(request.expected, source.version);
-    assert_eq!(crate::transaction_tests::sketch(&request), sketch);
-    assert_eq!(
-        crate::transaction_tests::circle(&request).center_mm,
-        [-3.5, 4.25]
-    );
-    assert_eq!(crate::transaction_tests::circle(&request).radius_mm, 6.75);
-    assert_eq!(
-        crate::transaction_tests::circle(&request).curve_id,
-        source.circle_sketches[0]
-            .circle
-            .as_ref()
-            .expect("saved")
-            .curve_id
-    );
-    assert!(
-        w.form().take_apply_circle_request().is_none(),
-        "one press, one request"
-    );
-    assert!(
-        w.ready(),
-        "the command must allow the same request as its button"
-    );
-    assert!(
-        w.form().editing_analytic(),
-        "pressing Apply discarded the draft"
-    );
-    assert_eq!(w.form().circle.radius, "6.75");
-
-    let (path, source) = annulus_document(root.path());
-    let sketch = source.annulus_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    assert!(w.ready());
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_annulus(&ctx, w.form(), "-3.5", "4.25", "9.25", "3.125");
-    w.tell(true);
-    press(&ctx, w.form(), "Apply annulus");
-    let request = w.form().take_apply_annulus_request().expect("Apply asked");
-    let saved = source.annulus_sketches[0].annulus.as_ref().expect("saved");
-    assert_eq!(request.expected, source.version);
-    assert_eq!(
-        crate::transaction_tests::circle(&request).center_mm,
-        [-3.5, 4.25]
-    );
-    assert_eq!(
-        crate::transaction_tests::annulus(&request).outer_radius_mm,
-        9.25
-    );
-    assert_eq!(
-        crate::transaction_tests::annulus(&request).inner_radius_mm,
-        3.125
-    );
-    assert_eq!(
-        crate::transaction_tests::annulus(&request).outer_curve_id,
-        saved.outer_curve_id
-    );
-    assert_eq!(
-        crate::transaction_tests::annulus(&request).inner_curve_id,
-        saved.inner_curve_id
-    );
-    assert!(w.form().take_apply_annulus_request().is_none());
-    assert!(w.form().editing_analytic());
+    for annulus in [false, true] {
+        let (path, source) = document(root.path(), annulus);
+        let mut w = Window::open(&path);
+        assert!(!w.ready());
+        w.begin(&path, &source);
+        assert!(w.creates.busy(), "New and Open wait for the drawing");
+        assert!(w.ready(), "the open form must not block its own Finish");
+        let ctx = egui::Context::default();
+        move_center(&ctx, w.form());
+        let draft = curve_edits::state(w.form());
+        w.form().viewport.set_apply(false);
+        press_with(&ctx, w.form(), "Finish");
+        assert!(w.form().viewport.take_request().is_none());
+        assert_eq!(curve_edits::state(w.form()), draft);
+        w.tell();
+        press_with(&ctx, w.form(), "Finish");
+        let request = w.form().viewport.take_request().expect("Finish");
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, source.version);
+        let (sketch, saved) = curve_edits::stored(&path);
+        let expected = saved
+            .curves
+            .iter()
+            .map(|curve| {
+                let ferritecad_document::SketchGeometry::Circle { radius, .. } = curve.geometry
+                else {
+                    panic!("round fixture")
+                };
+                ferritecad_document::EditChange::SetCurveGeometry {
+                    sketch,
+                    curve: curve.id,
+                    geometry: ferritecad_document::SketchGeometry::Circle {
+                        center: ferritecad_document::Point2 { x: -3.5, y: 4.3 },
+                        radius,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(request.changes, expected);
+        assert!(
+            w.form().viewport.take_request().is_none(),
+            "one press, one request"
+        );
+        assert_eq!(
+            curve_edits::state(w.form()),
+            draft,
+            "Finish keeps the pending draft"
+        );
+        assert!(w.ready());
+    }
 }
 
 #[test]
 fn nothing_else_running_or_open_lets_the_command_start() {
     let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-
-    // A load in flight, a session operation: each blocks.
+    let (path, source) = document(root.path(), false);
     let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    assert!(w.ready());
+    w.begin(&path, &source);
     w.loads
         .open(
             Some(&path),
@@ -332,435 +151,229 @@ fn nothing_else_running_or_open_lets_the_command_start() {
             |_, _| std::thread::spawn(|| {}),
         )
         .expect("load");
-    assert!(!w.ready(), "an Open in flight must block Apply");
+    assert!(!w.ready(), "Open blocks Finish");
     w.loads.stop_all();
     w.loads = Loads::default();
     assert!(w.ready());
     w.sessions
         .begin_apply(|_, _, _| std::thread::spawn(|| {}))
         .expect("operation");
-    assert!(!w.ready(), "a running session operation must block Apply");
+    assert!(!w.ready(), "session work blocks Finish");
     w.sessions.stop_all();
-
-    // The height form open beside it.
     let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    assert!(w.edits.begin(&path, &source));
-    assert!(!w.ready(), "the height form being open must block Apply");
-
-    // No form at all, a form that was closed, and no session.
-    let mut w = Window::open(&path);
-    assert!(!w.ready());
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
+    w.begin(&path, &source);
+    assert!(w.creates.busy());
     w.form().dismiss();
     assert!(!w.ready());
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
+    w.begin(&path, &source);
     w.sessions = sessions::Sessions::default();
-    assert!(!w.ready(), "no open document, nothing to apply into");
-
-    // Another editor's form, and a Sketch of the wrong kind, never start it.
-    let (plate, plate_source) = plate_document(root.path());
-    let mut w = Window::open(&plate);
-    assert!(
-        w.form()
-            .begin_edit(&plate, &plate_source, plate_source.sketches[0].sketch)
-    );
-    assert!(!w.ready(), "the vertex form is not an analytic form");
-    w.form().dismiss();
-    assert!(
-        !w.form()
-            .begin_circle_edit(&plate, &plate_source, plate_source.sketches[0].sketch),
-        "a Line plate is not a Circle"
-    );
-    assert!(
-        !w.form()
-            .begin_annulus_edit(&plate, &plate_source, plate_source.sketches[0].sketch),
-        "a Line plate is not an annulus"
-    );
-    assert!(!w.ready());
-    let mut w = Window::open(&path);
-    assert!(
-        !w.form().begin_annulus_edit(&path, &source, sketch),
-        "a Circle is not an annulus"
-    );
+    assert!(!w.ready(), "no session, no Finish");
 }
 
 #[test]
 fn the_stored_numbers_offer_no_apply_and_a_draft_round_trip_keeps_its_redo() {
-    let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    w.tell(false);
+    // A literal field and its no-op Apply belong to the surviving angle form.
+    // Finish of an unchanged drawing instead closes that drawing by design.
+    let (_root, path, source) = angle_apply::fixture();
+    let id = ferritecad_fixtures::expression_slot(
+        &source,
+        ferritecad_document::ExpressionSlot::RevolveAngle,
+    )
+    .object;
+    let mut e = Editor::default();
+    e.set_session(true, false);
+    e.set_angle_apply(true);
+    assert!(e.begin_angle_edit(&path, &source, id));
     let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-
-    // As opened: the stored numbers, so nothing to apply.
-    assert!(shows(&ctx, w.form(), "nothing to apply"));
-    press(&ctx, w.form(), "Apply circle");
-    assert!(w.form().take_apply_circle_request().is_none());
-
-    // Typed and confirmed, then Undo draft: the draft's Redo is there.
-    type_circle(&ctx, w.form(), "1", "2", "3");
-    press(&ctx, w.form(), "Confirm draft numbers");
-    assert_eq!(w.form().circle_undo.len(), 1);
-    press(&ctx, w.form(), "Undo draft");
-    assert_eq!(w.form().circle_redo.len(), 1);
-    assert_eq!(
-        w.form().circle.radius,
-        "10.5",
-        "Undo draft restores the stored numbers"
-    );
-
-    // Back at the stored numbers: still nothing to apply, and the press that
-    // asks for nothing leaves the draft's Redo where it was.
-    assert!(shows(&ctx, w.form(), "nothing to apply"));
-    press(&ctx, w.form(), "Apply circle");
-    assert!(w.form().take_apply_circle_request().is_none());
-    assert_eq!(
-        w.form().circle_redo.len(),
-        1,
-        "the empty press lost the Redo"
-    );
-
-    // Retyping the same numbers differently written is the same numbers.
-    type_circle(&ctx, w.form(), "12.50", "-7.250", "10.50");
-    assert!(shows(&ctx, w.form(), "nothing to apply"));
-
-    // The same for the annulus.
-    let (path, source) = annulus_document(root.path());
-    let sketch = source.annulus_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    w.tell(false);
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    assert!(shows(&ctx, w.form(), "nothing to apply"));
-    type_annulus(&ctx, w.form(), "12.5", "-7.25", "10.5", "4.5");
-    assert!(!shows(&ctx, w.form(), "nothing to apply"));
-    type_annulus(&ctx, w.form(), "12.5", "-7.25", "10.5", "4.75");
-    assert!(shows(&ctx, w.form(), "nothing to apply"));
-    press(&ctx, w.form(), "Apply annulus");
-    assert!(w.form().take_apply_annulus_request().is_none());
-}
-
-#[test]
-fn the_draft_confirmation_is_not_the_apply_and_both_are_named_honestly() {
-    let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    w.tell(false);
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_circle(&ctx, w.form(), "1", "2", "3");
-    let out = frame(&ctx, w.form(), vec![]);
-    assert!(painted(&out, "Apply circle"));
-    assert!(painted(&out, "Confirm draft numbers"));
-    assert!(
-        !painted(&out, "Apply circle change"),
-        "the draft confirmation still carries the name of the document action"
-    );
-    press(&ctx, w.form(), "Confirm draft numbers");
-    assert!(
-        w.form().take_apply_circle_request().is_none(),
-        "confirming a draft asked for the document to change"
-    );
-    assert_eq!(
-        w.form().circle_undo.len(),
-        1,
-        "one confirmation, one draft step"
-    );
-    // Save copy is offered once the draft is confirmed, on a clean document.
-    press(&ctx, w.form(), "Save edited circle copy…");
-    assert!(w.form().take_circle_edit_request().is_some());
-
-    let (path, source) = annulus_document(root.path());
-    let sketch = source.annulus_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    w.tell(false);
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_annulus(&ctx, w.form(), "1", "2", "9", "3");
-    let out = frame(&ctx, w.form(), vec![]);
-    assert!(painted(&out, "Apply annulus"));
-    assert!(painted(&out, "Confirm draft numbers"));
-    assert!(!painted(&out, "Apply annulus change"));
-    press(&ctx, w.form(), "Confirm draft numbers");
-    assert!(w.form().take_apply_annulus_request().is_none());
-    press(&ctx, w.form(), "Save edited annulus copy…");
-    assert!(w.form().take_annulus_edit_request().is_some());
+    frame(&ctx, &mut e, vec![]);
+    let original = e.angle.angle_edit.clone();
+    press_with(&ctx, &mut e, "Apply angle");
+    assert!(e.take_apply_angle_request().is_none());
+    replace_one_in_form(&ctx, &mut e, &original, "212.25");
+    press_with(&ctx, &mut e, "Confirm draft numbers");
+    press_with(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.angle.angle_edit, original);
+    let redo = e.angle.angle_redo.clone();
+    assert_eq!(redo.len(), 1);
+    press_with(&ctx, &mut e, "Apply angle");
+    assert!(e.take_apply_angle_request().is_none());
+    assert_eq!(e.angle.angle_redo, redo);
+    replace_one_in_form(&ctx, &mut e, &original, "137.50");
+    press_with(&ctx, &mut e, "Apply angle");
+    assert!(e.take_apply_angle_request().is_none());
 }
 
 #[test]
 fn with_unsaved_changes_save_copy_is_withheld_with_words_and_apply_is_not() {
-    let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    w.tell(true);
+    let (_root, path, source) = angle_apply::fixture();
+    let id = ferritecad_fixtures::expression_slot(
+        &source,
+        ferritecad_document::ExpressionSlot::RevolveAngle,
+    )
+    .object;
+    let mut e = Editor::default();
+    e.set_session(true, true);
+    e.set_angle_apply(true);
+    assert!(e.begin_angle_edit(&path, &source, id));
     let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_circle(&ctx, w.form(), "1", "2", "3");
-    press(&ctx, w.form(), "Confirm draft numbers");
-    assert!(
-        shows(&ctx, w.form(), "unsaved changes"),
-        "the withheld copy workflow was not explained"
-    );
-    press(&ctx, w.form(), "Save edited circle copy…");
-    assert!(
-        w.form().take_circle_edit_request().is_none(),
-        "a withheld copy asked"
-    );
-    press(&ctx, w.form(), "Apply circle");
-    assert!(w.form().take_apply_circle_request().is_some());
-    // The same draft on a clean document keeps the old copy workflow.
-    w.tell(false);
-    press(&ctx, w.form(), "Save edited circle copy…");
-    assert!(w.form().take_circle_edit_request().is_some());
-
-    let (path, source) = annulus_document(root.path());
-    let sketch = source.annulus_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    w.tell(true);
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_annulus(&ctx, w.form(), "1", "2", "9", "3");
-    press(&ctx, w.form(), "Confirm draft numbers");
-    assert!(shows(&ctx, w.form(), "unsaved changes"));
-    press(&ctx, w.form(), "Save edited annulus copy…");
-    assert!(w.form().take_annulus_edit_request().is_none());
-    press(&ctx, w.form(), "Apply annulus");
-    assert!(w.form().take_apply_annulus_request().is_some());
-    w.tell(false);
-    press(&ctx, w.form(), "Save edited annulus copy…");
-    assert!(w.form().take_annulus_edit_request().is_some());
+    replace_one_in_form(&ctx, &mut e, "137.5", "212.25");
+    assert!(painted(&frame(&ctx, &mut e, vec![]), "unsaved changes"));
+    press_with(&ctx, &mut e, "Save edited Revolve copy…");
+    assert!(e.take_angle_edit_request().is_none());
+    press_with(&ctx, &mut e, "Apply angle");
+    assert!(e.take_apply_angle_request().is_some());
+    e.set_session(true, false);
+    press_with(&ctx, &mut e, "Confirm draft numbers");
+    press_with(&ctx, &mut e, "Save edited Revolve copy…");
+    assert!(e.take_angle_edit_request().is_some());
 }
 
 #[test]
 fn a_new_accepted_version_ends_the_drafts_and_keeps_what_the_window_said() {
     let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    w.tell(true);
-    let ctx = egui::Context::default();
-    settle(&ctx, w.form());
-    type_circle(&ctx, w.form(), "1", "2", "3");
-    w.form().finish_session_change();
-    assert!(
-        !w.form().active(),
-        "the draft outlived the picture it described"
-    );
-    assert!(!w.form().editing_analytic());
-    // The next form for the next version starts with what the window already said.
-    assert!(w.form().begin_circle_edit(&path, &source, sketch));
-    settle(&ctx, w.form());
-    type_circle(&ctx, w.form(), "1", "2", "3");
-    press(&ctx, w.form(), "Apply circle");
-    assert!(
-        w.form().take_apply_circle_request().is_some(),
-        "the flags were lost when the draft was replaced"
-    );
-
-    let (path, source) = annulus_document(root.path());
-    let sketch = source.annulus_sketches[0].sketch;
-    let mut w = Window::open(&path);
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    w.tell(true);
-    w.form().finish_session_change();
-    assert!(!w.form().active());
-    assert!(w.form().begin_annulus_edit(&path, &source, sketch));
-    settle(&ctx, w.form());
-    type_annulus(&ctx, w.form(), "1", "2", "9", "3");
-    press(&ctx, w.form(), "Apply annulus");
-    assert!(w.form().take_apply_annulus_request().is_some());
+    for annulus in [false, true] {
+        let (path, source) = document(root.path(), annulus);
+        let mut w = Window::open(&path);
+        w.begin(&path, &source);
+        let ctx = egui::Context::default();
+        move_center(&ctx, w.form());
+        w.form().finish_session_change();
+        assert!(!w.form().active(), "draft outlived its accepted scene");
+        assert!(w.form().viewport.take_request().is_none());
+        w.begin(&path, &source);
+        move_center(&ctx, w.form());
+        press_with(&ctx, w.form(), "Finish");
+        assert!(w.form().viewport.take_request().is_some());
+    }
 }
 
-fn choice_frame(
-    ctx: &egui::Context,
-    e: &mut Editor,
-    path: &Path,
-    source: &ExtrudeEditSource,
-    events: Vec<egui::Event>,
-) -> egui::FullOutput {
-    let mut out = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(988., 768.),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ui| {
-            e.draw_choices(
-                ui,
-                false,
-                Some(path),
-                Some(source),
-                &super::super::accepted::Accepted::default(),
-            )
-        },
-    );
-    out.textures_delta.clear();
-    out
-}
-
-/// With unsaved changes the window's copy-workflow gate is closed (`can_begin`
-/// false). The forms are still offered, because they apply into the document.
 #[test]
 fn the_forms_open_on_a_document_with_unsaved_changes_only_when_the_window_says_so() {
+    use crate::sessions::tests::tabs::{Drawn, Window as Tabs};
+    use ferritecad_ui::ModelEdit;
     let root = tempfile::tempdir().expect("root");
-    for (circle, entry) in [(true, "Edit circle"), (false, "Edit annulus")] {
-        let (path, source) = if circle {
-            circle_document(root.path())
-        } else {
-            annulus_document(root.path())
-        };
-        for (session_idle, opens) in [(false, false), (true, true)] {
-            let mut e = Editor::default();
-            e.set_session(session_idle, false, true);
-            let ctx = egui::Context::default();
-            choice_frame(&ctx, &mut e, &path, &source, vec![]);
-            let out = choice_frame(&ctx, &mut e, &path, &source, vec![]);
-            let at = out
-                .shapes
-                .iter()
-                .find_map(|s| match &s.shape {
-                    egui::Shape::Text(t) if t.galley.text().starts_with(entry) => {
-                        Some(t.visual_bounding_rect().center())
-                    }
-                    _ => None,
-                })
-                .expect("the entry is painted");
-            choice_frame(
-                &ctx,
-                &mut e,
-                &path,
-                &source,
-                vec![egui::Event::PointerMoved(at)],
-            );
-            for pressed in [true, false] {
-                choice_frame(
-                    &ctx,
-                    &mut e,
-                    &path,
-                    &source,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    }],
-                );
+    for annulus in [false, true] {
+        let (path, _) = document(root.path(), annulus);
+        for idle in [false, true] {
+            let mut w = Tabs::new(Drawn::Mock, None);
+            w.open(&path);
+            w.apply(19.);
+            assert!(w.sessions.dirty());
+            if !idle {
+                w.sessions
+                    .begin_apply(|_, _, _| std::thread::spawn(|| {}))
+                    .expect("busy");
             }
-            assert_eq!(e.active(), opens, "{entry}, session_idle={session_idle}");
+            let source = w.scene.edit_source.as_ref().expect("source");
+            let navigation = w.tabs.model_navigation(w.sessions.tab());
+            let row = source
+                .model_tree
+                .rows
+                .iter()
+                .find(|r| r.id.0 == curve_edits::sketch_id(source))
+                .expect("row")
+                .id;
+            crate::commands::select_row(source, navigation, row);
+            let action = ferritecad_ui::ModelAction {
+                tab: w.sessions.tab().key(),
+                epoch: navigation.epoch,
+                row,
+                edit: crate::commands::Command::Edit(ModelEdit::Sketch),
+            };
+            let answer = crate::commands::launch(
+                action,
+                source,
+                &w.scene.sketches,
+                &mut w.creates,
+                &mut w.edits,
+                &w.sessions,
+                &w.tabs,
+                &Loads::default(),
+                &exports::Exports::default(),
+                &w.input,
+                false,
+            );
+            assert_eq!(answer.is_ok(), idle);
+            assert_eq!(w.creates.sketch.viewport.active(), idle);
+            w.sessions.stop_all();
         }
     }
 }
 
-/// The session's own line is drawn inside the form, where a refusal can be read.
 #[test]
 fn the_documents_last_outcome_is_readable_inside_the_open_form() {
     let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut e = Editor::default();
-    assert!(e.begin_circle_edit(&path, &source, sketch));
-    let ctx = egui::Context::default();
-    let line = "Could not apply the change: the radius is too large";
-    let draw = |e: &mut Editor, outcome: &str| {
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1000., 900.),
-                )),
-                ..Default::default()
-            },
-            |ui| e.draw(ui, false, outcome),
-        );
-        out.textures_delta.clear();
-        out
-    };
-    for _ in 0..3 {
-        draw(&mut e, "");
+    for annulus in [false, true] {
+        let (path, source) = document(root.path(), annulus);
+        let mut e = Editor::default();
+        assert!(e.begin_test_drawing(&path, &source, curve_edits::sketch_id(&source)));
+        let ctx = egui::Context::default();
+        let line = "Could not apply the change: the radius is too large";
+        let mut draw = |outcome| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| e.viewport.draw(ui, false, outcome),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        for _ in 0..3 {
+            draw("");
+        }
+        let out = draw(line);
+        assert!(painted(&out, line));
+        let at = text_at(&out, line);
+        let clip = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Sketch drawing" => Some(s.clip_rect),
+                _ => None,
+            })
+            .expect("drawing heading");
+        assert!(clip.contains(at));
+        assert!(!painted(&draw(""), line));
     }
-    let out = draw(&mut e, line);
-    assert!(painted(&out, line), "the refusal is not on the screen");
-    // It is the text of a shape the form's window clips, never one beneath it.
-    let at = text_at(&out, &format!("Document: {line}"));
-    let window = out
-        .shapes
-        .iter()
-        .find_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.text() == "Edit saved Circle" => Some(s.clip_rect),
-            _ => None,
-        })
-        .expect("the form's title");
-    assert!(
-        window.contains(at),
-        "the refusal is outside the form's window"
-    );
-    assert!(
-        !painted(&draw(&mut e, ""), line),
-        "an empty line paints nothing"
-    );
-
-    let (path, source) = annulus_document(root.path());
-    let mut e = Editor::default();
-    assert!(e.begin_annulus_edit(&path, &source, source.annulus_sketches[0].sketch));
-    for _ in 0..3 {
-        draw(&mut e, "");
-    }
-    assert!(painted(&draw(&mut e, line), line));
 }
 
-/// While a worker is busy the forms offer nothing: a second press starts no work.
 #[test]
 fn while_a_worker_is_busy_the_forms_start_no_second_request() {
     let root = tempfile::tempdir().expect("root");
-    let (path, source) = circle_document(root.path());
-    let sketch = source.circle_sketches[0].sketch;
-    let mut e = Editor::default();
-    assert!(e.begin_circle_edit(&path, &source, sketch));
-    e.set_analytic_apply(true);
-    let ctx = egui::Context::default();
-    for _ in 0..3 {
-        frame_running(&ctx, &mut e, vec![], true);
-    }
-    let out = frame_running(&ctx, &mut e, vec![], true);
-    click_running(&ctx, &mut e, text_at(&out, "Apply circle"));
-    assert!(e.take_apply_circle_request().is_none());
-}
-
-fn click_running(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
-    frame_running(ctx, e, vec![egui::Event::PointerMoved(at)], true);
-    for pressed in [true, false] {
-        frame_running(
-            ctx,
-            e,
-            vec![egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Default::default(),
-            }],
-            true,
-        );
+    for annulus in [false, true] {
+        let (path, source) = document(root.path(), annulus);
+        let mut w = Window::open(&path);
+        w.begin(&path, &source);
+        let ctx = egui::Context::default();
+        move_center(&ctx, w.form());
+        let state = curve_edits::state(w.form());
+        let out = frame_running(&ctx, w.form(), vec![], true);
+        let at = text_at(&out, "Finish");
+        frame_running(&ctx, w.form(), vec![egui::Event::PointerMoved(at)], true);
+        for pressed in [true, false] {
+            frame_running(
+                &ctx,
+                w.form(),
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                true,
+            );
+        }
+        assert!(w.form().viewport.take_request().is_none());
+        assert_eq!(curve_edits::state(w.form()), state);
     }
 }
 
-/// The Circle form's own widgets, as the window leaves them for an idle session
-/// with unsaved changes: the numbers typed and **Apply circle** pressed.
+/// A round draft and its real Finish request for ownership tests on an existing session.
 pub(crate) fn typed_circle(
     path: &Path,
     source: &ExtrudeEditSource,
@@ -768,19 +381,14 @@ pub(crate) fn typed_circle(
     center: [&str; 2],
     radius: &str,
 ) -> (Editor, EditRequest) {
-    let mut e = Editor::default();
-    e.set_session(true, false, true);
-    e.set_analytic_apply(true);
-    assert!(e.begin_circle_edit(path, source, sketch));
-    let ctx = egui::Context::default();
-    settle(&ctx, &mut e);
-    type_circle(&ctx, &mut e, center[0], center[1], radius);
-    press(&ctx, &mut e, "Apply circle");
-    let request = e.take_apply_circle_request().expect("Apply circle asked");
-    (e, request)
+    round_edits::detached(
+        path,
+        source,
+        sketch,
+        center.map(|n| (n.trim().parse::<f64>().expect("coordinate") * 10.).round() / 10.),
+        &[radius.trim().parse().expect("radius")],
+    )
 }
-
-/// The annulus form's own widgets, likewise.
 pub(crate) fn typed_annulus(
     path: &Path,
     source: &ExtrudeEditSource,
@@ -789,14 +397,23 @@ pub(crate) fn typed_annulus(
     outer: &str,
     inner: &str,
 ) -> (Editor, EditRequest) {
-    let mut e = Editor::default();
-    e.set_session(true, false, true);
-    e.set_analytic_apply(true);
-    assert!(e.begin_annulus_edit(path, source, sketch));
-    let ctx = egui::Context::default();
-    settle(&ctx, &mut e);
-    type_annulus(&ctx, &mut e, center[0], center[1], outer, inner);
-    press(&ctx, &mut e, "Apply annulus");
-    let request = e.take_apply_annulus_request().expect("Apply annulus asked");
-    (e, request)
+    let (_, saved) = curve_edits::stored(path);
+    let outer = outer.trim().parse::<f64>().expect("outer radius");
+    let inner = inner.trim().parse::<f64>().expect("inner radius");
+    let radii = saved
+        .curves
+        .iter()
+        .map(|c| match c.geometry {
+            ferritecad_document::SketchGeometry::Circle { radius, .. } if radius > 5. => outer,
+            ferritecad_document::SketchGeometry::Circle { .. } => inner,
+            _ => panic!("round fixture"),
+        })
+        .collect::<Vec<_>>();
+    round_edits::detached(
+        path,
+        source,
+        sketch,
+        center.map(|n| (n.trim().parse::<f64>().expect("coordinate") * 10.).round() / 10.),
+        &radii,
+    )
 }

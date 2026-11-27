@@ -10,6 +10,6 @@ validity; there is no required document shape, profile class, prescribed axis bo
 or wall clearance. An unresolved consumed reference fails its feature. Existing
 failures may be repaired, and unconsumed topology may disappear.
 
-The window's Edit Sketch draft and Apply use this same library transaction. Undo/Redo
-returns to previously accepted candidate states. Publication checks the source version
-and never overwrites the source. See [generic sweep semantics](generic-sweeps.md).
+The window's **Edit sketch…** draft and **Finish** use this same library transaction.
+Undo/Redo returns to previously accepted candidate states. The source file changes only
+when the accepted session is saved; use Save As before editing to keep another file. See [generic sweep semantics](generic-sweeps.md).

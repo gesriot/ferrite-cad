@@ -1,106 +1,47 @@
 // SPDX-License-Identifier: MIT
-//! Gesture tests feed actual egui pointer/key events without a window or GPU.
+//! Viewport endpoint gestures and the original independent publication witnesses.
 #![allow(clippy::panic)]
-use super::{
-    tests::{click, frame, replace_field, text_at},
-    *,
-};
+use super::grid::Snap;
+use super::*;
 use ferritecad_jobs::PolygonExtrusion;
 
-pub(super) fn canvas(output: &egui::FullOutput) -> egui::Rect {
-    output
-        .shapes
-        .iter()
-        .find_map(|c| match &c.shape {
-            egui::Shape::Rect(r)
-                if (r.rect.width() - 510.).abs() < 1. && (r.rect.height() - 250.).abs() < 1. =>
-            {
-                Some(r.rect)
-            }
-            _ => None,
-        })
-        .expect("painted canvas")
+pub(crate) fn hold_vertex(e: &mut Editor) -> (egui::Context, egui::Pos2) {
+    crate::sketch_mode::tests::curve_edits::hold(e)
 }
-pub(super) fn press(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
-    frame(ctx, e, vec![egui::Event::PointerMoved(at)]);
-    button(ctx, e, at, true);
-}
-pub(super) fn button(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, pressed: bool) {
-    frame(
+pub(crate) fn release_vertex(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
+    // The egui release also ends any widget-owned pointer state.
+    super::tests::frame(
         ctx,
         e,
         vec![egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,
-            pressed,
+            pressed: false,
             modifiers: Default::default(),
         }],
     );
+    crate::sketch_mode::tests::curve_edits::release_held(e);
 }
-pub(super) fn move_to(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) -> egui::FullOutput {
-    frame(ctx, e, vec![egui::Event::PointerMoved(at)])
-}
-pub(super) fn key(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: Default::default(),
-    }
-}
-pub(super) fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos2 {
-    let rect = canvas(&frame(ctx, e, vec![]));
-    e.canvas.screen(
-        rect,
-        Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[i],
-    )
-}
-fn assert_revolve_edit_builds(request: &ferritecad_jobs::EditRequest) {
-    let bytes = std::fs::read(&request.source).expect("source");
+fn assert_revolve_edit_builds(path: &std::path::Path, points: &[[f64; 2]]) {
+    let bytes = std::fs::read(path).expect("source");
+    let (_window, mut request, _) = crate::sketch_mode::tests::curve_edits::polygon(path, points);
     let root = tempfile::tempdir().expect("destination");
-    let mut request = request.clone();
     request.destination = root.path().join("accepted.fcad");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let result = ferritecad_jobs::edit_copy(&request, &mut kernel, &Default::default())
         .expect("the kernel accepts the changed axis contact");
     assert!(result.rebuild.failed.is_empty() && result.rebuild.skipped.is_empty());
     assert!(request.destination.exists());
-    assert_eq!(std::fs::read(&request.source).expect("source"), bytes);
-}
-
-/// §30P: vertex 0 of the open draft pressed on the canvas and still held: the
-/// gesture is under way when this returns; `release_vertex` ends it.
-pub(crate) fn hold_vertex(e: &mut Editor) -> (egui::Context, egui::Pos2) {
-    let ctx = egui::Context::default();
-    frame(&ctx, e, vec![]);
-    frame(&ctx, e, vec![]);
-    let at = vertex(&ctx, e, 0);
-    press(&ctx, e, at);
-    (ctx, at)
-}
-pub(crate) fn release_vertex(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
-    button(ctx, e, at, false);
-}
-fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, label));
-}
-
-// No production test-only query API; inspect the draft and the two bounded states.
-impl Editor {
-    fn gesture_finished(&self) -> bool {
-        self.canvas.gesture.is_none() && !self.canvas.claimed_press
-    }
+    assert_eq!(std::fs::read(path).expect("source"), bytes);
 }
 
 #[test]
 fn snap_rounds_values_below_half_a_step_toward_the_nearer_grid_point() {
     let below_half = f64::from_bits(0.05_f64.to_bits() - 1);
-    assert_eq!(Snap::Tenth.apply(below_half), "0");
-    assert_eq!(Snap::Tenth.apply(-below_half), "0");
-    assert_eq!(Snap::Tenth.apply(0.05), "0.1");
-    assert_eq!(Snap::Tenth.apply(-0.05), "-0.1");
+    assert_eq!(Snap::Tenth.round(below_half), 0.);
+    assert_eq!(Snap::Tenth.round(-below_half), 0.);
+    assert_eq!(Snap::Tenth.round(0.05), 0.1_f64);
+    assert_eq!(Snap::Tenth.round(-0.05), -0.1_f64);
 }
 
 #[test]
@@ -112,7 +53,7 @@ fn snap_large_finite_displacements_remain_refused_without_overflow() {
             f64::MAX,
             -f64::MAX,
         ] {
-            let coordinate = snap.apply(value).parse::<f64>().expect("number");
+            let coordinate = snap.round(value);
             assert!(
                 PolygonExtrusion::new(
                     vec![[coordinate, 0.], [60., 0.], [60., 40.], [0., 40.]],
@@ -150,78 +91,15 @@ fn snap_preserves_invalid_coordinate_refusals_without_panicking() {
 
 #[test]
 fn snap_step_rounds_pointer_input_without_changing_fields_or_off_precision() {
-    assert_eq!(Snap::Off.apply(80.07456568667763), "80.07456568667763");
-    assert_eq!(Snap::One.apply(80.07456568667763), "80");
-    assert_eq!(Snap::Tenth.apply(0.1 + 0.2), "0.3");
-    assert_eq!(Snap::Tenth.apply(0.15), "0.2");
-    assert_eq!(Snap::Tenth.apply(-0.15), "-0.2");
-    assert_eq!(Snap::Tenth.apply(0.05), "0.1");
-    assert_eq!(Snap::Tenth.apply(-0.05), "-0.1");
-    assert_eq!(Snap::Five.apply(-7.5), "-10");
-    assert_eq!(Snap::Ten.apply(15.), "20");
-}
-
-pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
-    let original = e.edit_request().expect("original");
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, "1 mm"));
-    assert_eq!(e.canvas.snap, Snap::One);
-    let out = frame(ctx, e, vec![]);
-    click(ctx, e, text_at(&out, "Fit drawing"));
-    assert_eq!(
-        e.canvas.snap,
-        Snap::One,
-        "Fit does not change the document step"
-    );
-    for i in [1, 2] {
-        let before = e.draft.clone();
-        let history = e.undo.len();
-        let at = vertex(ctx, e, i);
-        // Slightly inaccurate pixels; snap, not numeric fields, yields 80 mm.
-        let dx = 20. * e.canvas.scale + 1.25;
-        press(ctx, e, at);
-        for fraction in [0.25, 0.5, 0.75, 1.] {
-            move_to(ctx, e, at + egui::vec2(dx * fraction, 0.));
-        }
-        button(ctx, e, at + egui::vec2(dx, 0.), false);
-        assert_eq!(e.draft.as_ref().expect("draft").points[i][0], "80");
-        assert_eq!(e.undo.len(), history + 1);
-        for j in 0..6 {
-            if j != i {
-                assert_eq!(
-                    e.draft.as_ref().expect("draft").points[j],
-                    before.as_ref().expect("draft").points[j]
-                );
-            }
-        }
-    }
-    let modified = e.edit_request().expect("edited");
-    assert_eq!(
-        crate::transaction_tests::vertices(&original)
-            .iter()
-            .map(|v| v.curve_id)
-            .collect::<Vec<_>>(),
-        crate::transaction_tests::vertices(&modified)
-            .iter()
-            .map(|v| v.curve_id)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(original.expected, modified.expected);
-    let at = vertex(ctx, e, 1);
-    let zero = vertex(ctx, e, 0);
-    let before = e.draft.clone();
-    let history = e.undo.len();
-    press(ctx, e, at);
-    move_to(ctx, e, zero);
-    assert!(
-        e.edit_request().is_ok(),
-        "Apply checks the resulting geometry"
-    );
-    frame(ctx, e, vec![key(egui::Key::Escape)]);
-    button(ctx, e, zero, false);
-    assert_eq!(e.draft, before);
-    assert_eq!(e.undo.len(), history);
-    assert!(e.edit_request().is_ok());
+    assert_eq!(Snap::Off.round(80.07456568667763), 80.07456568667763_f64);
+    assert_eq!(Snap::One.round(80.07456568667763), 80_f64);
+    assert_eq!(Snap::Tenth.round(0.1 + 0.2), 0.3_f64);
+    assert_eq!(Snap::Tenth.round(0.15), 0.2_f64);
+    assert_eq!(Snap::Tenth.round(-0.15), -0.2_f64);
+    assert_eq!(Snap::Tenth.round(0.05), 0.1_f64);
+    assert_eq!(Snap::Tenth.round(-0.05), -0.1_f64);
+    assert_eq!(Snap::Five.round(-7.5), -10_f64);
+    assert_eq!(Snap::Ten.round(15.), 20_f64);
 }
 
 pub(crate) fn attach_source_claim(source: &std::path::Path) {
@@ -332,16 +210,16 @@ pub(super) fn verify_published(
     let original = Document::open_read_only(source).expect("source");
     let choices = crate::sketch_facts::Source::read(&d).expect("catalog");
     assert_eq!(
-        choices.sketches[0]
-            .vertices
-            .as_ref()
-            .expect("vertices")
-            .iter()
-            .map(|v| v.start_mm)
-            .collect::<Vec<_>>(),
+        crate::transaction_tests::stored_vertices(
+            &choices,
+            crate::transaction_tests::line_sketch(&choices)
+        )
+        .iter()
+        .map(|v| v.start_mm)
+        .collect::<Vec<_>>(),
         expected.vertices
     );
-    let selected = choices.sketches[0].sketch;
+    let selected = crate::sketch_mode::tests::curve_edits::sketch_id(&choices);
     for old in original.objects().expect("objects") {
         let new = d.object(old.id).expect("object").expect("same ID");
         if old.id != selected {
@@ -359,15 +237,19 @@ pub(super) fn verify_published(
     let faces = crate::test_names::root_faces(&d, &built);
     assert_eq!(
         faces.len(),
-        choices.sketches[0]
-            .vertices
-            .as_ref()
-            .expect("vertices")
-            .len()
+        crate::transaction_tests::stored_vertices(
+            &choices,
+            crate::transaction_tests::line_sketch(&choices)
+        )
+        .len()
             + 2,
         "every curve side and both caps have a derived face name"
     );
-    let selected_curve = choices.sketches[0].vertices.as_ref().expect("vertices")[0].curve_id;
+    let selected_curve = crate::transaction_tests::stored_vertices(
+        &choices,
+        crate::transaction_tests::line_sketch(&choices),
+    )[0]
+    .curve_id;
     let mut checked = 0;
     for (input, face) in faces {
         if matches!(input, ferritecad_kernel::NamingInput::Curve(c) if c != selected_curve) {
@@ -481,9 +363,9 @@ fn native_dragged_sketch_worker_and_cli_preserve_identity_and_geometry() {
     super::tests::saved_sketch_and_cli(true);
 }
 
-/// §27C: a solid cylinder drawn on the real canvas and published by the
-/// window's worker and the peer CLI alike, then reopened and reshaped into a
-/// frustum by one drag, with the saved axis Line held on the axis.
+/// A cylinder created through viewport sketch and sweep widgets, compared with
+/// the independent CLI, then reshaped into a frustum through endpoint drags.
+/// The saved axis Line stays on the axis.
 #[test]
 fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     use crate::creates::tests::{ferritecad, read_semantics};
@@ -497,7 +379,6 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     let root = tempfile::tempdir().expect("directory");
     let ui = root.path().join("cylinder-ui.fcad");
     let cli = root.path().join("cylinder-cli.fcad");
-    let ctx = egui::Context::default();
     crate::sweeps::tests::window::creation::solid_cylinder(&ui, root.path());
     let independent = root.path().join("cli.fcad");
     assert_eq!(read_semantics(&ui).0, read_semantics(&independent).0);
@@ -588,107 +469,28 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
         .expect("accepted edit facts")
         .into()
     };
-    let choice = &reading.sketches[0];
-    let saved = choice.vertices.clone().expect("editable");
-    let Some(SketchProfileUse::FullTurnRevolve { axis, .. }) = choice.profile_use else {
-        panic!(
-            "a solid Revolve names its axis Line: {:?}",
-            choice.profile_use
-        )
-    };
-    assert_eq!(axis, ferritecad_document::RevolveAxis::SketchY);
-    let mut e = Editor::default();
-    assert!(e.begin_edit(&ui, &reading, choice.sketch));
-    frame(&ctx, &mut e, vec![]);
-    let out = frame(&ctx, &mut e, vec![]);
-    for absent in ["Revolve 360°", "Blind height mm", "Feature:"] {
-        assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
-            egui::Shape::Text(t) if t.galley.text() == absent)));
-    }
-    choose(&ctx, &mut e, "1 mm");
-    assert_eq!(e.canvas.snap, Snap::One);
-
-    // One drag, one Undo step: the top outer corner in by 5 mm.
-    let original = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 2);
-    let dx = -(5. * e.canvas.scale) - 1.25;
-    press(&ctx, &mut e, at);
-    for fraction in [0.25, 0.5, 0.75, 1.] {
-        move_to(&ctx, &mut e, at + egui::vec2(dx * fraction, 0.));
-        assert!(e.undo.is_empty(), "no per-frame history");
-    }
-    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[2],
-        ["5".to_owned(), "15".to_owned()]
-    );
-    assert_eq!(e.undo.len(), 1);
-    let frustum = e.draft.clone();
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft, original);
-    choose(&ctx, &mut e, "Redo draft");
-    assert_eq!(e.draft, frustum);
-
-    // Axis contact may change; Escape still cancels the whole gesture.
-    let at = vertex(&ctx, &mut e, 0);
-    let off = at + egui::vec2(3. * e.canvas.scale, 0.);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, off);
-    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
-    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
-    button(&ctx, &mut e, off, false);
-    assert_eq!(e.draft, frustum);
-    assert_eq!(e.undo.len(), 1);
-    // Both ends off the axis make a valid bored part; Undo restores the draft.
-    let before = e.draft.clone().expect("draft");
-    for i in [0, 3] {
-        e.draft.as_mut().expect("draft").points[i][0] = "1".into();
-    }
-    e.record(before);
-    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft, frustum);
-
-    choose(&ctx, &mut e, "Save edited copy…");
-    let mut request = e.take_edit_request().expect("submit");
-    assert_eq!(
-        crate::transaction_tests::vertices(&request)
-            .iter()
-            .map(|v| v.curve_id)
-            .collect::<Vec<_>>(),
-        saved.iter().map(|v| v.curve_id).collect::<Vec<_>>()
-    );
-    let kept = e.draft.clone();
+    assert_revolve_edit_builds(&ui, &[[3., 0.], [10., 0.], [5., 15.], [0., 15.]]);
+    assert_revolve_edit_builds(&ui, &[[1., 0.], [10., 0.], [5., 15.], [1., 15.]]);
+    let literal = [[0., 0.], [10., 0.], [5., 15.], [0., 15.]];
+    let (mut window, request, expected) =
+        crate::sketch_mode::tests::curve_edits::polygon(&ui, &literal);
+    assert_eq!(request.expected, reading.version);
+    assert!(crate::sketch_mode::tests::window::apply(
+        &mut window,
+        request
+    ));
     let edited = root.path().join("frustum-ui.fcad");
-    request.destination = edited.clone();
-    let mut edits = crate::edits::Edits::default();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let generation = edits
-        .start(request.clone(), move |r, g, c| {
-            crate::edits::spawn_edit(
-                r.source,
-                r.expected,
-                r.changes,
-                r.destination,
-                c,
-                move |result| tx.send((g, result)).expect("reply"),
-            )
-        })
-        .expect("worker");
-    let (g, result) = rx.recv().expect("completed");
-    assert_eq!(g, generation);
-    let path = finish_edit(&mut e, &mut edits, g, result).expect("published");
-    e.draft_load_finished(&path, false);
-    assert_eq!(e.draft, kept, "a failed Open restores the edited draft");
-    e.draft_published(&path);
-    e.draft_load_finished(&path, true);
-    assert!(!e.active());
+    assert!(
+        window
+            .save(ferritecad_jobs::SaveTarget::As(edited.clone()))
+            .published
+    );
 
     let edit = root.path().join("edit.json");
 
     std::fs::write(
         &edit,
-        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+        ferritecad_fixtures::edit_request_json(&expected).to_string(),
     )
     .expect("edit request");
     let peer = root.path().join("frustum-cli.fcad");
@@ -785,164 +587,24 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
         .expect("accepted edit facts")
         .into()
     };
-    let choice = &reading.sketches[0];
-    assert_eq!(choice.refusal, None);
-    let saved = choice.vertices.clone().expect("editable");
-    let Some(SketchProfileUse::PartialRevolve {
-        axis,
-        radians: angle,
-        ..
-    }) = choice.profile_use
-    else {
-        panic!("a solid sector: {:?}", choice.profile_use)
-    };
-    assert_eq!(angle.radians().to_degrees(), 220.);
-    assert_eq!(axis, ferritecad_document::RevolveAxis::SketchY);
-
-    // Opened from its own row among the saved-object actions.
-    let ctx = egui::Context::default();
-    let mut e = Editor::default();
-    super::tests::click_saved_action(
-        &ctx,
-        &mut e,
-        &source,
-        &reading,
-        &format!("Edit Sketch Profile — {}…", choice.sketch),
-    );
-    assert!(e.editing.is_some(), "the row opened the Sketch editor");
-    assert_eq!(
-        e.draft.as_ref().expect("draft").feature,
-        Feature::RevolveAngle
-    );
-    assert_eq!(e.draft.as_ref().expect("draft").angle, "220");
-    frame(&ctx, &mut e, vec![]);
-    let out = frame(&ctx, &mut e, vec![]);
-    let texts: Vec<String> = out
-        .shapes
-        .iter()
-        .filter_map(|c| match &c.shape {
-            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
-            _ => None,
-        })
-        .collect();
-    for wanted in [
-        "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody",
-        "Edit exact coordinates. Curve IDs, order, closure and the saved 220° sector about Y \
-         are retained.",
-        "Revolve: the saved sector, right-handed about the sketch Y axis through X = 0. Its \
-         angle is kept; change it with Edit Revolve angle.",
-        "Angle °",
-        "220",
-        "axis (Y) at X = 0 · radius X →",
-    ] {
-        assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
-    }
-    assert!(!texts.iter().any(|t| t.starts_with("Solid part: edge ")));
-    for absent in ["Feature:", "Revolve 360°", "Blind height mm"] {
-        assert!(!texts.iter().any(|t| t == absent), "{absent} shown");
-    }
-    choose(&ctx, &mut e, "1 mm");
-
-    // One drag, one Undo step: the top outer corner in by 5 mm.
-    let original = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 2);
-    let dx = -(5. * e.canvas.scale) - 1.25;
-    press(&ctx, &mut e, at);
-    for fraction in [0.25, 0.5, 0.75, 1.] {
-        move_to(&ctx, &mut e, at + egui::vec2(dx * fraction, 0.));
-    }
-    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
-    assert_eq!(
-        e.draft.as_ref().expect("draft").points[2],
-        ["5".to_owned(), "15".to_owned()]
-    );
-    assert_eq!(e.undo.len(), 1);
-    let dragged = e.draft.clone();
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft, original);
-    choose(&ctx, &mut e, "Redo draft");
-    assert_eq!(e.draft, dragged);
-    // Exact fields: the top of the part down to 12.5 on both vertices.
-    replace_field(&ctx, &mut e, "15", "12.5");
-    replace_field(&ctx, &mut e, "15", "12.5");
-    let exact = e.draft.clone().expect("draft");
-    assert_eq!(
-        exact.points,
-        [["0", "0"], ["10", "0"], ["5", "12.5"], ["0", "12.5"]]
-            .map(|p| p.map(str::to_owned))
-            .to_vec()
-    );
-    assert_eq!(exact.angle, "220", "the angle is not part of the edit");
-    // A valid axis-contact change can be published and the gesture cancelled.
-    let at = vertex(&ctx, &mut e, 0);
-    let off = at + egui::vec2(3. * e.canvas.scale, 0.);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, off);
-    assert_revolve_edit_builds(&e.edit_request().expect("payload"));
-    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
-    button(&ctx, &mut e, off, false);
-    assert_eq!(e.draft.as_ref(), Some(&exact));
-
-    choose(&ctx, &mut e, "Save edited copy…");
-    let request = e.take_edit_request().expect("submit");
+    assert_revolve_edit_builds(&source, &[[3., 0.], [10., 0.], [5., 12.5], [0., 12.5]]);
+    let literal = [[0., 0.], [10., 0.], [5., 12.5], [0., 12.5]];
+    let (mut window, request, expected) =
+        crate::sketch_mode::tests::curve_edits::polygon(&source, &literal);
     assert_eq!(request.expected, reading.version);
-    assert_eq!(
-        crate::transaction_tests::vertices(&request)
-            .iter()
-            .map(|v| v.curve_id)
-            .collect::<Vec<_>>(),
-        saved.iter().map(|v| v.curve_id).collect::<Vec<_>>()
-    );
-    let kept = e.draft.clone();
-    let mut edits = crate::edits::Edits::default();
-    for occupied in [true, false] {
-        let mut request = request.clone();
-        request.destination = root
-            .path()
-            .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
-        if occupied {
-            std::fs::write(&request.destination, b"keep").expect("sentinel");
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let generation = edits
-            .start(request.clone(), move |r, g, c| {
-                crate::edits::spawn_edit(
-                    r.source,
-                    r.expected,
-                    r.changes,
-                    r.destination,
-                    c,
-                    move |result| tx.send((g, result)).expect("reply"),
-                )
-            })
-            .expect("worker");
-        let (g, result) = rx.recv().expect("completed");
-        assert_eq!(g, generation);
-        let path = finish_edit(&mut e, &mut edits, g, result);
-        if occupied {
-            assert!(path.is_none(), "a taken destination publishes nothing");
-            assert_eq!(e.draft, kept, "and keeps the draft");
-            assert_eq!(
-                std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
-                b"keep"
-            );
-        } else {
-            let path = path.expect("published");
-            assert!(!e.active());
-            e.draft_load_finished(&path, false);
-            assert_eq!(e.draft, kept, "a failed Open restores the edited draft");
-            e.draft_published(&path);
-            e.draft_load_finished(&path, true);
-            assert!(!e.active());
-        }
-    }
+    assert!(crate::sketch_mode::tests::window::apply(
+        &mut window,
+        request
+    ));
+    let ui = root.path().join("ui.fcad");
+    assert!(window.save(ferritecad_jobs::SaveTarget::As(ui)).published);
 
     // The peer CLI, the same request, the same source.
     let edit = root.path().join("edit.json");
 
     std::fs::write(
         &edit,
-        ferritecad_fixtures::edit_request_json(&request.changes).to_string(),
+        ferritecad_fixtures::edit_request_json(&expected).to_string(),
     )
     .expect("edit request");
     let ui = root.path().join("ui.fcad");
@@ -1031,164 +693,4 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     };
     assert_eq!(export(&ui), export(&peer), "STL and FBX bytes, no mapping");
     assert_eq!(std::fs::read(&source).expect("source"), source_bytes);
-}
-
-/// Restore uses the same gesture gate as Undo. A drag that is already owned
-/// stays one checkpoint when its release lands on the button, and a press on
-/// the button during that drag does not write the saved snapshot.
-#[test]
-fn restore_saved_vertices_stays_out_of_one_drag() {
-    let (_root, path, reading) = crate::fillets::tests::rounded(2.375);
-    let id = reading.sketches[0].sketch;
-    let bytes = std::fs::read(&path).expect("source");
-    let mut e = Editor::default();
-    assert!(e.begin_edit(&path, &reading, id));
-    let ctx = egui::Context::default();
-    frame(&ctx, &mut e, vec![]);
-    frame(&ctx, &mut e, vec![]);
-    let saved = Editor::saved_coordinate_text(&crate::transaction_tests::vertices(
-        &e.editing.as_ref().expect("request").0,
-    ));
-    replace_field(&ctx, &mut e, "33", "36");
-    replace_field(&ctx, &mut e, "-4.5", "-2");
-    let pre = e.draft.clone().expect("two edited vertices");
-    assert_eq!(pre.points[0][0], "36");
-    assert_eq!(pre.points[2][0], "-2");
-    assert_ne!(pre.points, saved);
-    let undo_n = e.undo.len();
-    let out = frame(&ctx, &mut e, vec![]);
-    let button_at = text_at(&out, "Restore saved vertices");
-    let at = vertex(&ctx, &mut e, 1);
-
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
-    assert!(e.canvas.gesture.is_some());
-    assert_eq!(e.undo.len(), undo_n, "preview is not a step");
-    button(&ctx, &mut e, at + egui::vec2(48., 0.), false);
-    assert!(e.gesture_finished());
-    assert_eq!(e.undo.len(), undo_n + 1, "one drag, one checkpoint");
-    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "36");
-    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "-2");
-    assert_ne!(
-        e.draft.as_ref().expect("draft").points[1][0],
-        pre.points[1][0]
-    );
-    assert_ne!(e.draft.as_ref().expect("draft").points, saved);
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft.as_ref(), Some(&pre));
-    assert_eq!(e.redo.len(), 1);
-
-    // Release of the owned drag arrives over Restore. The drag remains the only step.
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
-    let during = e.undo.len();
-    frame(
-        &ctx,
-        &mut e,
-        vec![
-            egui::Event::PointerMoved(button_at),
-            egui::Event::PointerButton {
-                pos: button_at,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
-    );
-    assert!(e.gesture_finished());
-    assert_eq!(e.undo.len(), during + 1);
-    assert_ne!(e.draft.as_ref().expect("draft").points, saved);
-    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "36");
-    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "-2");
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft.as_ref(), Some(&pre));
-
-    // A press on Restore while the drag is owned cancels that drag and does not restore.
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
-    assert_ne!(e.draft.as_ref(), Some(&pre));
-    let during = e.undo.len();
-    frame(
-        &ctx,
-        &mut e,
-        vec![
-            egui::Event::PointerMoved(button_at),
-            egui::Event::PointerButton {
-                pos: button_at,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: button_at,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
-    );
-    assert_eq!(e.undo.len(), during);
-    assert_eq!(e.draft.as_ref(), Some(&pre));
-    assert_ne!(pre.points, saved);
-    assert!(e.gesture_finished());
-    assert!(e.take_edit_request().is_none());
-    assert_eq!(std::fs::read(&path).expect("source"), bytes);
-}
-
-/// §29C: the form of a chamfered plate keeps the prior drag semantics. One
-/// gesture is one Undo step; a vertex dragged alone leaves a drawing that is
-/// no plate, which is refused honestly while Undo, Redo and Restore stay
-/// available; no neighbouring vertex is moved to make the gesture succeed.
-#[test]
-fn chamfer_base_drag_is_one_undo_step_and_moves_no_neighbour() {
-    let (_root, path, reading) = crate::chamfers::tests::chamfered(2.375);
-    let id = reading.sketches[0].sketch;
-    let mut e = Editor::default();
-    assert!(e.begin_edit(&path, &reading, id));
-    let ctx = egui::Context::default();
-    frame(&ctx, &mut e, vec![]);
-    frame(&ctx, &mut e, vec![]);
-    let saved = e.draft.clone();
-    let at = vertex(&ctx, &mut e, 1);
-    press(&ctx, &mut e, at);
-    move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
-    assert!(e.undo.is_empty(), "the preview is not a step");
-    button(&ctx, &mut e, at + egui::vec2(40., 0.), false);
-    assert!(e.gesture_finished());
-    assert_eq!(e.undo.len(), 1, "one gesture, one Undo");
-    let dragged = e.draft.clone().expect("draft");
-    let before = saved.as_ref().expect("draft");
-    assert_ne!(dragged.points[1][0], before.points[1][0]);
-    for i in [0, 2, 3] {
-        assert_eq!(dragged.points[i], before.points[i], "vertex {i} was moved");
-    }
-    if ferritecad_fixtures::native_dependencies(&[(ferritecad_occt::is_available(), "OCCT")]) {
-        let mut request = e.edit_request().expect("payload");
-        let destination = tempfile::tempdir().expect("directory");
-        request.destination = destination.path().join("skewed.fcad");
-        let before = std::fs::read(&path).expect("source");
-        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        ferritecad_jobs::edit_copy(&request, &mut kernel, &Default::default())
-            .expect("the kernel accepts this nonrectangular profile under Chamfer");
-        let document =
-            ferritecad_document::Document::open_read_only(&request.destination).expect("published");
-        let rebuilt = ferritecad_eval::rebuild_cold(&document, &mut kernel, &Default::default())
-            .expect("rebuild");
-        assert!(rebuilt.all_built());
-        for object in document.objects().expect("objects") {
-            if let Some(shape) = rebuilt.shape(object.id) {
-                assert!(kernel.is_valid(shape).expect("independent BRepCheck"));
-            }
-        }
-        rebuilt.release_all(&mut kernel);
-        assert_eq!(std::fs::read(&path).expect("source"), before);
-    }
-    assert!(e.take_edit_request().is_none());
-    choose(&ctx, &mut e, "Undo draft");
-    assert_eq!(e.draft, saved);
-    choose(&ctx, &mut e, "Redo draft");
-    assert_eq!(e.draft.as_ref(), Some(&dragged));
-    choose(&ctx, &mut e, "Restore saved vertices");
-    assert_eq!(e.draft, saved);
-    assert!(e.edit_request().is_ok(), "the saved plate is publishable");
 }

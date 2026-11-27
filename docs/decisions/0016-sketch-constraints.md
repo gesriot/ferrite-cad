@@ -2,6 +2,9 @@
 
 **Status:** accepted design.
 
+[ADR 0018](0018-retire-canvas-forms.md) retires the separate saved vertex, circle
+and annulus forms; their replacements use the viewport sketch draft.
+
 ## Selection and rules
 
 Select points, curves and constraints in the drawing. Within the curve pick radius, give

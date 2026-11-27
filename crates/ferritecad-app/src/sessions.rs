@@ -2157,16 +2157,11 @@ pub(crate) mod tests {
         assert!(!private.join("out.stl").exists());
     }
 
-    /// What the saved Sketch form asks for when the right-hand vertices of the
-    /// plate it was opened on move `by` millimetres.
+    /// A session request moving the plate's stored right-hand vertices by `by` millimetres.
     fn vertex_request(path: &Path, by: f64) -> ferritecad_jobs::EditRequest {
         let reading = crate::sketch_facts::read(path).expect("reading");
-        let choice = reading
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch");
-        let vertices = choice.vertices.clone().expect("vertices");
+        let choice = crate::transaction_tests::line_sketch(&reading);
+        let vertices = crate::transaction_tests::stored_vertices(&reading, choice);
         let right = vertices
             .iter()
             .map(|v| v.start_mm[0])
@@ -2174,7 +2169,7 @@ pub(crate) mod tests {
         ferritecad_jobs::EditRequest {
             changes: crate::transaction_tests::vertex_changes(
                 path,
-                choice.sketch,
+                choice,
                 &(vertices
                     .into_iter()
                     .map(|mut v| {
@@ -2193,12 +2188,15 @@ pub(crate) mod tests {
 
     fn width_of(path: &Path) -> f64 {
         let reading = crate::sketch_facts::read(path).expect("reading");
-        let vertices = reading.sketches[0].vertices.clone().expect("vertices");
+        let vertices = crate::transaction_tests::stored_vertices(
+            &reading,
+            crate::transaction_tests::line_sketch(&reading),
+        );
         let xs = vertices.iter().map(|v| v.start_mm[0]);
         xs.clone().fold(f64::MIN, f64::max) - xs.fold(f64::MAX, f64::min)
     }
 
-    /// Apply vertices as the window runs it, on a thread, with the mock kernel.
+    /// Apply the sketch request through the session worker, with the mock kernel.
     fn apply_vertices(
         sessions: &mut Sessions,
         request: ferritecad_jobs::EditRequest,
@@ -2861,12 +2859,7 @@ pub(crate) mod tests {
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
-        let sketch = opened
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&opened);
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -3005,13 +2998,12 @@ pub(crate) mod tests {
             return;
         }
         let (root, path, _) = crate::fillets::tests::plate();
-        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+        native_vertex_gate(root.path(), &path, "33", "41.3", 9.5);
     }
 
-    /// §31D-2: the plate's vertex 2 moved with the mouse from another point as the anchor,
-    /// at a typed Length, then Apply, Undo, Redo, an unsaved export, Save and a cold
-    /// reopen, each against the command line given the coordinates the mouse made. The
-    /// marker is printed after the last assertion, so a skip cannot print it.
+    /// Move the plate's stored endpoints in the viewport, then apply, undo, redo,
+    /// export before Save and cold reopen, each compared with the CLI. Keep the
+    /// published geometry artifact for the independent reader.
     #[test]
     fn native_a_vertex_moved_from_another_anchor_is_applied_undone_exported_and_saved_like_the_command_line()
      {
@@ -3025,8 +3017,15 @@ pub(crate) mod tests {
             9.5,
             Some(("FCAD_SKETCH_ANCHOR_ARTIFACT_DIR", "anchor")),
             |after, reading, sketch| {
-                let (form, request) =
-                    crate::sketch::anchor_tests::anchored_apply(after, reading, sketch, "5");
+                assert_eq!(
+                    sketch,
+                    crate::sketch_mode::tests::curve_edits::sketch_id(reading)
+                );
+                let (form, request) = crate::sketch_mode::tests::curve_edits::detached_polygon(
+                    after,
+                    reading,
+                    &[[33., 15.5], [33., 10.5], [-4.5, 3.25], [-4.5, 15.5]],
+                );
                 assert_eq!(
                     crate::transaction_tests::vertices(&request)[0].start_mm,
                     [33., 15.5],
@@ -3056,7 +3055,7 @@ pub(crate) mod tests {
             return;
         }
         let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
-        native_vertex_gate(root.path(), &path, "33", "41.25", 9.5);
+        native_vertex_gate(root.path(), &path, "33", "41.3", 9.5);
     }
 
     /// What the document refuses it refuses whole: the form keeps its draft, the
@@ -3069,12 +3068,7 @@ pub(crate) mod tests {
         // A rectangle under a Chamfer: a plate the Chamfer no longer fits is refused.
         let (root, path, _) = crate::chamfers::tests::chamfered(2.375);
         let opened = crate::sketch_facts::read(&path).expect("reading");
-        let sketch = opened
-            .sketches
-            .iter()
-            .find(|s| s.refusal.is_none())
-            .expect("an editable Sketch")
-            .sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&opened);
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -3095,13 +3089,13 @@ pub(crate) mod tests {
 
         // The form accepts the payload and the session rebuild refuses the Chamfer.
         let mut form = crate::sketch::Editor::default();
-        form.set_session(true, true, true);
-        assert!(form.begin_edit(&accepted, &reading, sketch));
+        form.set_test_session(true, true, true);
+        assert!(form.begin_test_drawing(&accepted, &reading, sketch));
         let ctx = egui::Context::default();
         crate::sketch::tests::replace_in_form(&ctx, &mut form, "33", "-4.4");
         assert!(crate::sketch::tests::offers_apply(&ctx, &mut form));
-        crate::sketch::tests::click_label(&ctx, &mut form, "Apply vertices");
-        let forged = form.take_apply_request().expect("form transaction");
+        crate::sketch::tests::click_label(&ctx, &mut form, "Finish");
+        let forged = form.viewport.take_request().expect("form transaction");
         assert!(form.active());
         let before = (sessions.dirty(), sessions.can_undo(), sessions.can_redo());
         let files = private_files(&sessions);
@@ -3133,12 +3127,13 @@ pub(crate) mod tests {
             let (root, constrained, _) = constrained_chamfer_plate();
             let reading = crate::sketch_facts::read(&constrained).expect("reading");
             let mut form = crate::sketch::Editor::default();
-            form.set_session(true, true, false);
-            let editable = reading
-                .sketches
-                .iter()
-                .any(|choice| form.begin_edit(&constrained, &reading, choice.sketch));
-            assert!(editable, "a dimensioned plate must keep its vertex form");
+            form.set_test_session(true, true, false);
+            let editable = form.begin_test_drawing(
+                &constrained,
+                &reading,
+                crate::transaction_tests::line_sketch(&reading),
+            );
+            assert!(editable, "a dimensioned plate must keep its sketch command");
             assert!(form.active());
             drop(root);
         }

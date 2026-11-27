@@ -296,7 +296,7 @@ fn cut_apply_busy_guard_proves_idle_request_then_excludes_other_work_and_forms()
     c.sketch.cuts.dismiss();
     assert!(
         c.sketch
-            .begin_edit(&path, &reading, selected(&reading, 0).profile_sketch)
+            .begin_test_drawing(&path, &reading, selected(&reading, 0).profile_sketch)
     );
     assert!(!ready(&c, &s));
     c.sketch.dismiss();

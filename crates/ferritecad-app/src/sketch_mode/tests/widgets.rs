@@ -37,10 +37,14 @@ impl Ui {
             &w.input,
             self.confirmation.is_some(),
         );
-        w.creates
-            .sketch
-            .viewport
-            .set_apply(w.sessions.takes_form_apply());
+        let apply = crate::numeric::can_apply(
+            &w.creates,
+            &crate::Loads::default(),
+            &crate::exports::Exports::default(),
+            &w.edits,
+            &w.sessions,
+        );
+        w.creates.sketch.viewport.set_apply(apply);
         w.creates
             .sketch
             .sweeps

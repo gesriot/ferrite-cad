@@ -312,13 +312,13 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     );
     w.creates.sketch = editor;
-    crate::sketch::tests::press(&mut w.creates.sketch, "Undo draft");
-    let polygon = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A's draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Undo");
+    let polygon = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("A's draft");
     assert!(polygon.2 > 0, "a draft Redo to keep");
 
     // New owns its literal inputs while A's editor and both histories are parked.
@@ -334,9 +334,9 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     assert_eq!(w.discard_new(&restores).as_deref(), Some(&*b_file));
     assert!(w.typed_new().is_none() && !w.tabs.has_aside());
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(polygon.clone()),
-        "A's vertex form and its draft history"
+        "A's sketch form and its draft history"
     );
     assert!(w.sessions.dirty() && w.sessions.takes_form_apply());
 
@@ -347,12 +347,12 @@ fn a_saved_object_form_survives_a_discarded_drawing_exactly() {
     assert!(!w.creates.sketch.saved_object_open() && w.typed_new().is_none());
     w.switch(a);
     assert_eq!(
-        crate::sketch::tests::vertex_draft(&w.creates.sketch),
+        crate::sketch::tests::sketch_draft(&w.creates.sketch),
         Some(polygon.clone()),
         "as left, after the round trip"
     );
-    crate::sketch::tests::press(&mut w.creates.sketch, "Redo draft");
-    let redone = crate::sketch::tests::vertex_draft(&w.creates.sketch).expect("A's draft");
+    crate::sketch::tests::press(&mut w.creates.sketch, "Redo");
+    let redone = crate::sketch::tests::sketch_draft(&w.creates.sketch).expect("A's draft");
     assert_eq!((redone.1, redone.2), (polygon.1 + 1, polygon.2 - 1));
     loads.stop_all();
     w.creates.stop_all();
@@ -926,7 +926,7 @@ fn open_over_new_recipe_on_owners(root: &Path) {
     let (editor, _) = crate::sketch::tests::typed_apply(
         &current,
         &reading,
-        reading.sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         "80",
         "90",
     );

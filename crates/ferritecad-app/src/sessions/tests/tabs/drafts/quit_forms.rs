@@ -629,15 +629,15 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     w.edits.start(copy, |_, _, _| std::thread::spawn(|| {}));
     assert!(!w.begin_quit());
     w.edits.stop_all();
-    assert!(
-        w.creates
-            .sketch
-            .begin_edit(&source, &reading, reading.sketches[0].sketch)
-    );
+    assert!(w.creates.sketch.begin_test_drawing(
+        &source,
+        &reading,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading)
+    ));
     let (ctx, at) = crate::sketch::drag_tests::hold_vertex(&mut w.creates.sketch);
     assert!(!w.begin_quit());
     crate::sketch::drag_tests::release_vertex(&ctx, &mut w.creates.sketch, at);
-    // §31I: a handle held on a Circle's canvas holds Quit as a vertex does.
+    // A circle-centre handle in sketch mode holds Quit as a line endpoint does.
     w.creates.sketch.dismiss();
     assert!(crate::sketch::analytic_tests::begin_saved_circle(
         &mut w.creates.sketch,
@@ -646,10 +646,10 @@ fn quit_keeps_foreground_new_export_and_gesture_holds() {
     let (ctx, at) = crate::sketch::analytic_tests::hold_handle(&mut w.creates.sketch);
     assert!(!w.begin_quit(), "a held Circle handle lost its hold");
     crate::sketch::analytic_tests::release_handle(&ctx, &mut w.creates.sketch, at);
-    // §31J: a pan of its view holds Quit as well.
-    let (ctx, at) = crate::sketch::navigation_tests::hold_pan(&mut w.creates.sketch);
+    // A viewport pan holds Quit as well.
+    crate::sketch::navigation_tests::hold_camera(&mut w.input);
     assert!(!w.begin_quit(), "a held pan lost its hold");
-    crate::sketch::navigation_tests::release_pan(&ctx, &mut w.creates.sketch, at);
+    crate::sketch::navigation_tests::release_camera(&mut w.input);
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn native_cancelled_quit_returns_form_for_apply_export_save_and_final_quit() {
     w.creates.sketch = crate::sketch::tests::analytic_apply::typed_circle(
         &source,
         &reading,
-        reading.circle_sketches[0].sketch,
+        crate::sketch_mode::tests::curve_edits::sketch_id(&reading),
         ["-3.5", "4.25"],
         "8",
     )

@@ -1,6 +1,6 @@
 # §25K — правка сохранённой окружности в новой копии
 
-[Локальные доказательства и ограничения](edit-circle-copy-verification.md).
+[sketch mode](sketch-mode.md).
 Тот же identity-preserving copy-маршрут, что у
 [координатной правки Line Sketch (§25B)](edit-sketch-copy.md): один снимок,
 baseline cold rebuild, проверка refs, повторная проверка версии источника,
@@ -8,7 +8,13 @@ baseline cold rebuild, проверка refs, повторная проверк�
 подготовленный payload: центр и радиус одной сохранённой аналитической
 окружности, созданной [§25J](circle-sketch-extrude.md).
 
-UI: `Edit circle <имя> — <UUID>…`; CLI:
+The window uses **Edit sketch…**, endpoint or center dragging on a grid, and
+**Finish**. Radius and Diameter need PlaneGCS; delete a temporary dimension before
+Finish to retain only its geometry. Without PlaneGCS, the viewport can move a circle
+center but cannot resize its rim yet. Use CLI `edit` for that radius change.
+See [sketch mode](sketch-mode.md).
+
+CLI:
 
 ```text
 ferritecad edit-circle <source.fcad> --sketch UUID --expect-version HASH \
@@ -44,21 +50,12 @@ Extrude, другие плоскости и связи, и payload, которы
 смешанных профилей, рисования и drag мышью, booleans, in-place Save и новой
 схемы БД здесь нет; контракты Line-редакторов не ослаблены.
 
-## Работа в UI
+## In the window
 
-Форма показывает сохранённые Sketch/Circle UUID, центр, радиус и неизменяемую
-высоту. Введите Center X/Y и Radius, затем нажмите **Confirm draft numbers**:
-одно подтверждение всех трёх полей создаёт один шаг Undo/Redo, максимум 128.
-Промежуточный ввод (`-`, пустое поле) не попадает в историю; эквивалентное
-написание того же числа не создаёт нового шага. Save доступен после подтверждения полей. С §30D документу применяет отдельное действие **Apply circle** ([контракт](analytic-sketch-session-apply.md)); **Confirm draft numbers** по-прежнему только подтверждает поля в истории черновика.
-Пока worker занят, поля и действия формы недоступны.
-
-Save Cancel, отказ операции и устаревший ответ сохраняют черновик. После
-публикации открывается новая копия; до принятия сцены сохраняется один
-резервный черновик. Если загрузка или подготовка сцены откажет, форма и её
-история восстанавливаются, опубликованный файл остаётся на диске. Успешное
-принятие сцены завершает редактирование. Это поведение проверено headless;
-интерактивный GUI smoke отложен.
+Finish applies one transaction to the owning document session. The draft survives
+an edit refusal; the accepted scene ends it. Save writes the accepted version, and
+Undo restores the previous version. To work on another file, use Save As before
+editing or CLI `edit` with an output destination. The old sketch-copy form is gone.
 
 ## Discovery
 
@@ -102,7 +99,7 @@ Save Cancel, отказ операции и устаревший ответ со
 * `request_version` — целое 1. **Единственное** написание версии: `schema_version`
   запроса создания здесь лишнее поле и отвергается.
 * `curve_id` — canonical UUIDv7 **сохранённой** окружности. Чужой UUID
-  отвергается; форма UI подставляет сохранённую identity, а не текст из поля.
+  отвергается; the request names the saved identity explicitly.
 * `center_mm` — ровно две конечные координаты в mm; ноль и отрицательные
   допустимы.
 * `radius_mm` — конечное строго положительное число в mm.

@@ -36,7 +36,7 @@ fn open_action(w: &mut Window, asked: ModelAction) -> bool {
         launch(
             asked,
             &reading,
-            &crate::sketch::accepted::Accepted::default(),
+            &w.scene.sketches,
             &mut w.creates,
             &mut w.edits,
             &w.sessions,
@@ -611,7 +611,11 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
             ModelEdit::Chamfer,
         ),
         (&rp, revolve, ModelEdit::RevolveAngle),
-        (&rp, rs.sketches[0].sketch, ModelEdit::Vertices),
+        (
+            &rp,
+            crate::sketch_mode::tests::curve_edits::sketch_id(&rs),
+            ModelEdit::Sketch,
+        ),
         (
             &rp,
             rs.constraint_sketches[0].sketch,

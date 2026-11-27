@@ -1020,7 +1020,7 @@ fn native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid() {
     // saved approximation, which is what this slice promises and all it does.
     analytic_matches(&analytic(&freed), boundary_id, bore_id, 6.75, 3.5, 15.0);
 
-    // Taking everything off hands the profile back to the annulus editor.
+    // Removing all constraints returns the profile to its saved geometry.
     let ids: Vec<Value> = catalog["sketches"][0]["constraints"]
         .as_array()
         .expect("stored")

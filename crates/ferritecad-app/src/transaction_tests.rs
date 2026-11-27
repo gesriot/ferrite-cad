@@ -419,3 +419,88 @@ pub fn assert_refused(request: &EditRequest, names: &[&str]) {
     assert!(!request.destination.exists());
     assert_eq!(std::fs::read(&request.source).expect("source"), bytes);
 }
+
+/// Explicit geometry for independent CLI references in window tests.
+pub(crate) fn circle_change(
+    sketch: ObjectId,
+    curve: StableEntityId,
+    center: [f64; 2],
+    radius: f64,
+) -> ferritecad_types::Result<EditChange> {
+    let geometry = SketchGeometry::Circle {
+        center: Point2::new(center[0], center[1])?,
+        radius,
+    };
+    geometry.validate()?;
+    Ok(EditChange::SetCurveGeometry {
+        sketch,
+        curve,
+        geometry,
+    })
+}
+
+/// The line-only fixture's stored starts and identities, without an editor catalogue.
+pub fn stored_vertices(source: &crate::sketch_facts::Source, id: ObjectId) -> Vec<SketchVertex> {
+    let object = source
+        .objects
+        .iter()
+        .find(|o| o.id == id)
+        .expect("fixture object");
+    let ObjectPayload::Sketch(sketch) = &object.payload else {
+        panic!("fixture sketch")
+    };
+    sketch
+        .curves
+        .iter()
+        .map(|curve| {
+            let SketchGeometry::Line { start, .. } = curve.geometry else {
+                panic!("fixture line")
+            };
+            SketchVertex {
+                curve_id: curve.id,
+                start_mm: [start.x, start.y],
+            }
+        })
+        .collect()
+}
+
+/// The first line sketch in fixtures whose later sketches are circular Cut tools.
+pub fn line_sketch(source: &crate::sketch_facts::Source) -> ObjectId {
+    source
+        .objects
+        .iter()
+        .find(|o| {
+            matches!(&o.payload, ObjectPayload::Sketch(s)
+        if s.curves.iter().all(|c| matches!(c.geometry, SketchGeometry::Line { .. })))
+        })
+        .expect("fixture line sketch")
+        .id
+}
+
+/// The single-circle fixture's stored geometry; no editor recognition is needed.
+pub fn stored_circle(source: &crate::sketch_facts::Source) -> (ObjectId, CircleValues) {
+    source
+        .objects
+        .iter()
+        .find_map(|object| {
+            let ObjectPayload::Sketch(sketch) = &object.payload else {
+                return None;
+            };
+            if sketch.curves.len() != 1 {
+                return None;
+            }
+            let curve = &sketch.curves[0];
+            let SketchGeometry::Circle { center, radius } = curve.geometry else {
+                return None;
+            };
+            Some((
+                object.id,
+                CircleValues {
+                    curve_id: curve.id,
+                    center_mm: [center.x, center.y],
+                    radius_mm: radius,
+                },
+            ))
+        })
+        .expect("single-circle fixture")
+}

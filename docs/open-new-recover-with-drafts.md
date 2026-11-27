@@ -40,7 +40,7 @@ widget and its handler ask the same function.
 ## Rules
 
 1. **The draft is the tab's.** A's forms are §30P's `tabs::Draft` — the window's
-   `Edits` height form and `sketch::Editor` (vertices, Circle/annulus, Revolve angle,
+   `Edits` height form and `sketch::Editor` (viewport sketch, Revolve angle,
    constraints, Cut/Fillet/Chamfer Add and Edit), moved whole as values, keyed by A's
    runtime `TabId`, bound to A's current `Snapshot` by identity. Nothing is copied into
    a new document, serialised, re-read or normalised; two copies of one file (one
@@ -87,9 +87,9 @@ widget and its handler ask the same function.
    wait for exports and their questions; Open retains its prior export cancellation. CLI, document schema, capabilities and JSON v1 are unchanged. Jobs recovery cleanup
    avoids locking published records (review fix below).
 
-A reading that arrives during a vertex drag in A's form parks the form with it; when A
-is shown again the canvas sees no pressed button and reverts the unfinished drag
-(its existing lost-release rule), so the draft returns as it was before that drag.
+A reading that arrives during a sketch-handle drag in A's form parks the form with it.
+Parking clears the transient pointer gesture and restores the drawing from before that
+drag; returning to A cannot resume a held pointer from the previous tab.
 
 ## Found defects
 
@@ -156,10 +156,10 @@ without native geometry*, exact name and marker each):** the real owners (`Loads
   closing the recovered tab retires its record only.
 * `sketch::tests::new_over_forms::new_opened_over_a_floating_form_shares_no_focus_or_text_with_it`
   (`FCAD_30Q_NEW_FORM_FOCUS_EXECUTED`) — real egui widgets drawn as the window draws
-  them: A's floating Circle form has the keyboard; the drawing's button beside it
-  raises a request (A's form untouched); after `open_new` keys reach none of New's
-  fields; New's own Circle field takes typing; after its Cancel A's text and history are
-  exact and typing without a click changes nothing; the same with New's form fields.
+  them: A's retained floating Revolve-angle form has the keyboard; opening New
+  keeps that form untouched. New's sample-width field owns subsequent typing;
+  after Cancel, A's angle text and history return exactly and typing without
+  a click changes nothing.
 * `stub_open_new_and_recover_beside_a_form_are_refused_at_the_picture_and_keep_it`
   (`FCAD_30Q_STUB_OVER_FORMS_EXECUTED`, executes only without a kernel) — the
   production `open_for_view`, `run_create` and `recover_for_view` are refused at their
@@ -301,13 +301,14 @@ output.
    **New** and **Recover** stay enabled.
 3. **Open…** `$ROOT/b.fcad`: a second tab, shown, with no height form.
 4. Press `a.fcad`: the form shows `2..6`. Replace it with `26` → **Apply** (`*a.fcad`).
-5. **Edit Sketch …** (the saved Sketch) → replace both `80` with `90`. Do not Apply.
+5. Select A's sketch and **Edit sketch…**. Set grid **0.1 mm**, guides **Off**;
+   move each endpoint at X `80` to X `90`, preserving Y. Do not Finish.
 6. Press **New…** beside A's form, choose **Sample plate** and type a width.
    Press **Cancel**. A's sketch form returns with both `90`.
 7. **New** → **Sample plate** → Width `50`, Depth `30`, Height `7` → **Create
    document**: a `*Untitled` tab, shown, with no form.
 8. **Recover** `plate.fcad`: a `*plate.fcad (recovered)` tab; the list is empty.
-9. Press `*a.fcad`: both `90` are there → **Apply vertices**. **Export STL…** →
+9. Press `*a.fcad`: both corners at X `90` are there → **Finish**. **Export STL…** →
    `$ROOT/a-unsaved.stl`; **Export FBX…** → `$ROOT/a-unsaved.fbx`. **Save** (`Cmd+S`).
 10. Press `*plate.fcad (recovered)` → **Save** → `$ROOT/c.fcad`.
 11. Press `*Untitled` → **Save** → `$ROOT/n.fcad`.
