@@ -46,7 +46,8 @@ hover use distinct colours.
 
 In **Select**, drag a line end, circle centre or standalone point. A click still selects it.
 Dragging elsewhere orbits the view. Without constraints, only the handle you pressed moves,
-even if another curve has an endpoint at the same coordinates. With constraints, the solver
+even if another curve has an endpoint at the same coordinates. To move a corner as one vertex,
+select both endpoints and make them **Coincident**. With constraints, the solver
 moves the drawing to the reachable position closest to the pointer. A horizontal line with
 one fixed end lets its other end slide horizontally. A fixed point stays still. If a sample
 fails, the form shows the reason and keeps the last successful position. Dragging a constrained
