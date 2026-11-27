@@ -10,6 +10,7 @@
 
 use super::angle::{opened_form, pair};
 use super::*;
+use crate::feature_tests::U_PROFILE;
 use ferritecad_document::ObjectPayload;
 
 fn collinear_of(a: StableEntityId, b: StableEntityId) -> AddSketchConstraint {
@@ -259,21 +260,6 @@ fn a_stored_collinear_is_replaced_by_a_parallel_in_one_exact_remove_and_add() {
     assert_eq!(crate::transaction_tests::constraints(&request).add.len(), 1);
 }
 
-/// A U with two disjoint, parallel rims at different heights: the right one
-/// (Line 1) at y 22 and the left one (Line 5) at y 20. Neither touches the
-/// other and no horizontal or vertical is stored, so only a collinearity can
-/// bring them onto one line.
-pub(crate) const U_PROFILE: [[f64; 2]; 8] = [
-    [50., 22.],
-    [35., 22.],
-    [35., 8.],
-    [15., 8.],
-    [15., 20.],
-    [0., 20.],
-    [0., 0.],
-    [50., 0.],
-];
-
 /// The signed distance of `p` from the line through `a` and `b`, and the sine of
 /// the angle between the two Lines, from solved points.
 fn measure(vectors: &[[[f64; 2]; 2]], first: usize, second: usize) -> ([f64; 4], f64, [f64; 2]) {
@@ -299,8 +285,8 @@ fn measure(vectors: &[[[f64; 2]; 2]], first: usize, second: usize) -> ([f64; 4],
     )
 }
 
-/// Native, once: the rims of a U picked in the form and Collinear added, saved
-/// by the window's worker; then the same request through the peer CLI. The two
+/// Pick the rims in the viewport and publish their collinearity through Finish.
+/// Compare the accepted document with the independent CLI edit. The two
 /// files must carry the same rule, the same identities and SQL, solve to the
 /// same line (distances measured from the reopened file's solved points) and
 /// export the same bytes; a Parallel on the same pair is the negative control
@@ -342,19 +328,11 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     let saved = choice.stored.clone().expect("stored");
     let before = std::fs::read(&source_path).expect("source bytes");
 
-    // The window: pair the rims (Lines 1 and 5) and add the collinearity.
-    let (mut e, ctx) = opened_form(&source_path, &source);
-    pair(&ctx, &mut e, 1, 5);
-    click(&ctx, &mut e, "Add Collinear");
-    assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
-    click(&ctx, &mut e, "Save constraints copy…");
-    let request = e.take_request().expect("widget request");
-    let expected = collinear_of(saved.curves[0].id, saved.curves[4].id);
-    assert_eq!(
-        crate::transaction_tests::constraints(&request).add,
-        vec![expected]
-    );
-    let ui = root.path().join("ui.fcad");
+    let window = crate::sketch_mode::tests::collinear::constrain_u(&source_path, sketch);
+    let ui = window
+        .sessions
+        .export_path()
+        .expect("accepted collinearity");
     let work = |request: EditRequest, to: &Path| {
         let mut request = request;
         request.destination = to.to_path_buf();
@@ -383,11 +361,6 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
         let mut idle = Editor::default();
         (finish_edit(&mut idle, &mut state, g, result), dof)
     };
-    let (made, dof) = work(request.clone(), &ui);
-    assert_eq!(made, Some(ui.clone()), "an accepted copy");
-    // 16 vertex coordinates, minus the two a collinearity of disjoint Lines takes.
-    assert_eq!(dof, Some(Some(14)));
-
     // The peer: the same spelling, as request v1, and a Parallel for contrast.
     let run = |args: &[&std::ffi::OsStr]| {
         let out = std::process::Command::new(ferritecad())
@@ -422,7 +395,10 @@ fn native_collinear_form_worker_and_cli_publish_the_same_geometry() {
     peer(
         &source_path,
         &source.version,
-        &crate::transaction_tests::constraints(&request),
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: vec![collinear_of(saved.curves[0].id, saved.curves[4].id)],
+        },
         &cli,
     );
     let control = root.path().join("parallel.fcad");

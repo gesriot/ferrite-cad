@@ -545,5 +545,6 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
     );
 }
 
+pub(crate) mod collinear;
 mod dragging;
 mod saved_angle;

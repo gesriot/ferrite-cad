@@ -8,6 +8,21 @@ use ferritecad_document::{
 use ferritecad_jobs::EditRequest;
 use ferritecad_types::ObjectId;
 
+/// A U with two disjoint, parallel rims at different heights: the right one
+/// (Line 1) at y 22 and the left one (Line 5) at y 20. Neither touches the
+/// other and no horizontal or vertical is stored, so only a collinearity can
+/// bring them onto one line.
+pub(crate) const U_PROFILE: [[f64; 2]; 8] = [
+    [50., 22.],
+    [35., 22.],
+    [35., 8.],
+    [15., 8.],
+    [15., 20.],
+    [0., 20.],
+    [0., 0.],
+    [50., 0.],
+];
+
 pub(crate) trait RequestFacts {
     fn addition(&self) -> (ObjectId, ObjectId, &FeatureAddition);
     fn fillet(&self) -> EdgeFillet;
