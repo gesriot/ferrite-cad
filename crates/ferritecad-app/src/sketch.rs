@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Tab-owned sketch, sweep and numeric forms, separate from the accepted scene.
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
@@ -57,17 +56,6 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 }
 
 impl Editor {
-    pub(crate) fn edge_and_piece_requests(&mut self) -> impl Iterator<Item = EditRequest> + use<> {
-        [
-            self.fillets.take_apply_request(),
-            self.fillets.take_add_request(),
-            self.chamfers.take_apply_request(),
-            self.chamfers.take_add_request(),
-            self.keep_solids.take_request(),
-        ]
-        .into_iter()
-        .flatten()
-    }
     pub(crate) fn only_editing_cut(&self) -> bool {
         self.cuts.editing_saved()
             && self.angle.editing_angle.is_none()
@@ -425,6 +413,7 @@ pub(crate) fn number(s: &str) -> Result<f64> {
 pub(crate) mod tests {
     use super::*;
     use crate::sketch_facts::SketchProfileUse;
+    use ferritecad_jobs::EditRequest;
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
     /// §30Q: New over a tab's floating form, through real widgets.

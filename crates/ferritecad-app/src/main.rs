@@ -49,6 +49,10 @@ mod macos_quit;
 mod sketch_conflicts;
 use commands::Chosen;
 mod numeric;
+use numeric::{
+    can_add_chamfer, can_add_cut, can_add_fillet, can_apply_angle, can_apply_chamfer_distance,
+    can_apply_cut, can_apply_fillet_radius, can_apply_height, can_keep_solids,
+};
 mod parameters;
 use numeric::mm;
 use workspace::form_window;
@@ -938,7 +942,7 @@ fn height_state(
     ferritecad_ui::HeightState {
         running: false,
         can_cancel: false,
-        apply: sessions.takes_form_apply() && idle,
+        apply: can_apply_height(creates, loads, exports, edits, sessions),
         copy: idle && !edits.running() && !sessions.dirty(),
         unsaved: sessions.dirty(),
     }
@@ -1186,104 +1190,6 @@ fn can_apply_constraints(
     sessions: &sessions::Sessions,
 ) -> bool {
     creates.can_apply_constraints()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the saved Revolve angle form may offer Apply.
-fn can_apply_angle(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_angle()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the saved Cut form may offer Apply.
-fn can_apply_cut(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_cut()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the Cut creation form may offer Add.
-fn can_add_cut(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_add_cut()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the saved Fillet radius form may offer Apply.
-fn can_apply_fillet_radius(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_fillet_radius()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the Fillet creation form may offer Add.
-fn can_add_fillet(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_add_fillet()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the saved Chamfer distance form may offer Apply.
-fn can_apply_chamfer_distance(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_apply_chamfer_distance()
-        && document_io_idle(loads, exports)
-        && !edits.busy()
-        && sessions.takes_form_apply()
-}
-
-/// Whether the Chamfer creation form may offer Add.
-fn can_add_chamfer(
-    creates: &creates::Creates,
-    loads: &Loads,
-    exports: &exports::Exports,
-    edits: &edits::Edits,
-    sessions: &sessions::Sessions,
-) -> bool {
-    creates.can_add_chamfer()
         && document_io_idle(loads, exports)
         && !edits.busy()
         && sessions.takes_form_apply()
@@ -3638,6 +3544,13 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.edits,
                     &self.sessions,
                 );
+                let keep_ready = can_keep_solids(
+                    &self.creates,
+                    &self.loads,
+                    &self.exports,
+                    &self.edits,
+                    &self.sessions,
+                );
                 let (export_status, stl_form) = self.exports.presentation();
                 let (export_line, export_omissions) = exports::words(export_status);
                 let export = exports::shown(export_status, &export_line, &export_omissions);
@@ -3666,6 +3579,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &live.scene,
                     &self.sessions,
                     session_idle && !self.edits.busy(),
+                    keep_ready,
                     [radius_apply, distance_apply],
                     [fillet_add, chamfer_add],
                 );
@@ -3957,7 +3871,11 @@ impl ApplicationHandler<AppEvent> for App {
                             ferritecad_ui::EditChoice::Begin => self.begin_edit(),
                             ferritecad_ui::EditChoice::Apply => {
                                 if let Some(request) = self.edits.apply_request() {
-                                    self.apply_expressions(request.expected, request.changes);
+                                    self.apply_expressions(
+                                        can_apply_height,
+                                        request.expected,
+                                        request.changes,
+                                    );
                                 }
                             }
                             ferritecad_ui::EditChoice::Save => {
@@ -3986,16 +3904,32 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.constraints.take_apply_request()
                         {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(
+                                numeric::can_apply,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.sweeps.take_request() {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(
+                                numeric::can_apply,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.viewport.take_request() {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(
+                                numeric::can_apply,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_apply_angle_request() {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(
+                                can_apply_angle,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.take_angle_edit_request() {
                             self.ask_where_to_edit(
@@ -4014,10 +3948,14 @@ impl ApplicationHandler<AppEvent> for App {
                             );
                         }
                         if let Some(request) = self.creates.sketch.cuts.take_apply_request() {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(
+                                can_apply_cut,
+                                request.expected,
+                                request.changes,
+                            );
                         }
                         if let Some(request) = self.creates.sketch.cuts.take_add_request() {
-                            self.apply_expressions(request.expected, request.changes);
+                            self.apply_expressions(can_add_cut, request.expected, request.changes);
                         }
                         if let Some(request) = self.creates.sketch.take_cut_edit_request() {
                             self.ask_where_to_edit(
@@ -4043,9 +3981,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 request.changes,
                             );
                         }
-                        for request in self.creates.sketch.edge_and_piece_requests() {
-                            self.apply_expressions(request.expected, request.changes);
-                        }
+                        self.apply_edge_and_piece_requests();
                         if let Some(request) = self.creates.sketch.take_chamfer_request() {
                             self.ask_where_to_edit(
                                 numeric::Form::Chamfer,
@@ -18967,6 +18903,14 @@ mod tests {
 
         let closed = height_state(&edits, &sessions, &creates, &loads, &exports);
         assert!(closed.copy && closed.apply && !closed.unsaved);
+        assert!(can_keep_solids(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        sessions.hold_stale_draft();
+        assert!(!can_keep_solids(
+            &creates, &loads, &exports, &edits, &sessions
+        ));
+        sessions.release_stale_draft();
         // The form is open: a second form may not start, but this one's buttons stay.
         assert!(edits.begin(&file, &reading));
         assert!(edits.busy(), "an open form is busy for starting another");
@@ -18976,6 +18920,17 @@ mod tests {
             "the open form switched off its own Save new file"
         );
         assert!(open.apply && !open.unsaved);
+        let allowed =
+            |guard: numeric::FormGuard| guard(&creates, &loads, &exports, &edits, &sessions);
+        assert!(allowed(can_apply_height));
+        assert!(!allowed(can_keep_solids));
+        assert!(!allowed(can_apply_angle));
+        assert!(!allowed(can_apply_cut));
+        assert!(!allowed(can_add_cut));
+        assert!(!allowed(can_apply_fillet_radius));
+        assert!(!allowed(can_add_fillet));
+        assert!(!allowed(can_apply_chamfer_distance));
+        assert!(!allowed(can_add_chamfer));
 
         // Unsaved changes: the copy workflow goes, with the reason.
         let (tx, rx) = std::sync::mpsc::channel();
@@ -19009,6 +18964,14 @@ mod tests {
         assert!(sessions.finish_scene(generation, Ok(())));
         let dirty = height_state(&edits, &sessions, &creates, &loads, &exports);
         assert!(!dirty.copy && dirty.unsaved && dirty.apply);
+
+        edits.type_height(feature, "30");
+        let request = edits.apply_request().expect("height request");
+        edits
+            .start(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("copy worker");
+        assert!(!height_state(&edits, &sessions, &creates, &loads, &exports).apply);
+        edits.stop_all();
 
         // The window withholds the legacy copy entry on a dirty document. The
         // actual opening button must still offer the session height form.

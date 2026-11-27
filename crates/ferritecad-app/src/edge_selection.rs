@@ -8,12 +8,11 @@ pub(crate) fn update(
     scene: &crate::LiveScene<crate::PreparedSnapshot>,
     sessions: &crate::sessions::Sessions,
     can_begin: bool,
+    keep_ready: bool,
     apply: [bool; 2],
     add: [bool; 2],
 ) {
-    editor
-        .keep_solids
-        .update(scene, sessions, can_begin && !editor.active());
+    editor.keep_solids.update(scene, sessions, keep_ready);
     let selected = (|| {
         let current = sessions.export_source().ok_or("no open document")?;
         let shown = scene

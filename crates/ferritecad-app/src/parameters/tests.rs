@@ -137,9 +137,15 @@ fn apply_observing(
         .creates
         .sketch
         .parameters
-        .apply(&mut window.sessions, available, request, move |_, reply| {
-            tx.send(reply).expect("reply");
-        })
+        .apply(
+            &mut window.sessions,
+            available,
+            window.scene.edit_source.as_ref().expect("source"),
+            request,
+            move |_, reply| {
+                tx.send(reply).expect("reply");
+            },
+        )
         .expect("owner accepted request");
     let reply = rx
         .recv_timeout(Duration::from_secs(60))
@@ -816,6 +822,60 @@ fn parameters_park_with_their_tab_and_keep_the_existing_close_undo_checkpoint_gu
 }
 
 #[test]
+fn parameter_apply_checks_the_current_source_and_pending_field_before_sending() {
+    let f = fixture();
+    let mut w = open(&f, Drawn::Mock);
+    let available = availability(&w, false);
+    let source = w.scene.edit_source.as_mut().expect("source");
+    let editor = &mut w.creates.sketch.parameters;
+    assert_eq!(
+        editor
+            .draft
+            .as_ref()
+            .expect("form")
+            .can_apply(available, source),
+        Ok(())
+    );
+    let expected = source.version;
+    let asked = || Request {
+        expected,
+        change: EditChange::SetParameter {
+            object: f.stock,
+            expression: "42 mm".into(),
+        },
+        field: Field::Text(f.stock),
+    };
+    source.refusal = Some("The accepted source is unavailable.".into());
+    assert!(
+        editor
+            .apply(&mut w.sessions, available, source, asked(), |_, _| {
+                panic!("source refusal dispatched a request")
+            })
+            .is_none()
+    );
+    assert_eq!(w.sessions.status, "The accepted source is unavailable.");
+    source.refusal = None;
+    let pending = (
+        sessions::Address {
+            tab: w.sessions.tab(),
+            generation: 7,
+        },
+        Field::Add,
+    );
+    editor.draft.as_mut().expect("form").pending = Some(pending);
+    assert!(
+        editor
+            .apply(&mut w.sessions, available, source, asked(), |_, _| {
+                panic!("pending field dispatched a second request")
+            })
+            .is_none()
+    );
+    assert_eq!(w.sessions.status, "Wait for the pending parameter edit.");
+    assert_eq!(editor.draft.as_ref().expect("form").pending, Some(pending));
+    assert!(!w.sessions.busy() && !w.sessions.dirty());
+}
+
+#[test]
 fn parameter_apply_uses_the_catalogue_operation_guard_and_ignores_other_addresses() {
     let f = fixture();
     let mut w = open(&f, Drawn::Mock);
@@ -833,9 +893,13 @@ fn parameter_apply_uses_the_catalogue_operation_guard_and_ignores_other_addresse
         w.creates
             .sketch
             .parameters
-            .apply(&mut w.sessions, available, asked, |_, _| panic!(
-                "held draft dispatched a worker"
-            ))
+            .apply(
+                &mut w.sessions,
+                available,
+                w.scene.edit_source.as_ref().expect("source"),
+                asked,
+                |_, _| panic!("held draft dispatched a worker")
+            )
             .is_none()
     );
     assert!(!w.sessions.busy() && !w.sessions.dirty());

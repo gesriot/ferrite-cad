@@ -1297,7 +1297,15 @@ fn a_viewport_pixel_supplies_the_stored_edge_and_a_stale_scene_cannot_add_it() {
     // The stale picture cannot contribute a reference to the form.
     scene.edit_source.as_mut().expect("source").version.content =
         ferritecad_types::ContentHash::of_bytes(b"stale scene");
-    crate::edge_selection::update(&mut editor, &scene, &sessions, true, [false; 2], [true; 2]);
+    crate::edge_selection::update(
+        &mut editor,
+        &scene,
+        &sessions,
+        true,
+        false,
+        [false; 2],
+        [true; 2],
+    );
     for _ in 0..3 {
         frame(&ctx, &mut editor.fillets, false);
     }
@@ -1307,7 +1315,15 @@ fn a_viewport_pixel_supplies_the_stored_edge_and_a_stale_scene_cannot_add_it() {
         "older than the document"
     ));
     scene.edit_source = Some(reading);
-    crate::edge_selection::update(&mut editor, &scene, &sessions, true, [false; 2], [true; 2]);
+    crate::edge_selection::update(
+        &mut editor,
+        &scene,
+        &sessions,
+        true,
+        false,
+        [false; 2],
+        [true; 2],
+    );
     click(&ctx, &mut editor.fillets, "Add selected edge");
     radius(&ctx, &mut editor.fillets, "2.0");
     click(&ctx, &mut editor.fillets, "Add fillet");

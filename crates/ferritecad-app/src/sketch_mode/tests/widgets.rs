@@ -45,10 +45,7 @@ impl Ui {
             &w.sessions,
         );
         w.creates.sketch.viewport.set_apply(apply);
-        w.creates
-            .sketch
-            .sweeps
-            .set_apply(w.sessions.takes_form_apply());
+        w.creates.sketch.sweeps.set_apply(apply);
         let tab = w.sessions.tab().key();
         let (form, sketch) = w.creates.forms();
         let mut menu = None;
