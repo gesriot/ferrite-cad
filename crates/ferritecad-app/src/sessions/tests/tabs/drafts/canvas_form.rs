@@ -5,7 +5,7 @@
 //! and loses its drawing; it is never shown a drawing of a version it was not made on.
 
 use super::*;
-use crate::sketch::accepted::{Curve, Drawing, Target, Unavailable};
+use crate::sketch::accepted::{Curve, Drawing, Target};
 
 /// The constraints form on the shown tab, opened as the window opens it: from the facts and
 /// the drawing of the scene it is showing.

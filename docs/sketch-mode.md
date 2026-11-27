@@ -78,6 +78,8 @@ A new dimension starts at its measured value. Click its label to select it. Type
 width; the stored rule is a radius. A dimension driven by an expression shows its
 source instead: edit it in **Parameters**. Click a marker to select a geometric rule.
 The selected marker or dimension is highlighted like a selected curve.
+A new value moves the drawing from its displayed position, so a sketch with free degrees of
+freedom can settle differently from a value-only CLI edit that starts at the stored coordinates.
 
 To change a radius without retaining a dimension, set **Radius**, then delete the
 dimension before **Finish**; this requires the sketch solver.
