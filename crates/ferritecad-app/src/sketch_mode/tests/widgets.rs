@@ -47,6 +47,7 @@ impl Ui {
         w.creates.sketch.viewport.set_apply(apply);
         w.creates.sketch.sweeps.set_apply(apply);
         let tab = w.sessions.tab().key();
+        let creating = w.creates.running() || w.sessions.busy();
         let (form, sketch) = w.creates.forms();
         let mut menu = None;
         let mut view = crate::workspace::View {
@@ -54,7 +55,7 @@ impl Ui {
             sections: crate::Sections {
                 dialog_failure: None,
                 sketch,
-                creating: false,
+                creating,
                 edits: &mut w.edits,
                 stl_form: None,
                 can_edit: false,

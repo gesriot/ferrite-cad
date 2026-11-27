@@ -391,6 +391,141 @@ fn focused_dimensions_freeze_during_a_job_or_handle_capture_and_resume_on_click(
 }
 
 #[test]
+fn pending_finish_blocks_shortcuts_and_viewport_edits_until_publication() {
+    use super::window::version;
+    use winit::keyboard::{Key, ModifiersState};
+
+    if !native() {
+        return;
+    }
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 10.,
+    });
+    let f = fixtures::Drawing::new(vec![circle], false);
+    let mut w = open(&f.path, Drawn::Native);
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click(&mut w, point(10., 0.), false);
+    press_rule(&mut ui, &mut w, "Radius");
+    let snapshot = |w: &Window| {
+        let d = w
+            .creates
+            .sketch
+            .viewport
+            .draft
+            .as_ref()
+            .expect("open sketch");
+        (
+            d.state.clone(),
+            d.undo.clone(),
+            d.redo.clone(),
+            d.tool,
+            d.pending,
+        )
+    };
+    let radius = snapshot(&w).0.constraints[0].clone();
+    assert_eq!(snapshot(&w).0.selected, [Selection::Constraint(radius.id)]);
+
+    // An edit worker can finish while this same draft is still on screen.
+    let original = version(&w);
+    let request = EditRequest {
+        source: f.path.clone(),
+        expected: original,
+        changes: vec![],
+        destination: f.path.with_extension("copy"),
+    };
+    w.edits
+        .start(request, |_, _, _| std::thread::spawn(|| {}))
+        .expect("start worker");
+    let before = snapshot(&w);
+    assert!(!input_editable(&w.creates, &w.edits, &w.sessions));
+    super::dragging::press(&mut w, point(0., 0.));
+    assert!(!w.creates.sketch.viewport.gesturing());
+    super::dragging::release(&mut w);
+    click(&mut w, point(-4., 3.), false);
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
+    assert!(
+        w.creates
+            .sketch
+            .viewport
+            .take_history(&mut w.input, true, editable)
+    );
+    assert_eq!(snapshot(&w), before);
+    w.edits.stop_all();
+    assert!(input_editable(&w.creates, &w.edits, &w.sessions));
+    ui.key(&mut w, egui::Key::Delete);
+    assert_eq!(constraint_count(&w), 0);
+    ui.press(&mut w, "Undo", true);
+    assert_eq!(snapshot(&w).0, before.0);
+
+    // Leave a first point pending so an unguarded Escape or click is observable.
+    ui.press(&mut w, "Line", false);
+    click(&mut w, point(-8., 6.), false);
+    let before = snapshot(&w);
+    assert!(matches!(before.4, Some(Pending::Line { .. })));
+    assert!(!before.1.is_empty() && !before.2.is_empty());
+    let request = finish(&mut w, &mut ui);
+    assert_eq!(
+        request.changes,
+        [EditChange::AddConstraint {
+            sketch: f.sketch,
+            constraint: radius,
+        }]
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let address = w
+        .sessions
+        .apply(request.expected, request.changes, move |_, result| {
+            let _ = tx.send(result);
+        })
+        .expect("owner accepts Finish");
+    assert!(w.sessions.busy());
+    ui.press(&mut w, "Delete", true);
+    for key in [egui::Key::Delete, egui::Key::Backspace, egui::Key::Escape] {
+        ui.key(&mut w, key);
+        assert_eq!(snapshot(&w), before, "{key:?} during Finish");
+    }
+    let primary = if cfg!(target_os = "macos") {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
+    for (modifiers, expected) in [
+        (primary, crate::DocumentCommand::Undo),
+        (
+            primary | ModifiersState::SHIFT,
+            crate::DocumentCommand::Redo,
+        ),
+    ] {
+        let command =
+            crate::document_command(&Key::Character("z".into()), Some("z"), modifiers, false);
+        assert_eq!(command, Some(expected));
+        assert!(w.creates.sketch.viewport.take_history(
+            &mut w.input,
+            command == Some(crate::DocumentCommand::Undo),
+            editable,
+        ));
+        assert_eq!(snapshot(&w), before, "{expected:?} during Finish");
+    }
+    click(&mut w, point(7., 9.), false);
+    assert_eq!(snapshot(&w), before);
+    assert_eq!(version(&w), original);
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("Finish reply");
+    let crate::sessions::Edited::Show(path) = w.sessions.finish_apply(address, result) else {
+        panic!("accepted step");
+    };
+    w.show_staged(address, path.clone());
+    let accepted = super::curve_edits::stored(&path).1;
+    assert_eq!(accepted.constraints, before.0.constraints);
+    assert_eq!(accepted.curves, before.0.curves);
+    assert_ne!(version(&w), original);
+}
+
+#[test]
 fn saved_distance_changes_the_width_to_eighty_through_the_value_field() {
     if !native() {
         return;

@@ -22,6 +22,15 @@ pub(crate) fn sync(
     Ok(())
 }
 
+/// Viewport edits wait for the same workers as the panel, and for a writable session.
+pub(crate) fn input_editable(
+    creates: &crate::creates::Creates,
+    edits: &crate::edits::Edits,
+    sessions: &crate::sessions::Sessions,
+) -> bool {
+    sessions.takes_form_apply() && !creates.running() && !edits.running()
+}
+
 impl App {
     pub(crate) fn new_sketch(&mut self) {
         let idle = commands::availability(
@@ -56,22 +65,23 @@ impl App {
     }
 
     pub(crate) fn draw_or_pick(&mut self, x: f32, y: f32) {
+        let editable = input_editable(&self.creates, &self.edits, &self.sessions);
         if !self.creates.sketch.viewport.take_click(
             &mut self.input,
             [x, y],
             self.modifiers.shift_key(),
-            self.sessions.takes_form_apply(),
+            editable,
         ) {
             self.choose_at(x, y);
         }
     }
 
     pub(crate) fn sketch_history(&mut self, undo: bool) -> bool {
-        self.creates.sketch.viewport.take_history(
-            &mut self.input,
-            undo,
-            self.sessions.takes_form_apply(),
-        )
+        let editable = input_editable(&self.creates, &self.edits, &self.sessions);
+        self.creates
+            .sketch
+            .viewport
+            .take_history(&mut self.input, undo, editable)
     }
 
     pub(crate) fn sketch_hover(&mut self) -> bool {

@@ -90,11 +90,12 @@ pub(crate) fn click(w: &mut Window, at: Point2, shift: bool) {
         .input
         .take_pick()
         .expect("existing reducer emitted a click");
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
     assert!(
         w.creates
             .sketch
             .viewport
-            .take_click(&mut w.input, [x, y], shift, true),
+            .take_click(&mut w.input, [x, y], shift, editable),
         "the mode consumes the click before entity picking"
     );
 }

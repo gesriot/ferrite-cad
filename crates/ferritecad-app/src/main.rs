@@ -4166,12 +4166,14 @@ impl ApplicationHandler<AppEvent> for App {
                 ) {
                     journal::report(format_args!("ferritecad: {error}"));
                 }
+                let editable =
+                    sketch_mode::input_editable(&self.creates, &self.edits, &self.sessions);
                 self.creates.sketch.viewport.window_event(
                     &mut self.input,
                     &other,
                     response.consumed,
                     pointer_claimed,
-                    self.sessions.takes_form_apply(),
+                    editable,
                     self.modifiers.shift_key(),
                 );
             }

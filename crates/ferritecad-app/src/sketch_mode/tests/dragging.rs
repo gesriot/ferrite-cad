@@ -36,10 +36,11 @@ fn d(w: &Window) -> &Draft {
     w.creates.sketch.viewport.draft.as_ref().expect("open form")
 }
 fn event(w: &mut Window, event: E) {
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
     w.creates
         .sketch
         .viewport
-        .route(&mut w.input, event, false, true, false);
+        .route(&mut w.input, event, false, editable, false);
 }
 pub(super) fn movement(w: &mut Window, target: Point2) -> Point2 {
     let frame = d(w).planes[d(w).plane].frame.expect("built plane");
