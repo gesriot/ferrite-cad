@@ -3537,7 +3537,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     self.model_confirmation.is_some(),
                 );
-                let sketch_apply = numeric::can_apply(
+                let sketch_apply = numeric::can_submit_sketch_or_sweep(
                     &self.creates,
                     &self.loads,
                     &self.exports,
@@ -3912,14 +3912,14 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.sweeps.take_request() {
                             self.apply_expressions(
-                                numeric::can_apply,
+                                numeric::can_submit_sketch_or_sweep,
                                 request.expected,
                                 request.changes,
                             );
                         }
                         if let Some(request) = self.creates.sketch.viewport.take_request() {
                             self.apply_expressions(
-                                numeric::can_apply,
+                                numeric::can_submit_sketch_or_sweep,
                                 request.expected,
                                 request.changes,
                             );

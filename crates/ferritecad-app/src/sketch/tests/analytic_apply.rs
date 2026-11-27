@@ -40,7 +40,7 @@ impl Window {
     }
     fn ready(&self) -> bool {
         self.creates.sketch.viewport.active()
-            && numeric::can_apply(
+            && numeric::can_submit_sketch_or_sweep(
                 &self.creates,
                 &self.loads,
                 &self.exports,
@@ -163,8 +163,16 @@ fn nothing_else_running_or_open_lets_the_command_start() {
     let mut w = Window::open(&path);
     w.begin(&path, &source);
     assert!(w.creates.busy());
+    assert!(w.ready());
+    assert!(w.edits.begin(&path, &source));
+    assert!(w.edits.form_open() && !w.edits.running());
+    assert!(!w.ready(), "the height form being open must block Finish");
+    w.edits.cancel();
+    assert!(w.ready());
     w.form().dismiss();
     assert!(!w.ready());
+    assert!(!offers_apply(&egui::Context::default(), w.form()));
+    assert!(w.form().viewport.take_request().is_none());
     w.begin(&path, &source);
     w.sessions = sessions::Sessions::default();
     assert!(!w.ready(), "no session, no Finish");

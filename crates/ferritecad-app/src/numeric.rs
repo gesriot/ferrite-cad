@@ -24,7 +24,7 @@ pub(crate) enum Form {
 pub(crate) type FormGuard =
     fn(&Creates, &Loads, &Exports, &edits::Edits, &sessions::Sessions) -> bool;
 
-/// Shared by sketch Finish, sweep Apply and their request handlers.
+/// Common admission check for the form guards. Each button uses its own form guard.
 pub(crate) fn can_apply(
     creates: &crate::creates::Creates,
     loads: &crate::Loads,
@@ -36,6 +36,18 @@ pub(crate) fn can_apply(
         && !edits.running()
         && crate::document_io_idle(loads, exports)
         && sessions.takes_form_apply()
+}
+
+/// An open sketch or sweep can submit while the Height editor is closed.
+/// Finish, sweep Apply and both request handlers check this guard.
+pub(crate) fn can_submit_sketch_or_sweep(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && !edits.busy()
 }
 
 /// Both the Height button and its handler allow the open Height editor to submit.

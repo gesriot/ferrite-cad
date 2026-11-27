@@ -37,7 +37,7 @@ impl Ui {
             &w.input,
             self.confirmation.is_some(),
         );
-        let apply = crate::numeric::can_apply(
+        let apply = crate::numeric::can_submit_sketch_or_sweep(
             &w.creates,
             &crate::Loads::default(),
             &crate::exports::Exports::default(),

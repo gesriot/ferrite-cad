@@ -595,7 +595,8 @@ pub(crate) mod tests {
         let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
         assert!(creates.sketch.begin_test_drawing(&path, &reading, id));
         assert!(creates.busy(), "New and Open still wait for this form");
-        let ready = numeric::can_apply(&creates, &loads, &exports, &edits, &sessions);
+        let ready =
+            numeric::can_submit_sketch_or_sweep(&creates, &loads, &exports, &edits, &sessions);
         creates.sketch.viewport.set_apply(ready);
         let ctx = egui::Context::default();
         replace_in_form(&ctx, &mut creates.sketch, "33", "41.3");
@@ -611,7 +612,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|v| { v.start_mm == [41.3, 15.5] })
         );
-        assert!(numeric::can_apply(
+        assert!(numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         loads
@@ -621,7 +622,7 @@ pub(crate) mod tests {
                 |_, _| std::thread::spawn(|| {}),
             )
             .expect("load");
-        assert!(!numeric::can_apply(
+        assert!(!numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         loads.stop_all();
@@ -629,7 +630,7 @@ pub(crate) mod tests {
         sessions
             .begin_apply(|_, _, _| std::thread::spawn(|| {}))
             .expect("operation");
-        assert!(!numeric::can_apply(
+        assert!(!numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         sessions.stop_all();
