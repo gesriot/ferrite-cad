@@ -83,11 +83,15 @@ pub(super) fn controls(
     let submit = ui
         .horizontal(|ui| {
             ui.label("Value");
-            let response = ui.add(egui::TextEdit::singleline(text).desired_width(80.));
+            let can_set = ui.is_enabled() && available;
+            let response = ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(80.)
+                    .interactive(can_set),
+            );
             ui.label(unit);
-            ui.add_enabled(available, egui::Button::new("Set"))
-                .clicked()
-                || (available
+            ui.add_enabled(can_set, egui::Button::new("Set")).clicked()
+                || (can_set
                     && response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter)))
         })

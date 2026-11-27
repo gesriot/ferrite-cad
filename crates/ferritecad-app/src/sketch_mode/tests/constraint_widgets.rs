@@ -7,7 +7,7 @@ use ferritecad_ui::ModelEdit;
 
 fn native() -> bool {
     ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_eval::solver_available(), "PlaneGCS"),
+        (ferritecad_eval::solver_available(), "PLANEGCS"),
         (ferritecad_occt::is_available(), "OCCT"),
     ])
 }
@@ -283,6 +283,111 @@ fn rectangle_widgets_constrain_the_drawing_in_one_transaction_and_extrude_it() {
         .take_request()
         .expect("fixture operation");
     assert!(apply(&mut w, sweep));
+}
+
+/// The focused Value field and Set share the panel's job and handle-capture guard.
+#[test]
+fn focused_dimensions_freeze_during_a_job_or_handle_capture_and_resume_on_click() {
+    if !native() {
+        return;
+    }
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 10.,
+    });
+    for (label, curves, first_pick, initial, handle) in [
+        (
+            "Radius",
+            vec![circle.clone()],
+            point(10., 0.),
+            "10",
+            point(0., 0.),
+        ),
+        (
+            "Diameter",
+            vec![circle],
+            point(10., 0.),
+            "20",
+            point(0., 0.),
+        ),
+        (
+            "Distance",
+            vec![line([-10., 0.], [10., 0.])],
+            point(0., 0.),
+            "20",
+            point(-10., 0.),
+        ),
+        (
+            "Angle",
+            vec![line([-10., 0.], [0., 0.]), line([5., 0.], [5., 10.])],
+            point(5., 5.),
+            "-90",
+            point(5., 10.),
+        ),
+    ] {
+        let f = fixtures::Drawing::new(curves, false);
+        let mut w = open(&f.path, Drawn::Native);
+        enter(&mut w, f.sketch, ModelEdit::Sketch);
+        let mut ui = Ui::new(&mut w);
+        click(&mut w, first_pick, false);
+        if label == "Angle" {
+            click(&mut w, point(-5., 0.), true);
+        }
+        press_rule(&mut ui, &mut w, label);
+        ui.type_value(&mut w, initial, "20");
+        let field = |w: &Window| {
+            w.creates
+                .sketch
+                .viewport
+                .value_field
+                .as_ref()
+                .expect("selected dimension")
+                .2
+                .clone()
+        };
+        let state = |w: &Window| {
+            let draft = w
+                .creates
+                .sketch
+                .viewport
+                .draft
+                .as_ref()
+                .expect("open sketch");
+            (draft.state.clone(), draft.undo.clone(), draft.redo.clone())
+        };
+        assert_eq!(field(&w), "20");
+        let before = state(&w);
+        let request = EditRequest {
+            source: f.path.clone(),
+            expected: super::window::version(&w),
+            changes: vec![],
+            destination: f.path.with_extension("copy"),
+        };
+        let (finish, wait) = std::sync::mpsc::channel();
+        w.edits
+            .start(request, |_, _, _| {
+                std::thread::spawn(move || {
+                    let _ = wait.recv();
+                })
+            })
+            .expect("start edit worker");
+        assert!(w.edits.running());
+        ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        assert_eq!(field(&w), "20", "{label} during a job");
+        assert_eq!(state(&w), before);
+        finish.send(()).expect("release worker");
+        w.edits.stop_all();
+        ui.type_value(&mut w, "20", "13.5");
+        assert_eq!(field(&w), "13.5");
+        assert_eq!(state(&w), before);
+
+        super::dragging::press(&mut w, handle);
+        assert!(w.creates.sketch.viewport.gesturing(), "{label} handle");
+        ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        assert_eq!(field(&w), "13.5", "{label} during capture");
+        assert_eq!(state(&w), before);
+        super::dragging::release(&mut w);
+    }
 }
 
 #[test]

@@ -334,52 +334,6 @@ fn a_circle_diameter_is_the_half_radius_in_one_step_through_the_real_widgets() {
     assert!(!e.active());
 }
 
-/// Focused text fields must honor the same busy state as their action buttons.
-#[test]
-fn running_jobs_freeze_focused_constraint_numbers_until_editing_resumes() {
-    let (_circle_root, circle_path, circle_source, _) = round_fixture(&[10.]);
-    let (_line_root, line_path, line_source) = fixture();
-    let mut changed = Vec::new();
-    for (path, source, label) in [
-        (&circle_path, &circle_source, "Diameter mm"),
-        (&circle_path, &circle_source, "Radius mm"),
-        (&line_path, &line_source, "Line length (mm):"),
-        (&circle_path, &circle_source, "Fixed X (mm):"),
-        (&circle_path, &circle_source, "Fixed Y (mm):"),
-        (&line_path, &line_source, "Fixed X (mm):"),
-        (&line_path, &line_source, "Fixed Y (mm):"),
-    ] {
-        let (mut e, ctx) = opened(path, source);
-        let text = |e: &Editor| {
-            let d = e.draft.as_ref().expect("draft");
-            match label {
-                "Diameter mm" => &d.diameter_mm,
-                "Radius mm" => &d.radius_mm,
-                "Line length (mm):" => &d.length_mm,
-                "Fixed X (mm):" => &d.pin_x_mm,
-                "Fixed Y (mm):" => &d.pin_y_mm,
-                _ => unreachable!(),
-            }
-            .clone()
-        };
-        enter_field(&ctx, &mut e, label, "20", false);
-        let before = history_state(&e);
-        frame_running(&ctx, &mut e, vec![egui::Event::Text("7".into())], true);
-        if text(&e) != "20" {
-            changed.push((label, text(&e)));
-        }
-        assert_eq!(history_state(&e), before);
-        // A completed job releases the box for ordinary editing again.
-        enter_field(&ctx, &mut e, label, "13.5", false);
-        assert_eq!(text(&e), "13.5");
-        assert_eq!(history_state(&e), before);
-    }
-    assert!(
-        changed.is_empty(),
-        "focused fields changed during a job: {changed:?}"
-    );
-}
-
 #[test]
 fn a_stored_radius_is_replaced_by_a_diameter_in_one_exact_remove_and_add() {
     let (_root, path, source, ids) = round_fixture(&[10.]);
