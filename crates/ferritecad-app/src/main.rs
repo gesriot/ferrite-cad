@@ -1191,7 +1191,7 @@ fn can_apply_constraints(
         && sessions.takes_form_apply()
 }
 
-/// Shared by the partial Revolve form's Apply button and its worker command.
+/// Whether the saved Revolve angle form may offer Apply.
 fn can_apply_angle(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1205,7 +1205,7 @@ fn can_apply_angle(
         && sessions.takes_form_apply()
 }
 
-/// The same guard for the existing Cut form's button and Apply handler.
+/// Whether the saved Cut form may offer Apply.
 fn can_apply_cut(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1219,7 +1219,7 @@ fn can_apply_cut(
         && sessions.takes_form_apply()
 }
 
-/// §30I: shared by the Cut Add form's Add button and its handler.
+/// Whether the Cut creation form may offer Add.
 fn can_add_cut(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1233,7 +1233,7 @@ fn can_add_cut(
         && sessions.takes_form_apply()
 }
 
-/// Shared by the existing Fillet radius form's button and its Apply handler.
+/// Whether the saved Fillet radius form may offer Apply.
 fn can_apply_fillet_radius(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1247,7 +1247,7 @@ fn can_apply_fillet_radius(
         && sessions.takes_form_apply()
 }
 
-/// §30J: shared by the Fillet Add form's Add button and its handler.
+/// Whether the Fillet creation form may offer Add.
 fn can_add_fillet(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1261,7 +1261,7 @@ fn can_add_fillet(
         && sessions.takes_form_apply()
 }
 
-/// Shared by the existing Chamfer distance form's button and its Apply handler.
+/// Whether the saved Chamfer distance form may offer Apply.
 fn can_apply_chamfer_distance(
     creates: &creates::Creates,
     loads: &Loads,
@@ -1275,7 +1275,7 @@ fn can_apply_chamfer_distance(
         && sessions.takes_form_apply()
 }
 
-/// §30K: shared by the Chamfer Add form's Add button and its handler.
+/// Whether the Chamfer creation form may offer Add.
 fn can_add_chamfer(
     creates: &creates::Creates,
     loads: &Loads,
