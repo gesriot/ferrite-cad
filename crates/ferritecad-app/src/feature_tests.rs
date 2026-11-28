@@ -522,3 +522,66 @@ pub(crate) fn read_stl(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
     }
     (faces, six / 6.)
 }
+
+/// Add the original rectangle's two directed lengths, with the 60 mm references reversed.
+pub(crate) fn persist_rectangle_lengths(path: &std::path::Path) -> crate::sketch_facts::Source {
+    use ferritecad_document::{
+        AddLineConstraint, AddSketchConstraint, Document, LineConstraintKind, LineLengthMm,
+        SketchConstraintEdits, SketchConstraintRule,
+    };
+    let mut document = Document::open(path).expect("doc");
+    let (id, saved) = ferritecad_fixtures::sketch(&document).expect("rectangle");
+    let curves = &saved.curves;
+    let prepared = ferritecad_fixtures::constraint_changes(
+        &document,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                AddSketchConstraint::Line(AddLineConstraint::Line {
+                    curve: curves[0].id,
+                    kind: LineConstraintKind::Horizontal,
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
+                    curve: curves[1].id,
+                    kind: LineConstraintKind::Vertical,
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
+                    curve: curves[0].id,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
+                    curve: curves[1].id,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
+                }),
+            ],
+        },
+    )
+    .expect("prepare");
+    document.write_changes(&prepared).expect("write lengths");
+    let mut object = document.object(id).expect("read").expect("sketch");
+    if let ferritecad_document::ObjectPayload::Sketch(sketch) = &mut object.payload {
+        for c in &mut sketch.constraints {
+            if let SketchConstraintRule::Distance { a, b, distance } = &mut c.rule
+                && *distance
+                    == ferritecad_document::Expression::constant(60.).expect("finite constant")
+            {
+                std::mem::swap(a, b);
+            }
+        }
+    }
+    document
+        .write(|w| {
+            w.put_object(
+                object.id,
+                object.parent,
+                object.ordinal,
+                object.name.as_deref(),
+                &object.payload,
+            )
+        })
+        .expect("reversed Distance endpoints remain selectable");
+    let source = crate::sketch_facts::Source::read(&document).expect("catalog");
+    document.close().expect("close");
+    source
+}

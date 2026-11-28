@@ -2504,67 +2504,7 @@ pub(crate) mod tests {
         d.close().expect("close");
         (root, path, source)
     }
-    fn persist_rectangle_lengths(path: &Path) -> ExtrudeEditSource {
-        let mut document = Document::open(path).expect("doc");
-        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
-        let choice = &source.constraint_sketches[0];
-        let curves = &choice.stored.as_ref().expect("stored").curves;
-        let prepared = ferritecad_fixtures::constraint_changes(
-            &document,
-            choice.sketch,
-            &SketchConstraintEdits {
-                remove: vec![],
-                add: vec![
-                    AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: curves[0].id,
-                        kind: LineConstraintKind::Horizontal,
-                    }),
-                    AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: curves[1].id,
-                        kind: LineConstraintKind::Vertical,
-                    }),
-                    AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: curves[0].id,
-                        kind: LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
-                    }),
-                    AddSketchConstraint::Line(AddLineConstraint::Line {
-                        curve: curves[1].id,
-                        kind: LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
-                    }),
-                ],
-            },
-        )
-        .expect("prepare");
-        document.write_changes(&prepared).expect("write lengths");
-        let mut object = document
-            .object(choice.sketch)
-            .expect("read")
-            .expect("sketch");
-        if let ferritecad_document::ObjectPayload::Sketch(sketch) = &mut object.payload {
-            for c in &mut sketch.constraints {
-                if let SketchConstraintRule::Distance { a, b, distance } = &mut c.rule
-                    && *distance
-                        == ferritecad_document::Expression::constant(60.).expect("finite constant")
-                {
-                    std::mem::swap(a, b);
-                }
-            }
-        }
-        document
-            .write(|w| {
-                w.put_object(
-                    object.id,
-                    object.parent,
-                    object.ordinal,
-                    object.name.as_deref(),
-                    &object.payload,
-                )
-            })
-            .expect("reversed Distance endpoints remain selectable");
-        let source = crate::sketch_facts::Source::read(&document).expect("catalog");
-        document.close().expect("close");
-        source
-    }
+    use crate::feature_tests::persist_rectangle_lengths;
     fn painted(out: &egui::FullOutput, label: &str) -> bool {
         out.shapes
             .iter()

@@ -549,5 +549,6 @@ mod circular_rules;
 mod cli;
 mod collinear;
 mod diameter;
+mod dimension_history;
 mod dragging;
 mod saved_angle;

@@ -726,38 +726,6 @@ fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepar
     assert_eq!(rig.edits().add, vec![length_add(ids[0], 80.)]);
 }
 
-#[test]
-fn a_refused_replacement_keeps_the_typed_text_the_selection_and_the_history_exactly() {
-    let mut rig = Rig::lengths(1.);
-    let ids = rig.ids.clone();
-    rig.target(Target::Dimension);
-    let at = rig.at_label("60 mm");
-    rig.click(at);
-    rig.settle();
-    let before = rig.kept();
-    for text in [
-        "", " ", "-", "abc", "NaN", "inf", "-inf", "0", "-0", "-1", "1e309", "7,5", "6 0",
-    ] {
-        rig.type_length(text);
-        rig.press("Replace dimension");
-        assert!(rig.refusal().is_some(), "{text:?} was taken");
-        assert_eq!(rig.typed(), text, "the text is kept exactly");
-        assert_eq!(rig.picks().0, Some(ids[0]), "{text:?}");
-        let mut now = rig.kept();
-        // The text itself is the one input that differs from before.
-        now.0 = before.0.clone();
-        assert_eq!(
-            now, before,
-            "{text:?} changed the history or made a request"
-        );
-        assert_eq!(rig.edits(), SketchConstraintEdits::default());
-    }
-    // A valid number takes the refusal away; the refusal never outlives the next valid action.
-    rig.type_length("70");
-    rig.press("Replace dimension");
-    assert_eq!(rig.refusal(), None);
-}
-
 impl Rig {
     /// The number for the replacement of a Circle's radius, typed into the one box whichever
     /// unit is chosen: it stands to the right of the "Diameter" toggle.

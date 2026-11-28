@@ -308,3 +308,105 @@ fn assert_database(source: &Path, window: &Path, cli: &Path, sketch: ObjectId) {
         }
     }
 }
+
+/// Each pair has its own sketch so all five near-collinear drawings can actually be built.
+#[test]
+fn the_viewport_angle_label_and_field_round_trip_the_saved_radians_exactly() {
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_eval::solver_available(), "PLANEGCS"),
+        (ferritecad_occt::is_available(), "OCCT"),
+    ]) {
+        return;
+    }
+    for (degrees, label) in [
+        (1e-10, "1e-10"),
+        (-1e-10, "-1e-10"),
+        (179.999_999_9, "179.9999999"),
+        (-179.999_999_9, "-179.9999999"),
+        (7.9e-9, "7.9e-9"),
+    ] {
+        let angle = DirectedAngle::from_degrees(degrees).expect("stored angle");
+        let r = angle.radians();
+        let lines = [
+            line([-8., -5.], [8., -5.]),
+            line([0., 5.], [12. * r.cos(), 5. + 12. * r.sin()]),
+        ];
+        let [a, b] = lines.each_ref().map(|l| {
+            ferritecad_document::SketchSegmentRef::new(
+                SketchPointRef::new(l.id, SketchPointSelector::Start),
+                SketchPointRef::new(l.id, SketchPointSelector::End),
+            )
+        });
+        let mut f = fixtures::Drawing::new(lines.into(), false);
+        let id = StableEntityId::new();
+        f.doc
+            .write_changes(&[EditChange::AddConstraint {
+                sketch: f.sketch,
+                constraint: SketchConstraint {
+                    id,
+                    rule: SketchConstraintRule::DirectedAngle {
+                        a,
+                        b,
+                        angle: ferritecad_document::Expression::constant(r).expect("angle"),
+                    },
+                },
+            }])
+            .expect("saved rule");
+        let mut w = open(&f.path, Drawn::Native);
+        enter(&mut w, f.sketch, ModelEdit::Sketch);
+        let mut ui = Ui::new(&mut w);
+        let painted = ui.paint(
+            &mut w.creates.sketch.viewport,
+            w.input.camera(),
+            w.input.region(),
+        );
+        let shown = crate::sketch::dimension::editable_degrees(angle);
+        let expected = if degrees == 7.9e-9 {
+            format!("A>B {shown:e}°")
+        } else {
+            format!("A>B {label}°")
+        };
+        assert!(
+            super::widgets::text(&painted).contains(&expected),
+            "{expected}"
+        );
+        click_label(&mut w, &mut ui, id);
+        ui.type_value(&mut w, &shown.to_string(), &shown.to_string());
+        ui.press(&mut w, "Set", false);
+        let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+        assert!(draft.undo.is_empty());
+        assert!(draft.changes().expect("unchanged").is_empty());
+
+        let mut adjacent = shown.next_up();
+        while DirectedAngle::from_degrees(adjacent).expect("neighbour") == angle {
+            adjacent = adjacent.next_up();
+        }
+        ui.type_value(&mut w, &shown.to_string(), &adjacent.to_string());
+        ui.press(&mut w, "Set", false);
+        let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+        let rule = &draft.state.constraints[0];
+        assert_eq!(rule.id, id);
+        assert_eq!(draft.undo.len(), 1);
+        assert_eq!(
+            draft::dimension(rule).expect("angle").1.value(),
+            DirectedAngle::from_degrees(adjacent)
+                .expect("new angle")
+                .radians()
+        );
+        ui.press(&mut w, "Undo", true);
+        let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+        assert!(draft.changes().expect("restored").is_empty());
+        if degrees == 7.9e-9 {
+            ui.type_value(&mut w, &shown.to_string(), "8e-9");
+            ui.press(&mut w, "Set", false);
+            let other = crate::sketch::dimension::editable_degrees(
+                DirectedAngle::from_degrees(8e-9).expect("angle"),
+            );
+            ui.type_value(&mut w, &other.to_string(), &shown.to_string());
+            ui.press(&mut w, "Set", false);
+            let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+            assert_eq!(draft.state.constraints, f.saved().constraints);
+            assert!(draft.changes().expect("restored spelling").is_empty());
+        }
+    }
+}
