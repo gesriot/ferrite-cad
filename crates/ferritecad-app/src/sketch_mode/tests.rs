@@ -545,6 +545,7 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
     );
 }
 
+mod circular_rules;
 mod cli;
 mod collinear;
 mod diameter;

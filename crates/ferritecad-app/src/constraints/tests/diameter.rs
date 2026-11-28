@@ -4,9 +4,8 @@
 //! A diameter is not a constraint of its own. It is the Radius `D/2`, in the
 //! Radius slot, as one history step and one request, so these gates read the
 //! draft, the request and the published copy, never a separate "diameter" state.
-//! The widget gates need no kernel and no solver (the circle documents are
-//! written through the document API, as the command-line gates do); the one
-//! native gate needs both.
+//! These widget tests write their circle documents through the document API.
+//! The viewport diameter tests compare the published geometry with a CLI edit.
 
 use super::*;
 use ferritecad_document::{

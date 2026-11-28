@@ -11,7 +11,21 @@ use ferritecad_kernel::OperationContext;
 use ferritecad_ui::ModelEdit;
 use std::path::{Path, PathBuf};
 
-const CENTER: [f64; 2] = [-3.5, 4.3];
+pub(super) const CENTER: [f64; 2] = [-3.5, 4.3];
+
+pub(super) fn move_centers(w: &mut Window, ui: &mut Ui, count: usize) {
+    ui.press(w, "Off", false);
+    ui.press(w, "0.1 mm", false);
+    let old = point(12., -7.);
+    let center = point(CENTER[0], CENTER[1]);
+    for _ in 0..count {
+        press(w, old);
+        assert!(w.creates.sketch.viewport.gesturing());
+        movement(w, center);
+        frame(w);
+        release(w);
+    }
+}
 
 fn set_diameters(path: &Path, sketch: ObjectId, diameters: [f64; 2]) -> Window {
     let mut w = open(path, Drawn::Native);
@@ -20,17 +34,8 @@ fn set_diameters(path: &Path, sketch: ObjectId, diameters: [f64; 2]) -> Window {
         .expect("ring in view");
     enter(&mut w, sketch, ModelEdit::Sketch);
     let mut ui = Ui::new(&mut w);
-    ui.press(&mut w, "Off", false);
-    ui.press(&mut w, "0.1 mm", false);
-    let old = point(12., -7.);
+    move_centers(&mut w, &mut ui, 2);
     let center = point(CENTER[0], CENTER[1]);
-    for _ in 0..2 {
-        press(&mut w, old);
-        assert!(w.creates.sketch.viewport.gesturing());
-        movement(&mut w, center);
-        frame(&mut w);
-        release(&mut w);
-    }
     for (saved, diameter) in [4., 10.].into_iter().zip(diameters) {
         click(&mut w, point(center.x, center.y + saved), false);
         press_rule(&mut ui, &mut w, "Diameter");
@@ -55,6 +60,27 @@ fn set_diameters(path: &Path, sketch: ObjectId, diameters: [f64; 2]) -> Window {
     assert_eq!(request.changes.len(), 4);
     publish(&mut w, request);
     w
+}
+
+pub(super) fn compare_circles(prediction: &Sketch, shown: &Sketch) {
+    assert_eq!(prediction.curves.len(), shown.curves.len());
+    for (predicted, visible) in prediction.curves.iter().zip(&shown.curves) {
+        let (
+            SketchGeometry::Circle {
+                center: a,
+                radius: r,
+            },
+            SketchGeometry::Circle {
+                center: b,
+                radius: s,
+            },
+        ) = (&predicted.geometry, &visible.geometry)
+        else {
+            panic!("two circles")
+        };
+        assert_eq!(predicted.id, visible.id);
+        assert!((a.x - b.x).abs() <= 1e-6 && (a.y - b.y).abs() <= 1e-6 && (r - s).abs() <= 1e-6);
+    }
 }
 
 /// A fully constrained ring has one solution from both the shown and the stored seeds.
@@ -113,23 +139,7 @@ fn reference(sketch: ObjectId, saved: &Sketch, diameters: [f64; 2]) -> Vec<EditC
         ..saved.clone()
     };
     let prediction = solve(&stored);
-    for (predicted, visible) in prediction.curves.iter().zip(&shown.curves) {
-        let (
-            SketchGeometry::Circle {
-                center: a,
-                radius: r,
-            },
-            SketchGeometry::Circle {
-                center: b,
-                radius: s,
-            },
-        ) = (&predicted.geometry, &visible.geometry)
-        else {
-            panic!("two circles")
-        };
-        assert_eq!(predicted.id, visible.id);
-        assert!((a.x - b.x).abs() <= 1e-6 && (a.y - b.y).abs() <= 1e-6 && (r - s).abs() <= 1e-6);
-    }
+    compare_circles(&prediction, &shown);
     rules
         .into_iter()
         .map(|constraint| EditChange::AddConstraint { sketch, constraint })
