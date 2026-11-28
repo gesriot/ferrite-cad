@@ -39,7 +39,7 @@ surviving commands.
 | Keep an independent fitted 2D view for each draft | Sketch mode uses the tab camera and offers **Look at sketch**. |
 | Cancel a pan with Escape to restore the view, or end it by leaving the window or starting a job | A pan ends on release wherever the pointer is, or on focus loss; the view stays where it ended. |
 | A constraints form returned on another version hid that version's drawing | Sketch mode keeps a held draft visible, like other held forms keep their values; Finish is refused with the reason, and Cancel shows the accepted sketch |
-| Changing a stored dimension's value in the window solved from the stored coordinates, as a CLI edit of the value alone does | The window solves from the drawing it shows and saves that drawing (ADR 0016); CLI `edit` with the value alone still solves from the stored coordinates |
+| Changing a sketch's stored rules in the window (a dimension value, or adding, removing or replacing a constraint) solved from the stored coordinates, as a CLI edit of the rules alone does | The window solves from the drawing it shows and saves that drawing (ADR 0016); a CLI edit of the rules alone still solves from the stored coordinates |
 
 ## Known gaps
 

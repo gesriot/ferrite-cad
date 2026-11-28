@@ -1,41 +1,17 @@
 // SPDX-License-Identifier: MIT
+use super::cli::{cli_edit, export};
 use super::constraint_widgets::click_label;
 use super::widgets::Ui;
 use super::window::{apply, enter, open, version};
 use super::*;
 use crate::sessions::tests::tabs::Drawn;
 use ferritecad_document::{
-    AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, Document, DocumentVersion,
-    ExpressionSlot, LineEndpoint, SketchConstraintEdits,
+    AddLineConstraint, AddSketchConstraint, DirectedAngle, DirectedLine, Document, ExpressionSlot,
+    LineEndpoint, SketchConstraintEdits,
 };
 use ferritecad_kernel::OperationContext;
 use ferritecad_ui::ModelEdit;
 use std::path::Path;
-
-fn cli_edit(from: &Path, to: &Path, version: DocumentVersion, changes: &[EditChange]) {
-    let request = to.with_extension("json");
-    std::fs::write(
-        &request,
-        ferritecad_fixtures::edit_request_json(changes).to_string(),
-    )
-    .expect("write CLI request");
-    let output = std::process::Command::new(crate::creates::tests::ferritecad())
-        .arg("edit")
-        .arg(from)
-        .arg("--expect-version")
-        .arg(version.content.to_string())
-        .arg("--request")
-        .arg(request)
-        .arg("-o")
-        .arg(to)
-        .output()
-        .expect("CLI edit");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
 
 #[test]
 fn native_set_of_a_saved_reversed_angle_matches_the_independent_cli_edit() {
@@ -296,24 +272,6 @@ fn assert_corner(path: &Path, sketch: ObjectId, degrees: f64, dof: usize) -> f64
     cold.release_all(&mut kernel);
     d.close().expect("close");
     volume
-}
-
-fn export(path: &Path, format: &str) -> Vec<u8> {
-    let out = tempfile::tempdir().expect("export directory");
-    let file = out.path().join(format!("dart.{format}"));
-    let result = std::process::Command::new(crate::creates::tests::ferritecad())
-        .arg(format!("export-{format}"))
-        .arg(path)
-        .arg("-o")
-        .arg(&file)
-        .output()
-        .expect("CLI export");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    std::fs::read(file).expect("exported bytes")
 }
 
 fn assert_database(source: &Path, window: &Path, cli: &Path, sketch: ObjectId) {
