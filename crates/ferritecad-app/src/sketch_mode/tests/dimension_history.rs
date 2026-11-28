@@ -437,7 +437,7 @@ fn two_viewports_on_one_document_keep_their_own_dimension_text_and_edits() {
 }
 
 #[test]
-fn returning_to_a_dimension_after_picking_a_line_keeps_unsubmitted_text() {
+fn returning_to_a_dimension_shows_its_current_value_after_a_selection_change() {
     if !native() {
         return;
     }
@@ -445,31 +445,51 @@ fn returning_to_a_dimension_after_picking_a_line_keeps_unsubmitted_text() {
     let bytes = std::fs::read(&path).expect("source");
     let mut w = open(&path, Drawn::Native);
     let base = version(&w);
+    assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
     w.input.frame(([-40.; 3], [40.; 3])).expect("fit");
     enter(&mut w, sketch, ModelEdit::Sketch);
     let mut ui = Ui::new(&mut w);
     click_label(&mut w, &mut ui, width);
-    ui.replace_dimension_text(&mut w, "55.5");
-    assert_eq!(value_field(&w, width), "55.5");
-    let shown = draft(&w).state.clone();
-    let curve = &shown.curves[2];
-    let SketchGeometry::Line { start, end } = curve.geometry else {
-        panic!("third side");
+    let select_line_and_return = |w: &mut Window, ui: &mut Ui| {
+        let curve = &draft(w).state.curves[2];
+        let id = curve.id;
+        let SketchGeometry::Line { start, end } = curve.geometry else {
+            panic!("third side");
+        };
+        click(
+            w,
+            point((start.x + end.x) / 2., (start.y + end.y) / 2.),
+            false,
+        );
+        ui.settle(w);
+        assert_eq!(draft(w).state.selected, [Selection::Curve(id)]);
+        click_label(w, ui, width);
+        ui.settle(w);
     };
-    click(
-        &mut w,
-        point((start.x + end.x) / 2., (start.y + end.y) / 2.),
-        false,
-    );
+
+    let original = draft(&w).state.clone();
+    ui.replace_dimension_text(&mut w, "55.5");
     ui.settle(&mut w);
-    assert_eq!(draft(&w).state.selected, [Selection::Curve(curve.id)]);
-    click_label(&mut w, &mut ui, width);
-    ui.settle(&mut w);
-    assert_eq!(draft(&w).state, shown);
+    assert_eq!(value_field(&w, width), "55.5");
+    select_line_and_return(&mut w, &mut ui);
+    assert_eq!(value_field(&w, width), "60");
+    assert_eq!(draft(&w).state, original);
     assert_eq!(draft(&w).state.constraints, before.constraints);
     assert!(draft(&w).undo.is_empty() && draft(&w).redo.is_empty());
+    assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
+
+    ui.replace_dimension_text(&mut w, "55.5");
+    ui.press(&mut w, "Set", false);
+    let applied = draft(&w).state.clone();
+    let undo = draft(&w).undo.clone();
+    assert_eq!(undo, [original]);
+    select_line_and_return(&mut w, &mut ui);
+    assert_eq!(value_field(&w, width), "55.5");
+    assert_eq!(draft(&w).state, applied);
+    assert_eq!(draft(&w).undo, undo);
+    assert!(draft(&w).redo.is_empty());
     assert!(w.creates.sketch.viewport.take_request().is_none());
     assert_eq!(version(&w), base);
+    assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
     assert_eq!(std::fs::read(path).expect("source"), bytes);
-    assert_eq!(value_field(&w, width), "55.5");
 }

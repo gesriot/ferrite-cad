@@ -74,9 +74,10 @@ or **Diameter**. A disabled button explains the selection it needs. Arc ends and
 can be snapped to but cannot be used as constraint points.
 
 A new dimension starts at its measured value. Click its label to select it. Type a
-**Value** in millimetres or degrees and press Enter or **Set**. Diameter shows the full
-width; the stored rule is a radius. A dimension driven by an expression shows its
-source instead: edit it in **Parameters**. Click a marker to select a geometric rule.
+**Value** in millimetres or degrees and press Enter or **Set**. Selecting another item
+discards the unsubmitted text. Diameter shows the full width; the stored rule is a radius.
+A dimension driven by an expression shows its source instead: edit it in **Parameters**.
+Click a marker to select a geometric rule.
 The selected marker or dimension is highlighted like a selected curve.
 Finish saves the drawing as shown after a constraint is added, removed, replaced or given a
 new value. On a sketch with free degrees of freedom, a CLI edit that changes only the rules
