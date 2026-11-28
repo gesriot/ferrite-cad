@@ -3996,7 +3996,7 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("rectangle.fcad");
-        crate::constraints::tests::dimension::write_dimensioned_rectangle(&path);
+        crate::feature_tests::write_dimensioned_rectangle(&path);
         let seen = std::cell::Cell::new(None);
         native_constraint_gate_with(
             root.path(),
@@ -4075,7 +4075,7 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("quad.fcad");
-        crate::constraints::tests::turn_label::write_angled_quad(&path);
+        crate::feature_tests::write_angled_quad(&path);
         let pristine = root.path().join("pristine.fcad");
         std::fs::copy(&path, &pristine).expect("a copy of the source");
         let seen = std::cell::Cell::new(None);

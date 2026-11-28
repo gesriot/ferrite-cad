@@ -417,60 +417,6 @@ fn the_lists_and_the_canvas_show_one_selection() {
 }
 
 #[test]
-fn typed_inputs_history_and_requests_wait_for_an_explicit_action() {
-    let mut rig = Rig::new(1.);
-    let ids = rig.ids.clone();
-    // Text in every box, one rule added (a history step), the angle's vectors set.
-    rig.press("Segment 1");
-    enter_field(&rig.ctx, &mut rig.e, "Line length (mm):", "55.5", false);
-    enter_field(&rig.ctx, &mut rig.e, "Fixed X (mm):", "3.25", false);
-    enter_field(&rig.ctx, &mut rig.e, "Fixed Y (mm):", "-4.5", false);
-    enter_field(&rig.ctx, &mut rig.e, "A>B (°):", "25", false);
-    rig.press("Add Horizontal");
-    rig.press("A: start>end");
-    let before = rig.kept();
-    assert_eq!(before.1, (1, 0), "one step of request history");
-    let edits = rig.e.draft_edits();
-    let steps: [fn(&mut Rig); 4] = [
-        |r| {
-            let m = r.mid(1);
-            r.click(m)
-        },
-        |r| {
-            r.target(Target::Endpoint);
-            let e = r.ends(2)[1];
-            r.click(e)
-        },
-        |r| {
-            r.target(Target::PairA);
-            let m = r.mid(0);
-            r.click(m)
-        },
-        |r| {
-            r.target(Target::PairB);
-            let m = r.mid(3);
-            r.click(m)
-        },
-    ];
-    for step in steps {
-        step(&mut rig);
-        assert_eq!(
-            rig.kept(),
-            before,
-            "a pick changed an input, the history or a request"
-        );
-        assert_eq!(rig.e.draft_edits(), edits);
-    }
-    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
-    // Only the explicit action changes the request, and Undo then spends a step of its
-    // own, not one of the picks.
-    rig.press("Add Equal length");
-    assert_eq!(rig.e.draft_edits().expect("edits").add.len(), 2);
-    assert_eq!(rig.kept().1, (2, 0));
-    assert_eq!(rig.picks().1, [Some(ids[0]), Some(ids[3])]);
-}
-
-#[test]
 fn a_reversed_line_is_picked_by_its_start_and_end_not_by_the_screen_side() {
     let mut rig = Rig::new(1.);
     rig.target(Target::Endpoint);

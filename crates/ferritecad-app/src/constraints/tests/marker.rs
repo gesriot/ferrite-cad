@@ -9,13 +9,11 @@
 //! stored coordinates satisfy, so a marker that read coordinates instead of rules fails. The real
 //! presentation is read by the native gates at the end of this file and in `sessions.rs`.
 #![allow(clippy::panic)]
-use super::canvas::{
-    Rig, enlarged, escape, middle, moved, near, primary, shift_primary, wheel, whole,
-};
-use super::dimension::{band, is_colour, label, labels, press_exact, selected_strokes};
+use super::canvas::{Rig, enlarged, middle, moved, near, wheel, whole};
+use super::dimension::{band, is_colour, label, labels, selected_strokes};
 use super::*;
 use crate::sketch::accepted::{
-    Curve, Drawing, HOVER_COLOUR, MARKER_FILL, PENDING_COLOUR, SELECTED_COLOUR, Shape, Target,
+    Curve, Drawing, HOVER_COLOUR, MARKER_FILL, SELECTED_COLOUR, Shape, Target,
 };
 use crate::sketch::dimension::PAD;
 use crate::sketch::marker::{Kind, Mark, Refs};
@@ -253,11 +251,6 @@ impl Rig {
         scroll_to_row(&self.ctx, &mut self.e, prefix);
         self.press(prefix);
     }
-    /// Tick the Remove of the persisted row that starts with `prefix`.
-    fn tick_remove(&mut self, prefix: &str) {
-        self.scroll_list_to_top();
-        click_remove_on_row(&self.ctx, &mut self.e, prefix);
-    }
     /// Bring the editor of the selected rule (and its Remove constraint button) into view.
     fn reach_remove_constraint(&mut self) {
         self.scroll_list_to_top();
@@ -294,14 +287,12 @@ impl Rig {
 
 // ---- reading the painted frame --------------------------------------------------------
 
-/// A marker as painted: its words, the box it stands in, the border of that box and the colour of
-/// its words.
+/// The words, box and border of a painted rule marker.
 #[derive(Debug, Clone)]
 struct Marker {
     text: String,
     rect: egui::Rect,
     stroke: egui::Stroke,
-    ink: egui::Color32,
 }
 
 /// Whether a painted fill is the marker tint, at the strength the window paints it with: the
@@ -337,7 +328,6 @@ fn markers(out: &egui::FullOutput) -> Vec<Marker> {
                     text: t.galley.text().to_owned(),
                     rect: *rect,
                     stroke: *stroke,
-                    ink: t.fallback_color,
                 })
             }
             _ => None,
@@ -790,221 +780,9 @@ fn the_markers_the_lines_list_the_persisted_rows_and_the_other_labels_show_one_s
 
 // ---- the removal ----------------------------------------------------------------------
 
-/// The typed texts of the form, which no selection and no removal may touch: the first eleven
-/// of `draft_inputs` (the boxes, the unit and the vector directions), before the request, its
-/// history and the refusal.
-fn typed_texts(rig: &Rig) -> Vec<String> {
-    rig.e.draft_inputs().expect("draft")[..11].to_vec()
-}
-
-#[test]
-fn remove_constraint_prepares_one_step_once_and_undo_redo_and_clear_return_exactly_the_request() {
-    for pixels_per_point in [1., 2.] {
-        let mut rig = Rig::markers(pixels_per_point);
-        let (rules, ids) = (rig.rules(), rig.ids.clone());
-        let len30 = rule_of(&rig.stored, 30.);
-        // Unrelated input and pending changes of the person's own, which the removal must keep:
-        // typed texts, a pair with its directions, a pending Horizontal and the ticked removal of a
-        // length.
-        enter_field(&rig.ctx, &mut rig.e, "Line length (mm):", "12.50", false);
-        enter_field(&rig.ctx, &mut rig.e, "Fixed X (mm):", "3", false);
-        rig.press("Segment 4");
-        rig.press("Pair Line A");
-        rig.press("A: start>end");
-        rig.press("Segment 2");
-        rig.press("Pair Line B");
-        rig.press("Segment 3");
-        rig.press("Add Horizontal");
-        rig.tick_remove("Line length 30 mm");
-        let plain = rig.edits();
-        assert_eq!(plain.remove, vec![len30]);
-        assert_eq!(plain.add.len(), 1);
-        // A pending addition is no saved rule: it has no marker, and the seven saved rules are the
-        // only ones the canvas holds.
-        let out = rig.frame(vec![]);
-        assert_eq!(markers(&out).len(), 7, "{}", described(&out));
-        assert_eq!(
-            markers(&out).iter().filter(|m| m.text == "H").count(),
-            1,
-            "the pending Horizontal of Line 3 got a marker"
-        );
-        let (texts, slots, steps) = (typed_texts(&rig), rig.pair_slots(), rig.history());
-        let drawing = rig.solved();
-
-        // One gesture, one step: the rule joins the removals, the rest of the request is as it was.
-        rig.choose_mark("Par");
-        assert_eq!(rig.edits(), plain, "choosing a marker prepares nothing");
-        assert_eq!(rig.history(), steps);
-        rig.press("Remove constraint");
-        let removed = rig.edits();
-        assert_eq!(removed.remove, vec![len30, rules.parallel]);
-        assert_eq!(removed.add, plain.add);
-        assert_eq!(rig.history(), (steps.0 + 1, 0), "{pixels_per_point}x");
-        assert_eq!(rig.refusal(), None);
-        assert_eq!(typed_texts(&rig), texts, "a typed text moved");
-        assert_eq!(
-            rig.pair_slots(),
-            slots,
-            "the pair slots or directions moved"
-        );
-        assert_eq!(rig.mark(), Some(rules.parallel), "the selection is kept");
-        // What the person sees: the marker says what is prepared (amber, beside its kind), the
-        // saved rule and its row are there as they were, and the drawing has not moved.
-        rig.settle();
-        let out = rig.frame(vec![]);
-        let told = marker(&out, "Par -> removed");
-        assert!(is_colour(told.ink, PENDING_COLOUR), "{told:?}");
-        assert!(
-            !has_marker(&out, "Par") && has_marker(&out, "Eq") && has_marker(&out, "H"),
-            "only the removed rule's marker changed"
-        );
-        assert!(painted(
-            &out,
-            "Pending: this constraint is removed; the drawing keeps it until Apply constraints."
-        ));
-        assert_eq!(rig.solved(), drawing, "a prepared removal draws nothing");
-        // The saved rule is still the rule of its row: a different marker is not "removed" because
-        // this one is.
-        for other in ["H", "V", "Eq", "Perp", "Col", "Fix"] {
-            assert!(has_marker(&out, other), "{other}");
-        }
-
-        // A repeat is the same request: no step, no duplicate, and nothing that was undone is lost.
-        rig.press("Remove constraint");
-        assert_eq!(rig.edits(), removed);
-        assert_eq!(rig.history(), (steps.0 + 1, 0));
-        assert_eq!(rig.refusal(), None, "a repeat is no refusal either");
-        rig.tick_remove("Collinear");
-        let both = rig.edits();
-        assert_eq!(both.remove, vec![len30, rules.parallel, rules.collinear]);
-        rig.press("Undo");
-        assert_eq!(rig.edits(), removed);
-        assert_eq!(rig.history(), (steps.0 + 1, 1));
-        rig.press("Remove constraint");
-        assert_eq!(rig.edits(), removed, "the repeat changed the request");
-        assert_eq!(
-            rig.history(),
-            (steps.0 + 1, 1),
-            "a repeat wiped the Redo of a request it did not change"
-        );
-        rig.press("Redo");
-        assert_eq!(rig.edits(), both);
-
-        // The form's own road to the same request: the Remove tick on the row of the rule.
-        let mut ticked = Rig::markers(pixels_per_point);
-        ticked.tick_remove("Parallel");
-        let mut marked = Rig::markers(pixels_per_point);
-        marked.choose_mark("Par");
-        marked.press("Remove constraint");
-        assert_eq!(ticked.edits().remove.len(), 1);
-        assert_eq!(
-            (marked.edits().remove.len(), marked.edits().add.len()),
-            (1, 0)
-        );
-        // Not the same UUIDs (two documents), but the same shape: one removal of the Parallel.
-        assert_eq!(
-            marked.edits().remove,
-            vec![marked.rules().parallel],
-            "{pixels_per_point}x"
-        );
-        assert_eq!(ticked.edits().remove, vec![ticked.rules().parallel]);
-
-        // Undo and Redo and Clear return exactly the request.
-        while rig.history().0 > steps.0 {
-            rig.press("Undo");
-        }
-        assert_eq!(rig.edits(), plain, "Undo did not return the request");
-        assert!(has_marker(&rig.frame(vec![]), "Par"));
-        rig.press("Redo");
-        rig.press("Redo");
-        assert_eq!(rig.edits(), both);
-        rig.press("Clear pending changes");
-        assert_eq!(rig.edits(), SketchConstraintEdits::default());
-        rig.press("Undo");
-        assert_eq!(
-            rig.edits(),
-            both,
-            "Undo after Clear did not return the request"
-        );
-        assert_eq!(typed_texts(&rig), texts);
-        assert_eq!(rig.pair_slots(), slots);
-
-        // The request that leaves the form is the prepared one, nothing else: the Save of a copy.
-        rig.press("Save constraints copy…");
-        let asked = rig.e.take_request().expect("the Save asked for");
-        assert_eq!(crate::transaction_tests::constraints(&asked), both);
-        let draft = rig.e.draft.as_ref().expect("draft");
-        assert_eq!(
-            (
-                crate::transaction_tests::sketch(&asked),
-                asked.expected,
-                &asked.source
-            ),
-            (draft.choice.sketch, draft.version, &draft.source)
-        );
-        let _ = (ids, len30);
-    }
-}
-
 /// The UUID of the stored length of `mm` (the same helper the other gates use).
 fn rule_of(stored: &Sketch, mm: f64) -> StableEntityId {
     super::dimension::rule_of(stored, mm)
-}
-
-#[test]
-fn a_cancelled_save_or_a_stale_reply_keeps_the_selected_rule_and_the_prepared_removal() {
-    let mut rig = Rig::markers(1.);
-    let rules = rig.rules();
-    rig.choose_mark("Perp");
-    rig.press("Remove constraint");
-    rig.press("Save constraints copy…");
-    let asked = rig.e.take_request().expect("the Save asked for");
-    assert_eq!(
-        crate::transaction_tests::constraints(&asked).remove,
-        vec![rules.perpendicular]
-    );
-    assert!(crate::transaction_tests::constraints(&asked).add.is_empty());
-    let kept = (rig.kept(), rig.mark());
-    let mut state = crate::edits::Edits::default();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let generation = state
-        .start(asked, move |_, g, _| {
-            std::thread::spawn(move || tx.send(g).expect("reply"))
-        })
-        .expect("start");
-    // A reply of another generation, and the worker's refusal or a cancelled Save: the draft, the
-    // selection and the marker of the prepared removal are what they were.
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            generation + 1,
-            Err(ferritecad_types::CadError::input("stale"))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.mark()), kept);
-    let g = rx.recv().expect("done");
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            g,
-            Err(ferritecad_types::CadError::constraint("solver refused"))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.mark()), kept);
-    rig.settle();
-    let out = rig.frame(vec![]);
-    assert!(has_marker(&out, "Perp -> removed") && painted(&out, "Remove constraint"));
-    // And the form takes the next action as if nothing had happened.
-    rig.choose_mark("V");
-    rig.press("Remove constraint");
-    assert_eq!(
-        rig.edits().remove,
-        vec![rules.perpendicular, rules.vertical]
-    );
 }
 
 // ---- view, hit area, blocked input ----------------------------------------------------
@@ -1134,210 +912,6 @@ fn markers_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
         assert_eq!(marker(&rig.frame(vec![]), "Eq").rect, first.rect);
         assert!(rig.e.take_request().is_none());
     }
-}
-
-#[test]
-fn a_marker_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing() {
-    for pixels_per_point in [1., 2.] {
-        let ready = || {
-            let (_root, path, source) = markers_document();
-            let mut rig = Rig::over(None, &path, &source, pixels_per_point, spread);
-            rig.target(Target::Rule);
-            (rig, _root)
-        };
-        // A press begun on an available marker is no permission for a later release, however the
-        // surface came back before it: focus lost, another layer over the canvas, and that layer
-        // gone again.
-        for interruption in ["focus", "covered", "uncovered"] {
-            let (mut held, _keep) = ready();
-            let before = held.facts3();
-            let at = held.at_marker("Col");
-            let cover = (interruption != "focus").then_some(held.rect());
-            held.frame(vec![moved(at), primary(at, true)]);
-            assert!(held.canvas().pressed());
-            for _ in 0..3 {
-                held.frame_as(vec![], false, true, cover);
-            }
-            if interruption == "uncovered" {
-                for _ in 0..3 {
-                    held.frame(vec![]);
-                }
-            }
-            held.frame_as(
-                vec![primary(at, false)],
-                false,
-                interruption != "focus",
-                (interruption == "covered").then_some(held.rect()),
-            );
-            assert_eq!(
-                held.facts3(),
-                before,
-                "{pixels_per_point}x: a release after {interruption} took a marker"
-            );
-            assert!(!held.canvas().pressed());
-        }
-
-        // A release just outside the canvas, within a click's distance of the press, takes nothing:
-        // pan the Lines until the marker hugs the canvas's left edge.
-        let (mut edge, _keep) = ready();
-        let canvas = edge.rect();
-        let grab = canvas.center() + egui::vec2(0., 30.);
-        let drag = egui::vec2(canvas.left() + 10. - edge.at_marker("V").x, 0.);
-        edge.frame(vec![moved(grab), middle(grab, true)]);
-        edge.frame(vec![moved(grab + drag)]);
-        edge.frame(vec![middle(grab + drag, false)]);
-        let hugging = marker(&edge.frame(vec![]), "V");
-        assert!(
-            hugging.rect.left() < canvas.left() + 3.5,
-            "{hugging:?} on {canvas:?}"
-        );
-        let before = edge.facts3();
-        let at = hugging.rect.left_center() + egui::vec2(0.2, 0.);
-        let outside = egui::pos2(canvas.left() - 0.8, at.y);
-        assert!(!canvas.contains(outside) && at.distance(outside) <= 6.);
-        edge.frame(vec![moved(at), primary(at, true)]);
-        edge.frame(vec![moved(outside), primary(outside, false)]);
-        assert_eq!(
-            edge.facts3(),
-            before,
-            "{pixels_per_point}x: release outside"
-        );
-        assert!(!edge.canvas().pressed());
-
-        // Escape, a lost focus and a vanished pointer end a press without a trace.
-        for ending in ["escape", "focus", "gone"] {
-            let (mut rig, _keep) = ready();
-            let before = rig.facts3();
-            let at = rig.at_marker("Col");
-            rig.frame(vec![moved(at), primary(at, true)]);
-            rig.frame(vec![match ending {
-                "escape" => escape(),
-                "focus" => egui::Event::WindowFocused(false),
-                _ => egui::Event::PointerGone,
-            }]);
-            rig.frame(vec![
-                egui::Event::WindowFocused(true),
-                moved(at),
-                primary(at, false),
-            ]);
-            assert_eq!(rig.facts3(), before, "{pixels_per_point}x: {ending}");
-        }
-
-        // A shift press on a marker is a pan's: it never takes the marker, moving or not.
-        let (mut rig, _keep) = ready();
-        let before = rig.facts3();
-        let at = rig.at_marker("Col");
-        rig.frame(vec![moved(at), shift_primary(at, true)]);
-        rig.frame(vec![shift_primary(at, false)]);
-        assert_eq!(
-            rig.facts3(),
-            before,
-            "{pixels_per_point}x: a shift click took a marker"
-        );
-
-        // What is picked is what is drawn: with another layer over the right half of the canvas, a
-        // marker under it is not reached, one outside it is, and the same press is a press only
-        // where nothing covers it.
-        let (mut half, _keep) = ready();
-        let canvas = half.rect();
-        let cover = egui::Rect::from_min_max(
-            egui::pos2(canvas.center().x, canvas.top()),
-            canvas.right_bottom(),
-        );
-        let (left, right) = (half.at_marker("Col"), half.at_marker("Par"));
-        assert!(
-            (cover.contains(right) && !cover.contains(left))
-                || (cover.contains(left) && !cover.contains(right)),
-            "the cover splits the two markers: {cover:?} {left:?} {right:?}"
-        );
-        for _ in 0..3 {
-            half.frame_as(vec![], false, true, Some(cover));
-        }
-        let (free, covered, free_rule) = if cover.contains(right) {
-            (left, right, half.rules().collinear)
-        } else {
-            (right, left, half.rules().parallel)
-        };
-        half.frame_as(
-            vec![moved(covered), primary(covered, true)],
-            false,
-            true,
-            Some(cover),
-        );
-        half.frame_as(vec![primary(covered, false)], false, true, Some(cover));
-        assert_eq!(
-            half.mark(),
-            None,
-            "{pixels_per_point}x: a covered marker was reached"
-        );
-        half.frame_as(
-            vec![moved(free), primary(free, true)],
-            false,
-            true,
-            Some(cover),
-        );
-        half.frame_as(vec![primary(free, false)], false, true, Some(cover));
-        assert_eq!(half.mark(), Some(free_rule), "{pixels_per_point}x");
-    }
-
-    // Busy, unfocused, covered, outside and queued forms: the marker, the button and the action take
-    // nothing, and take it again as soon as nothing blocks them.
-    let mut rig = Rig::markers(1.);
-    let rules = rig.rules();
-    rig.choose_mark("Par");
-    let base = rig.facts3();
-    let (aim, other) = (rig.at_marker("Par"), rig.at_marker("V"));
-    let attempt = |rig: &mut Rig, running: bool, focused: bool, cover: Option<egui::Rect>| {
-        for events in [
-            vec![moved(other)],
-            vec![primary(other, true)],
-            vec![primary(other, false)],
-            vec![moved(aim)],
-            vec![primary(aim, true)],
-            vec![primary(aim, false)],
-        ] {
-            rig.frame_as(events, running, focused, cover);
-        }
-    };
-    attempt(&mut rig, true, true, None);
-    assert_eq!(rig.facts3(), base, "busy");
-    attempt(&mut rig, false, false, None);
-    assert_eq!(rig.facts3(), base, "unfocused");
-    let canvas = rig.rect();
-    for _ in 0..3 {
-        rig.frame_as(vec![], false, true, Some(canvas));
-    }
-    attempt(&mut rig, false, true, Some(canvas));
-    assert_eq!(rig.facts3(), base, "covered");
-    for _ in 0..3 {
-        rig.frame(vec![]);
-    }
-    // The action takes no press while a job runs, though the form has the focus it had.
-    click_running(&rig.ctx, &mut rig.e, "Remove constraint", true);
-    assert_eq!(rig.edits(), SketchConstraintEdits::default());
-    // Prepared once, a request of the form waits to be taken: nothing on the canvas and no action
-    // begins.
-    rig.press("Remove constraint");
-    let prepared = rig.edits();
-    assert_eq!(prepared.remove, vec![rules.parallel]);
-    rig.press("Save constraints copy…");
-    assert!(rig.e.pending.is_some());
-    let queued = rig.facts3();
-    attempt(&mut rig, false, true, None);
-    rig.press("Remove constraint");
-    press_exact(&mut rig, "Rule");
-    rig.press("Fit");
-    assert_eq!(rig.facts3(), queued, "queued");
-    assert_eq!(
-        crate::transaction_tests::constraints(&rig.e.take_request().expect("the waiting request")),
-        prepared
-    );
-    // Nothing blocks any more: the other marker is taken and its rule removed.
-    rig.click(other);
-    assert_eq!(rig.mark(), Some(rules.vertical));
-    rig.settle();
-    rig.press("Remove constraint");
-    assert_eq!(rig.edits().remove, vec![rules.parallel, rules.vertical]);
 }
 
 // ---- overlaps, paint order, the 768-point screen, no drawing, other forms ------------

@@ -326,7 +326,7 @@ fn native_solver_values_edit_a_distance_constraint_and_publish_its_new_solution(
     }
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("dimension.fcad");
-    crate::constraints::tests::dimension::write_dimensioned_rectangle(&path);
+    crate::feature_tests::write_dimensioned_rectangle(&path);
     let mut document = Document::open(&path).expect("document");
     document
         .write_changes(&[EditChange::AddParameter {
