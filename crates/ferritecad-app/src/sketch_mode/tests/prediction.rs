@@ -401,3 +401,83 @@ fn finished_seed_uses_saved_coordinates_new_draft_curves_and_final_rule_values()
         }
     );
 }
+
+/// The link between the first and third stored lines runs through a newly drawn line.
+fn predict_linked_lines(second_agrees: bool, third_agrees: bool) {
+    let original_lines: Vec<_> = (0..4)
+        .map(|i| line([0., i as f64], [1., i as f64]))
+        .collect();
+    let d = existing(original_lines);
+    let original = d.original.as_ref().expect("stored sketch");
+    let mut shown = original.clone();
+    for (i, c) in shown.curves.iter_mut().enumerate() {
+        c.geometry = line([4., i as f64], [5., i as f64]).geometry;
+    }
+    shown.curves.push(line([6., 4.], [7., 4.]));
+    let join = |left: usize, right: usize| SketchConstraint {
+        id: StableEntityId::new(),
+        rule: SketchConstraintRule::Coincident {
+            a: SketchPointRef::new(shown.curves[left].id, SketchPointSelector::End),
+            b: SketchPointRef::new(shown.curves[right].id, SketchPointSelector::Start),
+        },
+    };
+    shown.constraints = vec![join(4, 2), join(1, 4), join(0, 1)];
+    let mut calls = 0;
+    let result =
+        super::super::prediction::geometry_changes(d.sketch, Some(original), &shown, |s| {
+            calls += 1;
+            let mut answer = shown.clone();
+            for i in 0..4 {
+                let written = match calls {
+                    1 => false,
+                    2 => i == 0,
+                    3 => i < 3,
+                    _ => panic!("a fourth solve"),
+                };
+                let expected = if written {
+                    &shown.curves[i]
+                } else {
+                    &original.curves[i]
+                };
+                assert_eq!(&s.curves[i], expected);
+            }
+            assert_eq!(s.curves[4], shown.curves[4]);
+            if calls == 1 || (calls == 2 && !second_agrees) {
+                answer.curves[0] = original.curves[0].clone();
+            } else if calls == 3 && !third_agrees {
+                // A mismatch outside the group must still refuse the whole edit.
+                answer.curves[3] = original.curves[3].clone();
+            }
+            Ok(Some(answer))
+        });
+    assert_eq!(calls, if second_agrees { 2 } else { 3 });
+    if !second_agrees && !third_agrees {
+        assert_eq!(result, Err(super::super::prediction::ELSEWHERE.into()));
+        return;
+    }
+    let count = if second_agrees { 1 } else { 3 };
+    let expected: Vec<_> = shown.curves[..count]
+        .iter()
+        .map(|c| EditChange::SetCurveGeometry {
+            sketch: d.sketch,
+            curve: c.id,
+            geometry: c.geometry.clone(),
+        })
+        .collect();
+    assert_eq!(result, Ok(expected));
+}
+
+#[test]
+fn matching_second_prediction_keeps_only_the_original_write() {
+    predict_linked_lines(true, false);
+}
+
+#[test]
+fn third_prediction_writes_only_the_saved_curves_in_the_connected_group() {
+    predict_linked_lines(false, true);
+}
+
+#[test]
+fn a_mismatch_after_the_connected_group_prediction_refuses_finish() {
+    predict_linked_lines(false, false);
+}

@@ -9,9 +9,7 @@
 //! label that measured anything instead of stating the rule fails. The real presentation is read by
 //! the native gate at the end of this file and in `sessions.rs`.
 #![allow(clippy::panic)]
-use super::canvas::{
-    Rig, enlarged, escape, middle, moved, near, primary, shift_primary, wheel, whole,
-};
+use super::canvas::{Rig, enlarged, middle, moved, near, wheel, whole};
 use super::dimension::{
     band, dimension_stored, has_label, is_colour, label, labels, rule_of, selected_strokes,
 };
@@ -160,10 +158,6 @@ impl Rig {
     }
     fn type_angle(&mut self, text: &str) {
         enter_field(&self.ctx, &mut self.e, "New angle", text, false);
-    }
-    /// Everything a selection must leave alone, and the angle that is selected.
-    fn angle_facts(&self) -> (super::canvas::Facts, Option<StableEntityId>) {
-        (self.facts(), self.turn())
     }
     /// The pair slots, the way each vector runs and the angle text: unapplied input for a new rule.
     fn slots(&self) -> super::AngleState {
@@ -836,67 +830,6 @@ fn replace_dimension_is_the_remove_and_add_of_the_form_and_never_a_tolerance() {
 
 // ---- refusals and what survives them ---------------------------------------------------
 
-#[test]
-fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepared_angle() {
-    let (_root, path, source) = angles_document();
-    let mut rig = Rig::over(None, &path, &source, 1., enlarged);
-    let ids = rig.ids.clone();
-    let rules = angle_rules(&rig.stored);
-    let [(a0, b0, _), ..] = saved_angles(&ids);
-    rig.choose("A>B -70°");
-    rig.type_angle("110");
-    rig.press("Replace dimension");
-    rig.type_angle("58.25");
-    rig.press("Save constraints copy…");
-    let asked = rig.e.take_request().expect("the Save asked for");
-    assert_eq!(
-        crate::transaction_tests::constraints(&asked).remove,
-        vec![rules[0]]
-    );
-    assert_eq!(
-        crate::transaction_tests::constraints(&asked).add,
-        vec![angle_add(a0, b0, 110.)]
-    );
-    let kept = (rig.kept(), rig.turn(), rig.degrees_typed());
-    let mut state = crate::edits::Edits::default();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let generation = state
-        .start(asked, move |_, g, _| {
-            std::thread::spawn(move || tx.send(g).expect("reply"))
-        })
-        .expect("start");
-    // A reply of another generation, and the worker's refusal or a cancelled Save: the draft, the
-    // text, the selection and the label of the prepared replacement are what they were.
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            generation + 1,
-            Err(ferritecad_types::CadError::input("stale"))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.turn(), rig.degrees_typed()), kept);
-    let g = rx.recv().expect("done");
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            g,
-            Err(ferritecad_types::CadError::constraint("solver refused"))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.turn(), rig.degrees_typed()), kept);
-    rig.settle();
-    let out = rig.frame(vec![]);
-    assert!(has_label(&out, "A>B -70 -> 110°") && painted(&out, "Replace dimension"));
-    // And the form takes the next action as if nothing had happened.
-    rig.type_angle("80");
-    rig.press("Replace dimension");
-    assert_eq!(rig.edits().add, vec![angle_add(a0, b0, 80.)]);
-}
-
 // ---- view, hit area, blocked input ----------------------------------------------------
 
 /// A drawing of four short Lines at the corners of a wide box: every pair's label stands far from
@@ -1031,187 +964,6 @@ fn labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
         assert_eq!(label(&rig.frame(vec![]), "A>B 180°").rect, first.rect);
         assert!(rig.e.take_request().is_none());
     }
-}
-
-#[test]
-fn an_angle_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing()
- {
-    for pixels_per_point in [1., 2.] {
-        let ready = || {
-            let mut rig = Rig::angles(pixels_per_point);
-            let ids = rig.ids.clone();
-            rig.target(Target::Dimension);
-            rig.e.pick_for_tests(ids[3]);
-            rig
-        };
-        // A press begun on an available label is no permission for a later release, however the
-        // surface came back before it: focus lost, another layer over the canvas, and that layer
-        // gone again.
-        for interruption in ["focus", "covered", "uncovered"] {
-            let mut held = ready();
-            let before = held.angle_facts();
-            let at = held.at_label("A>B -70°");
-            let cover = (interruption != "focus").then_some(held.rect());
-            held.frame(vec![moved(at), primary(at, true)]);
-            assert!(held.canvas().pressed());
-            for _ in 0..3 {
-                held.frame_as(vec![], false, true, cover);
-            }
-            if interruption == "uncovered" {
-                for _ in 0..3 {
-                    held.frame(vec![]);
-                }
-            }
-            held.frame_as(
-                vec![primary(at, false)],
-                false,
-                interruption != "focus",
-                (interruption == "covered").then_some(held.rect()),
-            );
-            assert_eq!(
-                held.angle_facts(),
-                before,
-                "{pixels_per_point}x: a release after {interruption} took a label"
-            );
-            assert!(!held.canvas().pressed());
-        }
-
-        // A release just outside the canvas, within a click's distance of the press, takes nothing:
-        // pan the Lines until the label hugs the canvas's left edge.
-        let mut edge = ready();
-        let canvas = edge.rect();
-        let grab = canvas.center() + egui::vec2(0., 30.);
-        // The middle of the middles goes to ten points from the canvas's left edge; the box is held
-        // in the band, three points from that edge.
-        let drag = egui::vec2(canvas.left() + 10. - edge.at_label("A>B 110°").x, 0.);
-        edge.frame(vec![moved(grab), middle(grab, true)]);
-        edge.frame(vec![moved(grab + drag)]);
-        edge.frame(vec![middle(grab + drag, false)]);
-        let hugging = label(&edge.frame(vec![]), "A>B 110°");
-        assert!(
-            (hugging.rect.left() - (canvas.left() + 3.)).abs() < 0.01,
-            "{hugging:?} on {canvas:?}"
-        );
-        let before = edge.angle_facts();
-        let at = hugging.rect.left_center() + egui::vec2(0.2, 0.);
-        let outside = egui::pos2(canvas.left() - 0.8, at.y);
-        assert!(!canvas.contains(outside) && at.distance(outside) <= 6.);
-        edge.frame(vec![moved(at), primary(at, true)]);
-        edge.frame(vec![moved(outside), primary(outside, false)]);
-        assert_eq!(
-            edge.angle_facts(),
-            before,
-            "{pixels_per_point}x: release outside"
-        );
-        assert!(!edge.canvas().pressed());
-
-        // Escape, a lost focus and a vanished pointer end a press without a trace.
-        for ending in ["escape", "focus", "gone"] {
-            let mut rig = ready();
-            let before = rig.angle_facts();
-            let at = rig.at_label("A>B -70°");
-            rig.frame(vec![moved(at), primary(at, true)]);
-            rig.frame(vec![match ending {
-                "escape" => escape(),
-                "focus" => egui::Event::WindowFocused(false),
-                _ => egui::Event::PointerGone,
-            }]);
-            rig.frame(vec![
-                egui::Event::WindowFocused(true),
-                moved(at),
-                primary(at, false),
-            ]);
-            assert_eq!(rig.angle_facts(), before, "{pixels_per_point}x: {ending}");
-        }
-
-        // A shift press on a label is a pan's: it never takes the label, moving or not.
-        let mut rig = ready();
-        let before = rig.angle_facts();
-        let at = rig.at_label("A>B -70°");
-        rig.frame(vec![moved(at), shift_primary(at, true)]);
-        rig.frame(vec![shift_primary(at, false)]);
-        assert_eq!(
-            rig.angle_facts(),
-            before,
-            "{pixels_per_point}x: a shift click took a label"
-        );
-    }
-
-    // Busy, unfocused, covered, outside and queued forms: the label, the field and the action take
-    // nothing, and take it again as soon as nothing blocks them.
-    let mut rig = Rig::angles(1.);
-    let ids = rig.ids.clone();
-    let rules = angle_rules(&rig.stored);
-    rig.choose("A>B -70°");
-    rig.type_angle("70");
-    let base = rig.angle_facts();
-    let (aim, other) = (rig.at_label("A>B -70°"), rig.at_label("A>B 110°"));
-    let attempt = |rig: &mut Rig, running: bool, focused: bool, cover: Option<egui::Rect>| {
-        for events in [
-            vec![moved(other)],
-            vec![primary(other, true)],
-            vec![primary(other, false)],
-            vec![moved(aim)],
-            vec![primary(aim, true)],
-            vec![primary(aim, false)],
-        ] {
-            rig.frame_as(events, running, focused, cover);
-        }
-    };
-    attempt(&mut rig, true, true, None);
-    assert_eq!(rig.angle_facts(), base, "busy");
-    attempt(&mut rig, false, false, None);
-    assert_eq!(rig.angle_facts(), base, "unfocused");
-    let canvas = rig.rect();
-    for _ in 0..3 {
-        rig.frame_as(vec![], false, true, Some(canvas));
-    }
-    attempt(&mut rig, false, true, Some(canvas));
-    assert_eq!(rig.angle_facts(), base, "covered");
-    for _ in 0..3 {
-        rig.frame(vec![]);
-    }
-    // The field takes no text and the action no press while a job runs, though the field holds the
-    // focus it had; the typed text is exactly what it was.
-    enter_field(&rig.ctx, &mut rig.e, "New angle", "99", true);
-    click_running(&rig.ctx, &mut rig.e, "Replace dimension", true);
-    assert_eq!(
-        (rig.degrees_typed().as_str(), rig.edits()),
-        ("70", SketchConstraintEdits::default())
-    );
-    // Prepared once, a request of the form waits to be taken: nothing on the canvas, no text in
-    // the field, no action begins.
-    rig.type_angle("70");
-    rig.press("Replace dimension");
-    let prepared = rig.edits();
-    assert_eq!(prepared.remove, vec![rules[0]]);
-    rig.press("Save constraints copy…");
-    assert!(rig.e.pending.is_some());
-    let queued = rig.angle_facts();
-    attempt(&mut rig, false, true, None);
-    enter_field(&rig.ctx, &mut rig.e, "New angle", "99", false);
-    rig.press("Replace dimension");
-    press_exact_target(&mut rig, "Dimension");
-    rig.press("Fit");
-    assert_eq!(rig.angle_facts(), queued, "queued");
-    assert_eq!(rig.degrees_typed(), "70");
-    assert_eq!(
-        crate::transaction_tests::constraints(&rig.e.take_request().expect("the waiting request")),
-        prepared
-    );
-    // Nothing blocks any more: the other label is taken and its dimension replaced.
-    rig.click(other);
-    assert_eq!(rig.turn(), Some(rules[1]));
-    rig.settle();
-    rig.type_angle("33");
-    rig.press("Replace dimension");
-    assert_eq!(rig.edits().remove, vec![rules[0], rules[1]]);
-    let _ = ids;
-}
-
-/// Press the button whose words are exactly `words` (the target buttons, not the rows).
-fn press_exact_target(rig: &mut Rig, words: &str) {
-    super::dimension::press_exact(rig, words);
 }
 
 // ---- overlaps, the 768-point screen, no drawing, other forms ----------------------------
@@ -1534,35 +1286,6 @@ fn without_a_drawing_the_angle_rows_still_select_and_replace_and_other_profiles_
     assert!(rig.e.draft_turns().expect("draft").0.is_empty());
 }
 
-#[test]
-fn two_forms_over_one_document_keep_their_own_angle_selection_text_and_pending_replacement() {
-    // Copies of a document share their curve and rule UUIDs; the forms must not.
-    let (_root, path, source) = angles_document();
-    let rules = angle_rules(&dimension_stored(&source));
-    let mut a = Rig::over(None, &path, &source, 1., enlarged);
-    let mut b = Rig::over(None, &path, &source, 1., enlarged);
-    a.choose("A>B -70°");
-    a.type_angle("110");
-    a.press("Replace dimension");
-    let in_a = (a.turn(), a.degrees_typed(), a.edits());
-    assert_eq!(in_a.0, Some(rules[0]));
-    // B has not been touched by any of it.
-    assert_eq!(
-        (b.turn(), b.degrees_typed(), b.edits()),
-        (None, String::new(), SketchConstraintEdits::default())
-    );
-    assert!(
-        has_label(&b.frame(vec![]), "A>B -70°") && !has_label(&b.frame(vec![]), "A>B -70 -> 110°")
-    );
-    b.choose("A>B 180°");
-    b.type_angle("0");
-    b.press("Replace dimension");
-    assert_eq!(b.edits().remove, vec![rules[2]]);
-    // A is what it was; its text box holds A's text and B's holds B's.
-    assert_eq!((a.turn(), a.degrees_typed(), a.edits()), in_a);
-    assert_eq!(b.degrees_typed(), "0");
-}
-
 /// The cylinder of §31L with a Radius, only to show that a Circle has no angle.
 fn persisted_circle_for_angles() -> (
     tempfile::TempDir,
@@ -1589,92 +1312,6 @@ fn moved_circle_for_angles(stored: &Sketch) -> Drawing {
 
 use super::canvas::{accepted_scene, by_lists, line_numbers, presented, read_stl_of};
 use super::dimension::Replaced;
-
-/// A quadrilateral whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin)
-/// and keeps the rules that solve it into a different shape: Line 1's start fixed at the origin,
-/// Line 1 horizontal and 50 mm, Line 2 30 mm, Line 3 40 mm, and two saved directed angles — R_a
-/// Line 1 start>end to Line 2 start>end, **+100°**, and R_b Line 2 **end>start** (the reversed
-/// vector) to Line 3 start>end, **−100°**. Solved: (0,0) (50,0) (44.7906, 29.5442) (4.7906, 29.5442);
-/// the stored guess turns ±77.1°, so no saved number is what the guess measures.
-pub(crate) fn write_angled_quad(path: &Path) {
-    ferritecad_jobs::create_document_with_kernel(
-        ferritecad_jobs::CreateDocumentRequest::new(
-            path,
-            ferritecad_jobs::NewDocument::SketchExtrude(
-                ferritecad_document::PolygonExtrusion::new(
-                    vec![[-6., -3.], [6., -2.], [7., 5.], [-5., 4.]],
-                    10.,
-                )
-                .expect("a guess"),
-            ),
-            "test",
-        ),
-        ferritecad_occt::OcctKernel::new,
-        &OperationContext::default(),
-    )
-    .expect("the source");
-    let mut document = Document::open(path).expect("document");
-    let choice = crate::sketch_facts::Source::read(&document)
-        .expect("catalogue")
-        .constraint_sketches[0]
-        .clone();
-    let ids: Vec<_> = choice
-        .stored
-        .as_ref()
-        .expect("stored")
-        .curves
-        .iter()
-        .map(|c| c.id)
-        .collect();
-    let line = |i: usize, kind| {
-        AddSketchConstraint::Line(AddLineConstraint::Line {
-            curve: ids[i],
-            kind,
-        })
-    };
-    let origin = SketchCoordinateMm::new(0.).expect("origin");
-    let prepared = ferritecad_fixtures::constraint_changes(
-        &document,
-        choice.sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![
-                line(
-                    0,
-                    LineConstraintKind::Fixed {
-                        at: LineEndpoint::Start,
-                        x: origin,
-                        y: origin,
-                    },
-                ),
-                line(0, LineConstraintKind::Horizontal),
-                length_add(ids[0], 50.),
-                angle_add(
-                    vector(&ids, 0, LineEndpoint::Start),
-                    vector(&ids, 1, LineEndpoint::Start),
-                    100.,
-                ),
-                length_add(ids[1], 30.),
-                angle_add(
-                    vector(&ids, 1, LineEndpoint::End),
-                    vector(&ids, 2, LineEndpoint::Start),
-                    -100.,
-                ),
-                length_add(ids[2], 40.),
-            ],
-        },
-    )
-    .expect("prepare");
-    document.write_changes(&prepared).expect("rules");
-    document.close().expect("close");
-}
-
-fn length_add(curve: StableEntityId, mm: f64) -> AddSketchConstraint {
-    AddSketchConstraint::Line(AddLineConstraint::Line {
-        curve,
-        kind: LineConstraintKind::Distance(LineLengthMm::new(mm).expect("a length")),
-    })
-}
 
 /// The lines of the real presentation as the form's own curves.
 fn curves_of(real: &[(StableEntityId, SketchGeometry)]) -> Vec<Curve> {

@@ -276,7 +276,7 @@ fn native_values_edit_the_stored_revolve_angle_from_an_angle_parameter() {
     }
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
-    let revolve = crate::constraints::tests::revolve::write_sector(
+    let revolve = crate::feature_tests::write_sector(
         &path,
         crate::constraints::tests::revolve::SECTOR_P.as_slice(),
         45.,
@@ -326,7 +326,7 @@ fn native_solver_values_edit_a_distance_constraint_and_publish_its_new_solution(
     }
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("dimension.fcad");
-    crate::constraints::tests::dimension::write_dimensioned_rectangle(&path);
+    crate::feature_tests::write_dimensioned_rectangle(&path);
     let mut document = Document::open(&path).expect("document");
     document
         .write_changes(&[EditChange::AddParameter {

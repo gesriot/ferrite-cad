@@ -24,7 +24,6 @@ pub enum ModelEdit {
     /// Start a drawing on the selected datum plane.
     NewSketch,
     Height,
-    Constraints,
     Cut,
     Fillet,
     Chamfer,
@@ -41,7 +40,6 @@ impl ModelEdit {
             Self::Revolve => "Revolve…",
             Self::NewSketch => "New sketch…",
             Self::Height => "Edit height…",
-            Self::Constraints => "Edit constraints…",
             Self::Cut => "Edit Cut…",
             Self::Fillet => "Edit Fillet radius…",
             Self::Chamfer => "Edit Chamfer distance…",

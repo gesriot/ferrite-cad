@@ -2,7 +2,7 @@
 use ferritecad_document::{DocumentVersion, EditChange};
 use std::path::Path;
 
-pub(super) fn cli_edit(from: &Path, to: &Path, version: DocumentVersion, changes: &[EditChange]) {
+pub(crate) fn cli_edit(from: &Path, to: &Path, version: DocumentVersion, changes: &[EditChange]) {
     let request = to.with_extension("json");
     std::fs::write(
         &request,

@@ -3,10 +3,11 @@
 #![allow(clippy::panic)]
 use crate::feature_facts::{CircularCut, CutExtent, EdgeChamfer, EdgeFillet};
 use ferritecad_document::{
-    EditChange, EndCondition, FeatureAddition, ObjectPayload, SketchGeometry,
+    AddLineConstraint, AddSketchConstraint, EditChange, EndCondition, FeatureAddition,
+    LineConstraintKind, ObjectPayload, SketchGeometry,
 };
 use ferritecad_jobs::EditRequest;
-use ferritecad_types::ObjectId;
+use ferritecad_types::{ObjectId, StableEntityId};
 
 /// A U with two disjoint, parallel rims at different heights: the right one
 /// (Line 1) at y 22 and the left one (Line 5) at y 20. Neither touches the
@@ -584,4 +585,236 @@ pub(crate) fn persist_rectangle_lengths(path: &std::path::Path) -> crate::sketch
     let source = crate::sketch_facts::Source::read(&document).expect("catalog");
     document.close().expect("close");
     source
+}
+
+fn write_ruled_quadrilateral(
+    path: &std::path::Path,
+    rules: impl FnOnce(&[StableEntityId]) -> Vec<AddSketchConstraint>,
+) {
+    use ferritecad_document::{Document, SketchConstraintEdits};
+    use ferritecad_kernel::OperationContext;
+
+    ferritecad_jobs::create_document_with_kernel(
+        ferritecad_jobs::CreateDocumentRequest::new(
+            path,
+            ferritecad_jobs::NewDocument::SketchExtrude(
+                ferritecad_document::PolygonExtrusion::new(
+                    vec![[-6., -3.], [6., -2.], [7., 5.], [-5., 4.]],
+                    10.,
+                )
+                .expect("a guess"),
+            ),
+            "test",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("the source");
+    let mut document = Document::open(path).expect("document");
+    let (sketch, drawing) = ferritecad_fixtures::sketch(&document).expect("profile sketch");
+    let ids: Vec<_> = drawing.curves.iter().map(|c| c.id).collect();
+    let prepared = ferritecad_fixtures::constraint_changes(
+        &document,
+        sketch,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: rules(&ids),
+        },
+    )
+    .expect("prepare");
+    document.write_changes(&prepared).expect("rules");
+    document.close().expect("close");
+}
+
+fn line_rule(curve: StableEntityId, kind: LineConstraintKind) -> AddSketchConstraint {
+    AddSketchConstraint::Line(AddLineConstraint::Line { curve, kind })
+}
+
+fn side_length(curve: StableEntityId, value: f64) -> AddSketchConstraint {
+    let mm = ferritecad_document::LineLengthMm::new(value).expect("side length");
+    line_rule(curve, LineConstraintKind::Distance(mm))
+}
+
+fn fixed_origin(curve: StableEntityId) -> AddSketchConstraint {
+    let origin = ferritecad_document::SketchCoordinateMm::new(0.).expect("origin");
+    line_rule(
+        curve,
+        LineConstraintKind::Fixed {
+            at: ferritecad_document::LineEndpoint::Start,
+            x: origin,
+            y: origin,
+        },
+    )
+}
+
+/// A rectangle whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin) and
+/// keeps the rules that solve it into a different shape: Line 1's start fixed at the origin, Line 1
+/// horizontal and 60 mm, Line 2 vertical and 30 mm, and Lines 1 and 3 of **equal length** and
+/// **parallel** (the EqualLength stored before the Parallel, so the two markers stand on one place
+/// and a click reaches the EqualLength). Solved: (0,0) (60,0) (60,30) (0,30), no degree of freedom
+/// left. Remove the EqualLength and the solver has one: the free corner stays where the Sketch
+/// stored it, (-5, 4) slid onto the line y = 30 of the Parallel, a 65 mm Line 3.
+pub(crate) fn write_marked_rectangle(path: &std::path::Path) {
+    write_ruled_quadrilateral(path, |ids| {
+        vec![
+            fixed_origin(ids[0]),
+            line_rule(ids[0], LineConstraintKind::Horizontal),
+            side_length(ids[0], 60.),
+            line_rule(ids[1], LineConstraintKind::Vertical),
+            side_length(ids[1], 30.),
+            AddSketchConstraint::Line(AddLineConstraint::EqualLength {
+                a: ids[0],
+                b: ids[2],
+            }),
+            AddSketchConstraint::Line(AddLineConstraint::Relation {
+                a: ids[0],
+                b: ids[2],
+                relation: ferritecad_document::LineRelation::Parallel,
+            }),
+        ]
+    });
+}
+
+/// A rectangle whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin)
+/// and keeps the rules that solve it into a 60 × 30 mm rectangle around the same place:
+/// Lines 1 and 3 horizontal, Lines 2 and 4 vertical, Line 1 60 mm and Line 2 30 mm. Every
+/// stored vertex and Line middle then lies inside the solved drawing, far from all of it.
+pub(crate) fn write_dimensioned_rectangle(path: &std::path::Path) {
+    write_ruled_quadrilateral(path, |ids| {
+        vec![
+            line_rule(ids[0], LineConstraintKind::Horizontal),
+            line_rule(ids[1], LineConstraintKind::Vertical),
+            line_rule(ids[2], LineConstraintKind::Horizontal),
+            line_rule(ids[3], LineConstraintKind::Vertical),
+            side_length(ids[0], 60.),
+            side_length(ids[1], 30.),
+        ]
+    });
+}
+
+/// A quadrilateral whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin)
+/// and keeps the rules that solve it into a different shape: Line 1's start fixed at the origin,
+/// Line 1 horizontal and 50 mm, Line 2 30 mm, Line 3 40 mm, and two saved directed angles — R_a
+/// Line 1 start>end to Line 2 start>end, **+100°**, and R_b Line 2 **end>start** (the reversed
+/// vector) to Line 3 start>end, **−100°**. Solved: (0,0) (50,0) (44.7906, 29.5442) (4.7906, 29.5442);
+/// the stored guess turns ±77.1°, so no saved number is what the guess measures.
+pub(crate) fn write_angled_quad(path: &std::path::Path) {
+    use ferritecad_document::{DirectedAngle, DirectedLine, LineEndpoint};
+    write_ruled_quadrilateral(path, |ids| {
+        let side = |i: usize, start: LineEndpoint| {
+            DirectedLine::new(ids[i], start, start.other()).expect("directed line")
+        };
+        let angle = |a, b, degrees| {
+            AddSketchConstraint::Line(AddLineConstraint::DirectedAngle {
+                a,
+                b,
+                angle: DirectedAngle::from_degrees(degrees).expect("angle"),
+            })
+        };
+        vec![
+            fixed_origin(ids[0]),
+            line_rule(ids[0], LineConstraintKind::Horizontal),
+            side_length(ids[0], 50.),
+            angle(
+                side(0, LineEndpoint::Start),
+                side(1, LineEndpoint::Start),
+                100.,
+            ),
+            side_length(ids[1], 30.),
+            angle(
+                side(1, LineEndpoint::End),
+                side(2, LineEndpoint::Start),
+                -100.,
+            ),
+            side_length(ids[2], 40.),
+        ]
+    });
+}
+
+/// The standalone SketchY Revolve frame, written without a kernel.
+pub(crate) fn write_sector(path: &std::path::Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
+    use ferritecad_document::{
+        Body, DatumPlane, Dependency, DependencyRole, Document, Point2, Revolve, RevolveAxis,
+        RevolveExtent, Sketch, SketchCurve, SolidOperation,
+    };
+    use ferritecad_types::{Result, StableEntityId, Transform};
+    let mut d = Document::create(path).expect("document");
+    let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
+    let n = points.len();
+    d.write(|w| {
+        w.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
+        let curves = (0..n)
+            .map(|i| {
+                Ok(SketchCurve {
+                    id: labels[i],
+                    construction: false,
+                    geometry: SketchGeometry::Line {
+                        start: Point2::new(points[i][0], points[i][1])?,
+                        end: Point2::new(points[(i + 1) % n][0], points[(i + 1) % n][1])?,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        w.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
+        )?;
+        w.put_object(
+            revolve,
+            None,
+            2,
+            Some("Revolve1"),
+            &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
+                profile: sketch,
+                axis: RevolveAxis::SketchY,
+                extent: RevolveExtent::Partial {
+                    angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))?,
+                },
+                operation: SolidOperation::NewBody,
+                previous: None,
+            }),
+        )?;
+        w.put_object(
+            body,
+            None,
+            3,
+            Some("Body"),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(revolve),
+                rollback: None,
+            }),
+        )?;
+        for (dependent, dependency, role) in [
+            (sketch, plane, DependencyRole::Plane),
+            (revolve, sketch, DependencyRole::Profile),
+            (body, revolve, DependencyRole::BodyTip),
+        ] {
+            w.add_dependency(Dependency {
+                dependent,
+                dependency,
+                role,
+            })?;
+        }
+        Ok(())
+    })
+    .expect("sector");
+    d.close().expect("close");
+    revolve
 }

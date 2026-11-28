@@ -39,12 +39,7 @@ fn check_drawing(curves: Vec<ferritecad_document::SketchCurve>) {
         assert_eq!(row.note, "Stored object; references do not imply ownership");
         assert_eq!(
             actions(&source, row.id),
-            vec![
-                ModelEdit::Sketch,
-                ModelEdit::Extrude,
-                ModelEdit::Revolve,
-                ModelEdit::Constraints,
-            ]
+            vec![ModelEdit::Sketch, ModelEdit::Extrude, ModelEdit::Revolve,]
         );
         assert_eq!(
             Command::Delete.available(&source, row.id, Ok(Access::Idle)),
@@ -72,63 +67,32 @@ fn check_drawing(curves: Vec<ferritecad_document::SketchCurve>) {
     }
     let accepted =
         crate::sketch::accepted::Accepted::new(Some(source.version), loaded.sketch_presentations);
-    let mut editor = crate::constraints::Editor::default();
-    assert!(editor.begin_with(&f.path, &source, &accepted, f.sketch));
-    assert!(editor.active());
+    let mut editor = crate::sketch::Editor::default();
+    assert!(
+        editor
+            .viewport
+            .begin_with(&f.path, &source, &accepted, f.sketch)
+    );
     let ctx = egui::Context::default();
-    let frame = || egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(988., 768.),
-        )),
-        ..Default::default()
-    };
-    // Let the form settle its initial size before reading the painted list.
-    let mut initial = ctx.run_ui(frame(), |ui| editor.draw(ui, false));
-    initial.textures_delta.clear();
-    let mut out = ctx.run_ui(frame(), |ui| editor.draw(ui, false));
+    let mut out = ctx.run_ui(Default::default(), |ui| editor.draw(ui, false, ""));
     out.textures_delta.clear();
-    let shown: Vec<_> = out
-        .shapes
-        .iter()
-        .filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.text().starts_with("Segment ") => {
-                Some(t.galley.text().to_owned())
-            }
-            _ => None,
-        })
-        .collect();
-    let expected: Vec<_> = curves
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let ferritecad_document::SketchGeometry::Line { start, end } = c.geometry else {
-                unreachable!("line fixture")
-            };
-            format!(
-                "Segment {} · {} · ({}, {}) → ({}, {}) mm",
-                i + 1,
-                crate::constraints::short(c.id),
-                start.x,
-                start.y,
-                end.x,
-                end.y
-            )
-        })
-        .collect();
-    assert_eq!(shown, expected);
-    assert!(editor.active());
+    assert!(!out.shapes.is_empty());
+    assert!(editor.viewport.active());
+    assert_eq!(
+        crate::sketch_mode::tests::curve_edits::curves(&editor),
+        curves
+    );
 }
 #[test]
-fn empty_drawing_opens_constraints_with_its_exact_curve_list_and_keeps_delete() {
+fn empty_drawing_opens_in_the_viewport_with_its_exact_curves_and_keeps_delete() {
     check_drawing(vec![]);
 }
 #[test]
-fn open_drawing_opens_constraints_with_its_exact_curve_list_and_keeps_delete() {
+fn open_drawing_opens_in_the_viewport_with_its_exact_curves_and_keeps_delete() {
     check_drawing(vec![line([0., 0.], [10., 0.])]);
 }
 #[test]
-fn scrambled_drawing_opens_constraints_with_its_exact_curve_list_and_keeps_delete() {
+fn scrambled_drawing_opens_in_the_viewport_with_its_exact_curves_and_keeps_delete() {
     check_drawing(variants(&rectangle()).remove(5));
 }
 #[test]

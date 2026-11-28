@@ -146,7 +146,7 @@ impl Window {
     }
 
     /// `begin_window_quit` with nothing else running.
-    pub(super) fn begin_quit(&mut self) -> bool {
+    pub(crate) fn begin_quit(&mut self) -> bool {
         crate::begin_window_quit(
             &mut self.tabs,
             &mut self.sessions,

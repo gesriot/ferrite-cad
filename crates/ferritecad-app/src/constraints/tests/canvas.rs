@@ -417,60 +417,6 @@ fn the_lists_and_the_canvas_show_one_selection() {
 }
 
 #[test]
-fn typed_inputs_history_and_requests_wait_for_an_explicit_action() {
-    let mut rig = Rig::new(1.);
-    let ids = rig.ids.clone();
-    // Text in every box, one rule added (a history step), the angle's vectors set.
-    rig.press("Segment 1");
-    enter_field(&rig.ctx, &mut rig.e, "Line length (mm):", "55.5", false);
-    enter_field(&rig.ctx, &mut rig.e, "Fixed X (mm):", "3.25", false);
-    enter_field(&rig.ctx, &mut rig.e, "Fixed Y (mm):", "-4.5", false);
-    enter_field(&rig.ctx, &mut rig.e, "A>B (°):", "25", false);
-    rig.press("Add Horizontal");
-    rig.press("A: start>end");
-    let before = rig.kept();
-    assert_eq!(before.1, (1, 0), "one step of request history");
-    let edits = rig.e.draft_edits();
-    let steps: [fn(&mut Rig); 4] = [
-        |r| {
-            let m = r.mid(1);
-            r.click(m)
-        },
-        |r| {
-            r.target(Target::Endpoint);
-            let e = r.ends(2)[1];
-            r.click(e)
-        },
-        |r| {
-            r.target(Target::PairA);
-            let m = r.mid(0);
-            r.click(m)
-        },
-        |r| {
-            r.target(Target::PairB);
-            let m = r.mid(3);
-            r.click(m)
-        },
-    ];
-    for step in steps {
-        step(&mut rig);
-        assert_eq!(
-            rig.kept(),
-            before,
-            "a pick changed an input, the history or a request"
-        );
-        assert_eq!(rig.e.draft_edits(), edits);
-    }
-    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
-    // Only the explicit action changes the request, and Undo then spends a step of its
-    // own, not one of the picks.
-    rig.press("Add Equal length");
-    assert_eq!(rig.e.draft_edits().expect("edits").add.len(), 2);
-    assert_eq!(rig.kept().1, (2, 0));
-    assert_eq!(rig.picks().1, [Some(ids[0]), Some(ids[3])]);
-}
-
-#[test]
 fn a_reversed_line_is_picked_by_its_start_and_end_not_by_the_screen_side() {
     let mut rig = Rig::new(1.);
     rig.target(Target::Endpoint);
@@ -929,162 +875,6 @@ fn rules_still_pending_are_not_in_the_drawing_until_they_are_applied() {
     assert!(rig.e.take_apply_request().is_none() && rig.e.take_request().is_none());
 }
 
-#[test]
-fn a_pan_holds_the_window_and_ends_with_the_canvas_that_stops_being_drawn() {
-    let mut rig = Rig::new(1.);
-    let mut sketch = crate::sketch::Editor::default();
-    std::mem::swap(&mut sketch.constraints, &mut rig.e);
-    let run =
-        |sketch: &mut crate::sketch::Editor, ctx: &egui::Context, events: Vec<egui::Event>| {
-            let mut out = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(988., 768.),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| sketch.draw(ui, false, ""),
-            );
-            out.textures_delta.clear();
-        };
-    for _ in 0..3 {
-        run(&mut sketch, &rig.ctx, vec![]);
-    }
-    let from = sketch
-        .constraints
-        .draft_canvas()
-        .and_then(|(_, c)| c.rect())
-        .expect("canvas")
-        .center();
-    assert!(!sketch.gesturing());
-    run(&mut sketch, &rig.ctx, vec![moved(from)]);
-    run(&mut sketch, &rig.ctx, vec![middle(from, true)]);
-    run(
-        &mut sketch,
-        &rig.ctx,
-        vec![moved(from + egui::vec2(8., 3.))],
-    );
-    assert!(
-        sketch.gesturing(),
-        "a pan holds the window, as a dragged vertex does"
-    );
-    // Typing and the buttons are not disabled for it (it edits nothing).
-    assert!(sketch.constraints.panning());
-    // The release ends it.
-    run(
-        &mut sketch,
-        &rig.ctx,
-        vec![middle(from + egui::vec2(8., 3.), false)],
-    );
-    assert!(!sketch.gesturing());
-    // A pan whose canvas then stops being drawn (the drawing went away under it) ends,
-    // or the window could never be left or quit.
-    run(&mut sketch, &rig.ctx, vec![moved(from)]);
-    run(&mut sketch, &rig.ctx, vec![middle(from, true)]);
-    run(
-        &mut sketch,
-        &rig.ctx,
-        vec![moved(from + egui::vec2(8., 3.))],
-    );
-    assert!(sketch.gesturing());
-    sketch.constraints.retire_drawing();
-    run(&mut sketch, &rig.ctx, vec![]);
-    run(&mut sketch, &rig.ctx, vec![]);
-    run(&mut sketch, &rig.ctx, vec![]);
-    assert!(
-        !sketch.gesturing(),
-        "a pan on a canvas that is gone holds the window"
-    );
-}
-
-#[test]
-fn the_canvas_never_reaches_the_3d_camera_and_a_viewport_drag_still_crosses_the_form() {
-    use winit::{
-        dpi::PhysicalPosition,
-        event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
-    };
-    for pixels_per_point in [1., 2.] {
-        let rig = Rig::new(pixels_per_point);
-        let on_canvas = rig.mid(1);
-        let outside = egui::pos2(900., 700.);
-        let mut rig = rig;
-        rig.frame(vec![moved(outside)]);
-        assert!(!rig.ctx.egui_wants_pointer_input());
-        let mut input = ferritecad_ui::ViewportInput::new();
-        input.resize(
-            (988. * pixels_per_point) as u32,
-            (768. * pixels_per_point) as u32,
-        );
-        input.frame(([-10.; 3], [10.; 3])).expect("frame");
-        let camera = *input.camera();
-        let motion = |p: egui::Pos2| WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(
-                f64::from(p.x * pixels_per_point),
-                f64::from(p.y * pixels_per_point),
-            ),
-        };
-        let mouse = |button, state| WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button,
-        };
-        let wheel_event = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0., 3.),
-            phase: TouchPhase::Moved,
-        };
-        let pinch = WindowEvent::PinchGesture {
-            device_id: DeviceId::dummy(),
-            delta: 0.4,
-            phase: TouchPhase::Moved,
-        };
-        let ctx = rig.ctx.clone();
-        let run = |input: &mut ferritecad_ui::ViewportInput, events: &[WindowEvent]| {
-            for event in events {
-                let claimed = crate::window_pointer_claimed(&ctx, input, event);
-                crate::apply_viewport_input(input, event, false, claimed);
-            }
-        };
-        run(
-            &mut input,
-            &[
-                motion(on_canvas),
-                wheel_event.clone(),
-                pinch.clone(),
-                mouse(MouseButton::Middle, ElementState::Pressed),
-                motion(on_canvas + egui::vec2(24., 12.)),
-                mouse(MouseButton::Middle, ElementState::Released),
-                mouse(MouseButton::Left, ElementState::Pressed),
-                motion(on_canvas + egui::vec2(48., 6.)),
-                mouse(MouseButton::Left, ElementState::Released),
-            ],
-        );
-        assert_eq!(
-            *input.camera(),
-            camera,
-            "{pixels_per_point}x: the canvas moved the 3D view"
-        );
-        assert!(input.take_pick().is_none(), "the canvas picked in 3D");
-        run(&mut input, &[motion(outside), wheel_event, pinch]);
-        assert_ne!(*input.camera(), camera, "the viewport lost its wheel");
-        let zoomed = *input.camera();
-        // A drag begun in the viewport still belongs to it across the form.
-        run(
-            &mut input,
-            &[
-                motion(outside),
-                mouse(MouseButton::Middle, ElementState::Pressed),
-                motion(on_canvas),
-                mouse(MouseButton::Middle, ElementState::Released),
-            ],
-        );
-        assert_ne!(*input.camera(), zoomed, "the form swallowed a viewport pan");
-    }
-}
-
 /// A single stored Circle drawn at another place and size: the synthetic solved drawing.
 pub(super) fn moved_circle(stored: &Sketch) -> Drawing {
     let c = &stored.curves[0];
@@ -1238,9 +1028,9 @@ fn the_form_keeps_its_canvas_its_modes_and_its_actions_reachable_at_768_points()
     ];
     let dir = tempfile::tempdir().expect("dir");
     let shaft = dir.path().join("shaft.fcad");
-    revolve::write_sector(&shaft, &revolve::SHAFT_T, 137.5);
+    crate::feature_tests::write_sector(&shaft, &revolve::SHAFT_T, 137.5);
     let sector = dir.path().join("sector.fcad");
-    revolve::write_sector(&sector, &revolve::SECTOR_P, 137.5);
+    crate::feature_tests::write_sector(&sector, &revolve::SECTOR_P, 137.5);
     let (_a, _b, plate) = fixture();
     let (_c, polygon_path, polygon) = polygon_fixture(64, false);
     let (_f, held_path, held) = polygon_fixture(64, true);

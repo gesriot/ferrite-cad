@@ -585,11 +585,8 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
     let (cr, cp, cs) = crate::chamfers::tests::session_apply::fixture();
     let rr = tempfile::tempdir().expect("root");
     let rp = rr.path().join("revolve.fcad");
-    let revolve = crate::constraints::tests::revolve::write_sector(
-        &rp,
-        &[[2., 0.], [8., 0.], [8., 10.], [2., 10.]],
-        210.,
-    );
+    let revolve =
+        crate::feature_tests::write_sector(&rp, &[[2., 0.], [8., 0.], [8., 10.], [2., 10.]], 210.);
     let rs = crate::sketch_facts::read(&rp).expect("reading");
     for (path, id, edit) in [
         (
@@ -615,11 +612,6 @@ fn native_fillet_chamfer_revolve_and_sketch_open_their_distinct_existing_routes(
             &rp,
             crate::sketch_mode::tests::curve_edits::sketch_id(&rs),
             ModelEdit::Sketch,
-        ),
-        (
-            &rp,
-            rs.constraint_sketches[0].sketch,
-            ModelEdit::Constraints,
         ),
     ] {
         let mut w = Window::new(Drawn::Native, None);

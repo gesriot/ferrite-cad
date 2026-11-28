@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Predict the rebuild from precisely the coordinates Finish would store.
 use ferritecad_document::{EditChange, Point2, Sketch, SketchGeometry};
-use ferritecad_types::ObjectId;
+use ferritecad_types::{ObjectId, StableEntityId};
+use std::collections::{HashMap, HashSet};
 
 const TOLERANCE_MM: f64 = 1e-6;
 pub(super) const ELSEWHERE: &str =
@@ -55,6 +56,43 @@ pub(super) fn seed(original: Option<&Sketch>, drawing: &Sketch) -> Sketch {
     seed
 }
 
+fn reproduces(predicted: &Sketch, drawing: &Sketch) -> bool {
+    predicted.curves.len() == drawing.curves.len()
+        && predicted
+            .curves
+            .iter()
+            .zip(&drawing.curves)
+            .all(|(a, b)| a.id == b.id && agrees(&a.geometry, &b.geometry))
+}
+
+/// Follow the final rules through both stored and newly drawn curves.
+fn connected_curves(drawing: &Sketch, starts: &[usize]) -> HashSet<StableEntityId> {
+    let mut neighbours: HashMap<_, Vec<_>> = HashMap::new();
+    for constraint in &drawing.constraints {
+        let mut curves = constraint
+            .rule
+            .curves()
+            .into_iter()
+            .chain(constraint.rule.points().into_iter().map(|p| p.curve));
+        if let Some(first) = curves.next() {
+            for other in curves.filter(|id| *id != first) {
+                neighbours.entry(first).or_default().push(other);
+                neighbours.entry(other).or_default().push(first);
+            }
+        }
+    }
+    let mut pending: Vec<_> = starts.iter().map(|&i| drawing.curves[i].id).collect();
+    let mut reached = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if reached.insert(id)
+            && let Some(next) = neighbours.get(&id)
+        {
+            pending.extend(next);
+        }
+    }
+    reached
+}
+
 pub(super) fn geometry_changes(
     id: ObjectId,
     original: Option<&Sketch>,
@@ -69,33 +107,43 @@ pub(super) fn geometry_changes(
         if !agrees(&p.geometry, &shown.geometry)
             && original.is_some_and(|s| s.curves.iter().any(|c| c.id == shown.id))
         {
-            writes.push((i, shown));
+            writes.push(i);
         }
     }
-    for (i, c) in &writes {
-        seed.curves[*i].geometry = c.geometry.clone();
+    for &i in &writes {
+        seed.curves[i].geometry = drawing.curves[i].geometry.clone();
     }
     let last = if writes.is_empty() {
         first
     } else {
         solve(&seed)?
     };
-    let answer = last.as_ref().unwrap_or(&seed);
-    if answer.curves.len() != drawing.curves.len()
-        || !answer
-            .curves
-            .iter()
-            .zip(&drawing.curves)
-            .all(|(a, b)| a.id == b.id && agrees(&a.geometry, &b.geometry))
-    {
-        return Err(ELSEWHERE.into());
+    if !reproduces(last.as_ref().unwrap_or(&seed), drawing) {
+        let Some(original) = original.filter(|_| !writes.is_empty()) else {
+            return Err(ELSEWHERE.into());
+        };
+        let reached = connected_curves(drawing, &writes);
+        let stored: HashSet<_> = original.curves.iter().map(|c| c.id).collect();
+        let previous_count = writes.len();
+        writes.clear();
+        for (i, curve) in drawing.curves.iter().enumerate() {
+            if reached.contains(&curve.id) && stored.contains(&curve.id) {
+                seed.curves[i].geometry = curve.geometry.clone();
+                writes.push(i);
+            }
+        }
+        if writes.len() == previous_count
+            || !reproduces(solve(&seed)?.as_ref().unwrap_or(&seed), drawing)
+        {
+            return Err(ELSEWHERE.into());
+        }
     }
     Ok(writes
         .into_iter()
-        .map(|(_, c)| EditChange::SetCurveGeometry {
+        .map(|i| EditChange::SetCurveGeometry {
             sketch: id,
-            curve: c.id,
-            geometry: c.geometry.clone(),
+            curve: drawing.curves[i].id,
+            geometry: drawing.curves[i].geometry.clone(),
         })
         .collect())
 }

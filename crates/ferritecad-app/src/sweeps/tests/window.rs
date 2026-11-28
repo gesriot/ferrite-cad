@@ -348,12 +348,7 @@ fn open_polyline_keeps_both_commands_disabled_with_the_accepted_complete_reason(
     );
     assert_eq!(
         commands::actions(source, row),
-        vec![
-            ModelEdit::Sketch,
-            ModelEdit::Extrude,
-            ModelEdit::Revolve,
-            ModelEdit::Constraints
-        ]
+        vec![ModelEdit::Sketch, ModelEdit::Extrude, ModelEdit::Revolve,]
     );
     for (edit, kind) in [
         (ModelEdit::Extrude, Kind::Extrude),

@@ -500,6 +500,7 @@ fn standard_plane_reuse_is_by_exact_placement_and_sketch_name_is_first_free() {
 }
 
 mod buttons;
+mod constraint_owners;
 mod constraint_widgets;
 pub(crate) mod curve_edits;
 mod gpu;
@@ -546,9 +547,15 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
 }
 
 mod circular_rules;
-mod cli;
+pub(crate) mod cli;
 mod collinear;
 mod diameter;
 mod dimension_history;
 mod dragging;
+mod dressed_plate;
+mod horizontal_finish;
+mod polygon_plates;
+pub(crate) mod polygon_rules;
+pub(crate) mod revolved_profile;
 mod saved_angle;
+pub(crate) mod saved_radius;

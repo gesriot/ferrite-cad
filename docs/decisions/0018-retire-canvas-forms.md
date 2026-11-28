@@ -31,6 +31,7 @@ surviving commands.
 | Type a new X/Y when fixing a point | Fix holds the point at its current position. |
 | Reverse either line vector when creating a directed angle | CLI `add_constraint` accepts directed references. Select an existing angle in the viewport to set its value or delete it. |
 | Pick an obscured rule from the complete list of curves and constraints | Select geometry, markers and labels in the viewport. |
+| Keep typed but unsubmitted values for several dimensions while selecting other items | Press **Set** or Enter before selecting another item; **Value** shows the selected dimension's current value |
 | Stage a batch containing an intermediate unsolvable set of rules | Each viewport rule edit solves immediately. Submit a complete batch through CLI `edit`. |
 | Replace a dimension by removing its rule and adding another | **Set** changes the value and preserves the constraint UUID. |
 | Restore all saved vertices, or clear all pending constraint changes, in one undoable draft step | Undo draft steps or Cancel the draft. |

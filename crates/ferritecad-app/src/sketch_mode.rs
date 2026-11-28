@@ -7,7 +7,7 @@ mod geometry;
 mod integration;
 mod paint;
 mod prediction;
-mod rules;
+pub(crate) mod rules;
 mod snapping;
 #[cfg(test)]
 pub(crate) use integration::apply_viewport_input;

@@ -64,17 +64,34 @@ pub(super) fn controls(
         *field = None;
         return;
     }
+    let value = expr.value();
+    let mut diameter = draft.state.diameters.contains(&id);
+    if matches!(slot, ExpressionSlot::Radius { .. }) {
+        let was_diameter = diameter;
+        ui.add_enabled_ui(available, |ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut diameter, false, "Radius (R)");
+                ui.radio_value(&mut diameter, true, "Diameter (Ø)");
+            });
+        });
+        if diameter != was_diameter {
+            draft.begin_step();
+            if diameter {
+                draft.state.diameters.insert(id);
+            } else {
+                draft.state.diameters.remove(&id);
+            }
+        }
+    }
     let (shown, unit) = match slot {
         // The degrees that read back as exactly the stored radians: 30 stays 30, not 29.999….
         ExpressionSlot::DirectedAngle { .. } => (
-            ferritecad_document::DirectedAngle::from_radians(expr.value())
+            ferritecad_document::DirectedAngle::from_radians(value)
                 .map_or(f64::NAN, crate::sketch::dimension::editable_degrees),
             "°",
         ),
-        ExpressionSlot::Radius { .. } if draft.state.diameters.contains(&id) => {
-            (expr.value() * 2., "mm")
-        }
-        _ => (expr.value(), "mm"),
+        ExpressionSlot::Radius { .. } if diameter => (value * 2., "mm"),
+        _ => (value, "mm"),
     };
     if field.as_ref().map(|(key, old, _)| (*key, *old)) != Some((id, shown)) {
         *field = Some((id, shown, shown.to_string()));

@@ -10,9 +10,7 @@
 //! measured anything instead of stating the rule fails. The real presentations are read by the
 //! native gates at the end of this file and in `sessions.rs`.
 #![allow(clippy::panic)]
-use super::canvas::{
-    Rig, enlarged, escape, middle, moved, moved_circle, near, primary, shift_primary, wheel, whole,
-};
+use super::canvas::{Rig, enlarged, middle, moved, moved_circle, near, wheel, whole};
 use super::*;
 use crate::sketch::accepted::{Drawing, SELECTED_COLOUR, Shape, Target};
 use crate::sketch::dimension::PAD;
@@ -540,68 +538,6 @@ fn a_dimension_chosen_on_the_canvas_brings_its_row_and_editor_into_view_in_a_lon
     assert_eq!(rig.edits().remove, vec![rule]);
 }
 
-#[test]
-fn a_cancelled_save_or_a_stale_reply_keeps_the_text_the_selection_and_the_prepared_replacement() {
-    let (_root, path, source) = lengths_document();
-    let mut rig = Rig::over(None, &path, &source, 1., enlarged);
-    let ids = rig.ids.clone();
-    let d60 = rule_of(&rig.stored, 60.);
-    rig.target(Target::Dimension);
-    let at = rig.at_label("60 mm");
-    rig.click(at);
-    rig.settle();
-    rig.type_length("70");
-    rig.press("Replace dimension");
-    rig.type_length("58.25");
-    rig.press("Save constraints copy…");
-    let asked = rig.e.take_request().expect("the Save asked for");
-    assert_eq!(
-        crate::transaction_tests::constraints(&asked).remove,
-        vec![d60]
-    );
-    let kept = (rig.kept(), rig.picks().0, rig.typed());
-    let mut state = crate::edits::Edits::default();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let generation = state
-        .start(asked, move |_, g, _| {
-            std::thread::spawn(move || tx.send(g).expect("reply"))
-        })
-        .expect("start");
-    // A reply of another generation, and the worker's refusal or a cancelled Save: the draft,
-    // the text, the selection and the label of the prepared replacement are what they were.
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            generation + 1,
-            Err(ferritecad_types::CadError::input("stale"))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.picks().0, rig.typed()), kept);
-    let g = rx.recv().expect("done");
-    assert!(
-        finish_edit(
-            &mut rig.e,
-            &mut state,
-            g,
-            Err(ferritecad_types::CadError::topology(
-                "lost stored reference"
-            ))
-        )
-        .is_none()
-    );
-    assert_eq!((rig.kept(), rig.picks().0, rig.typed()), kept);
-    assert_eq!(rig.picks().0, Some(ids[0]));
-    rig.settle();
-    let out = rig.frame(vec![]);
-    assert!(has_label(&out, "60 → 70 mm") && painted(&out, "Replace dimension"));
-    // And the form takes the next action as if nothing had happened.
-    rig.type_length("80");
-    rig.press("Replace dimension");
-    assert_eq!(rig.edits().add, vec![length_add(ids[0], 80.)]);
-}
-
 impl Rig {
     /// The number for the replacement of a Circle's radius, typed into the one box whichever
     /// unit is chosen: it stands to the right of the "Diameter" toggle.
@@ -867,184 +803,6 @@ fn labels_follow_zoom_pan_and_fit_and_are_hit_exactly_where_they_are_drawn() {
     }
 }
 
-#[test]
-fn a_label_press_dies_with_its_surface_and_busy_queued_covered_or_unfocused_forms_take_nothing() {
-    for pixels_per_point in [1., 2.] {
-        // A press begun on an available label is no permission for a later release, however the
-        // surface came back before it: focus lost, another layer over the canvas, and that
-        // layer gone again.
-        for interruption in ["focus", "covered", "uncovered"] {
-            let mut held = Rig::lengths(pixels_per_point);
-            let ids = held.ids.clone();
-            held.target(Target::Dimension);
-            held.e.pick_for_tests(ids[2]);
-            let before = held.facts();
-            let at = held.at_label("60 mm");
-            let cover = (interruption != "focus").then_some(held.rect());
-            held.frame(vec![moved(at), primary(at, true)]);
-            assert!(held.canvas().pressed());
-            for _ in 0..3 {
-                held.frame_as(vec![], false, true, cover);
-            }
-            if interruption == "uncovered" {
-                for _ in 0..3 {
-                    held.frame(vec![]);
-                }
-            }
-            held.frame_as(
-                vec![primary(at, false)],
-                false,
-                interruption != "focus",
-                (interruption == "covered").then_some(held.rect()),
-            );
-            assert_eq!(
-                held.facts(),
-                before,
-                "{pixels_per_point}x: a release after {interruption} took a label"
-            );
-            assert!(!held.canvas().pressed());
-        }
-
-        // A release just outside the canvas, within a click's distance of the press, takes nothing.
-        let mut edge = Rig::lengths(pixels_per_point);
-        let ids = edge.ids.clone();
-        edge.target(Target::Dimension);
-        edge.e.pick_for_tests(ids[2]);
-        let canvas = edge.rect();
-        // Pan the Line so that its middle is twenty points from the canvas's left edge: the box
-        // is held in the band, three points from that edge.
-        let grab = canvas.center() + egui::vec2(0., 30.);
-        let drag = egui::vec2(canvas.left() + 20. - edge.mid(0).x, 0.);
-        edge.frame(vec![moved(grab), middle(grab, true)]);
-        edge.frame(vec![moved(grab + drag)]);
-        edge.frame(vec![middle(grab + drag, false)]);
-        let hugging = label(&edge.frame(vec![]), "60 mm");
-        assert!((hugging.rect.left() - (canvas.left() + 3.)).abs() < 0.01);
-        let before = edge.facts();
-        let at = hugging.rect.left_center() + egui::vec2(0.2, 0.);
-        let outside = egui::pos2(canvas.left() - 0.8, at.y);
-        assert!(!canvas.contains(outside) && at.distance(outside) <= 6.);
-        edge.frame(vec![moved(at), primary(at, true)]);
-        edge.frame(vec![moved(outside), primary(outside, false)]);
-        assert_eq!(
-            edge.facts(),
-            before,
-            "{pixels_per_point}x: release outside took a label"
-        );
-        assert!(!edge.canvas().pressed());
-
-        // Escape, a lost focus and a vanished pointer end a press without a trace.
-        for ending in ["escape", "focus", "gone"] {
-            let mut rig = Rig::lengths(pixels_per_point);
-            let ids = rig.ids.clone();
-            rig.target(Target::Dimension);
-            rig.e.pick_for_tests(ids[2]);
-            let before = rig.facts();
-            let at = rig.at_label("60 mm");
-            rig.frame(vec![moved(at), primary(at, true)]);
-            rig.frame(vec![match ending {
-                "escape" => escape(),
-                "focus" => egui::Event::WindowFocused(false),
-                _ => egui::Event::PointerGone,
-            }]);
-            rig.frame(vec![
-                egui::Event::WindowFocused(true),
-                moved(at),
-                primary(at, false),
-            ]);
-            assert_eq!(rig.facts(), before, "{pixels_per_point}x: {ending}");
-        }
-
-        // A shift press on a label is a pan's: it never takes the label, moving or not.
-        let mut rig = Rig::lengths(pixels_per_point);
-        let ids = rig.ids.clone();
-        rig.target(Target::Dimension);
-        rig.e.pick_for_tests(ids[2]);
-        let before = rig.facts();
-        let at = rig.at_label("60 mm");
-        rig.frame(vec![moved(at), shift_primary(at, true)]);
-        rig.frame(vec![shift_primary(at, false)]);
-        assert_eq!(
-            rig.facts(),
-            before,
-            "{pixels_per_point}x: a shift click took a label"
-        );
-    }
-
-    // Busy, unfocused, covered, outside and queued forms: the label, the field and the action
-    // take nothing, and take it again as soon as nothing blocks them.
-    let mut rig = Rig::lengths(1.);
-    let ids = rig.ids.clone();
-    let (d60, d30) = (rule_of(&rig.stored, 60.), rule_of(&rig.stored, 30.));
-    rig.target(Target::Dimension);
-    let at = rig.at_label("60 mm");
-    rig.click(at);
-    rig.settle();
-    rig.type_length("70");
-    let base = rig.facts();
-    let (aim, other) = (at, rig.at_label("30 mm"));
-    let attempt = |rig: &mut Rig, running: bool, focused: bool, cover: Option<egui::Rect>| {
-        for events in [
-            vec![moved(other)],
-            vec![primary(other, true)],
-            vec![primary(other, false)],
-            vec![moved(aim)],
-            vec![primary(aim, true)],
-            vec![primary(aim, false)],
-        ] {
-            rig.frame_as(events, running, focused, cover);
-        }
-    };
-    attempt(&mut rig, true, true, None);
-    assert_eq!(rig.facts(), base, "busy");
-    attempt(&mut rig, false, false, None);
-    assert_eq!(rig.facts(), base, "unfocused");
-    let canvas = rig.rect();
-    for _ in 0..3 {
-        rig.frame_as(vec![], false, true, Some(canvas));
-    }
-    attempt(&mut rig, false, true, Some(canvas));
-    assert_eq!(rig.facts(), base, "covered");
-    for _ in 0..3 {
-        rig.frame(vec![]);
-    }
-    // The field takes no text and the action no press while a job runs, though the field holds
-    // the focus it had; the typed text is exactly what it was.
-    enter_field(&rig.ctx, &mut rig.e, "New length", "99", true);
-    click_running(&rig.ctx, &mut rig.e, "Replace dimension", true);
-    assert_eq!(
-        (rig.typed().as_str(), rig.edits()),
-        ("70", SketchConstraintEdits::default())
-    );
-    // Prepared once, a request of the form waits to be taken: nothing on the canvas, no text in
-    // the field, no action begins.
-    rig.type_length("70");
-    rig.press("Replace dimension");
-    let prepared = rig.edits();
-    assert_eq!(prepared.remove, vec![d60]);
-    rig.press("Save constraints copy…");
-    assert!(rig.e.pending.is_some());
-    let queued = rig.facts();
-    attempt(&mut rig, false, true, None);
-    enter_field(&rig.ctx, &mut rig.e, "New length", "99", false);
-    rig.press("Replace dimension");
-    press_exact(&mut rig, "Dimension");
-    rig.press("Fit");
-    assert_eq!(rig.facts(), queued, "queued");
-    assert_eq!(rig.typed(), "70");
-    assert_eq!(
-        crate::transaction_tests::constraints(&rig.e.take_request().expect("the waiting request")),
-        prepared
-    );
-    // Nothing blocks any more: the other label is taken and its dimension replaced.
-    rig.click(other);
-    assert_eq!(rig.picks().0, Some(ids[1]));
-    rig.settle();
-    rig.type_length("33");
-    rig.press("Replace dimension");
-    assert_eq!(rig.edits().remove, vec![d60, d30]);
-}
-
 // ---- the 768-point screen -------------------------------------------------------------
 
 #[test]
@@ -1302,42 +1060,6 @@ pub(super) fn dimension_stored(source: &ExtrudeEditSource) -> Sketch {
 }
 
 #[test]
-fn two_forms_over_one_document_keep_their_own_selection_text_and_pending_replacement() {
-    // Copies of a document share their curve and rule UUIDs; the forms must not.
-    let (_root, path, source) = lengths_document();
-    let (d60, d30) = (
-        rule_of(&dimension_stored(&source), 60.),
-        rule_of(&dimension_stored(&source), 30.),
-    );
-    let mut a = Rig::over(None, &path, &source, 1., enlarged);
-    let mut b = Rig::over(None, &path, &source, 1., enlarged);
-    a.target(Target::Dimension);
-    b.target(Target::Dimension);
-    let at = a.at_label("60 mm");
-    a.click(at);
-    a.settle();
-    a.type_length("70");
-    a.press("Replace dimension");
-    let at = b.at_label("30 mm");
-    b.click(at);
-    b.settle();
-    b.type_length("33");
-    assert_eq!((a.picks().0, b.picks().0), (Some(a.ids[0]), Some(b.ids[1])));
-    assert_eq!(a.ids, b.ids, "one document, one set of UUIDs");
-    assert_eq!((a.typed().as_str(), b.typed().as_str()), ("70", "33"));
-    let (wa, wb) = (a.frame(vec![]), b.frame(vec![]));
-    assert!(has_label(&wa, "60 → 70 mm") && has_label(&wa, "30 mm"));
-    assert!(has_label(&wb, "60 mm") && has_label(&wb, "30 mm"));
-    assert_eq!(a.edits().remove, vec![d60]);
-    assert_eq!(b.edits(), SketchConstraintEdits::default());
-    b.press("Replace dimension");
-    assert_eq!(b.edits().remove, vec![d30]);
-    assert_eq!(a.edits().remove, vec![d60], "the other form is untouched");
-    assert!(has_label(&a.frame(vec![]), "30 mm"));
-    assert!(has_label(&b.frame(vec![]), "30 → 33 mm") && has_label(&b.frame(vec![]), "60 mm"));
-}
-
-#[test]
 fn overlapping_labels_are_reached_in_stored_order_and_the_list_reaches_the_one_underneath() {
     let (_root, path, source) = lengths_document();
     let (d60, d30) = (
@@ -1404,66 +1126,6 @@ fn overlapping_labels_are_reached_in_stored_order_and_the_list_reaches_the_one_u
 
 use super::canvas::{accepted_scene, by_lists, line_numbers, presented, read_stl_of};
 use super::session_apply::replace_segment_length;
-
-/// A rectangle whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin)
-/// and keeps the rules that solve it into a 60 × 30 mm rectangle around the same place:
-/// Lines 1 and 3 horizontal, Lines 2 and 4 vertical, Line 1 60 mm and Line 2 30 mm. Every
-/// stored vertex and Line middle then lies inside the solved drawing, far from all of it.
-pub(crate) fn write_dimensioned_rectangle(path: &Path) {
-    ferritecad_jobs::create_document_with_kernel(
-        ferritecad_jobs::CreateDocumentRequest::new(
-            path,
-            ferritecad_jobs::NewDocument::SketchExtrude(
-                ferritecad_document::PolygonExtrusion::new(
-                    vec![[-6., -3.], [6., -2.], [7., 5.], [-5., 4.]],
-                    10.,
-                )
-                .expect("a guess"),
-            ),
-            "test",
-        ),
-        ferritecad_occt::OcctKernel::new,
-        &OperationContext::default(),
-    )
-    .expect("the source");
-    let mut document = Document::open(path).expect("document");
-    let choice = crate::sketch_facts::Source::read(&document)
-        .expect("catalogue")
-        .constraint_sketches[0]
-        .clone();
-    let ids: Vec<_> = choice
-        .stored
-        .as_ref()
-        .expect("stored")
-        .curves
-        .iter()
-        .map(|c| c.id)
-        .collect();
-    let line = |i: usize, kind| {
-        AddSketchConstraint::Line(AddLineConstraint::Line {
-            curve: ids[i],
-            kind,
-        })
-    };
-    let prepared = ferritecad_fixtures::constraint_changes(
-        &document,
-        choice.sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![
-                line(0, LineConstraintKind::Horizontal),
-                line(1, LineConstraintKind::Vertical),
-                line(2, LineConstraintKind::Horizontal),
-                line(3, LineConstraintKind::Vertical),
-                length_add(ids[0], 60.),
-                length_add(ids[1], 30.),
-            ],
-        },
-    )
-    .expect("prepare");
-    document.write_changes(&prepared).expect("rules");
-    document.close().expect("close");
-}
 
 /// How far a rectangle is from a segment, in points: zero when they meet.
 fn rect_from_segment(rect: egui::Rect, segment: [egui::Pos2; 2]) -> f32 {
@@ -1693,106 +1355,7 @@ pub(crate) fn saved_dimensioned_rectangle(saved: &Path, stl: &[u8], height: f64,
     }
 }
 
-/// §31L, native: the form for the cylinder of `write_guessed_circle` (the circle (4.5, 0) r 1.2
-/// stored, a Radius of 10 and a Fixed centre at the origin kept). The label states the saved
-/// R 10, not the stored 1.2; chosen under the Dimension target, a diameter of 17 mm replaces the
-/// Radius by 8.5 and leaves the Fixed centre alone; the request equals Remove plus Add diameter.
-pub(crate) fn native_dimension_circle(
-    path: &Path,
-    source: &ExtrudeEditSource,
-    sketch: ObjectId,
-    seen: &std::cell::Cell<Option<Replaced>>,
-) -> (Editor, EditRequest) {
-    let (mut rig, loaded) = Rig::native(path, source, sketch);
-    let real = presented(&loaded, sketch);
-    let (circle, stored) = (rig.ids[0], rig.stored.clone());
-    let rule = rule_of(&stored, 10.);
-    let SketchGeometry::Circle { center, radius } = real[0].1 else {
-        panic!("a Circle")
-    };
-    assert!(
-        center.x.abs() < 1e-6 && center.y.abs() < 1e-6 && (radius - 10.).abs() < 1e-6,
-        "the solved circle is ({}, {}) r {radius}",
-        center.x,
-        center.y
-    );
-    let held = rig.solved();
-    assert_eq!(
-        held[0].shape,
-        Shape::Circle {
-            center: [center.x, center.y],
-            radius
-        }
-    );
-    let out = rig.frame(vec![]);
-    assert_eq!(
-        labels(&out)
-            .iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>(),
-        ["R 10 mm"],
-        "the saved target, not the stored 1.2"
-    );
-    let l = label(&out, "R 10 mm");
-    // It stands just outside the SOLVED ring: the nearest point of the ring to the box is
-    // within a few points of the box, and the box is not inside the ring.
-    let centre = rig.screen([center.x, center.y]);
-    let ring = rig.screen([center.x + radius, center.y]).x - centre.x;
-    let towards = (l.rect.center() - centre).normalized();
-    let gap = l.rect.distance_to_pos(centre + towards * ring);
-    assert!(
-        gap <= 5. && (l.rect.center() - centre).length() > ring,
-        "the label is {gap} points from the solved ring"
-    );
-    rig.target(Target::Dimension);
-    rig.click(l.rect.center());
-    rig.settle();
-    assert_eq!(rig.picks().0, Some(circle));
-    press_exact(&mut rig, "Diameter");
-    rig.type_amount("17");
-    rig.press("Replace dimension");
-    let prepared = rig.edits();
-    assert_eq!(prepared.remove, vec![rule]);
-    assert_eq!(prepared.add, vec![radius_add(circle, 8.5)]);
-    assert!(has_label(&rig.frame(vec![]), "R 10 → 8.5 mm"));
-    assert_eq!(rig.solved(), held, "a prepared replacement draws nothing");
-    let lists = by_lists(path, source, sketch, |ctx, e| {
-        click(ctx, e, &format!("Circle · {}", short(circle)));
-        click_remove_on_row(ctx, e, "Radius 10 mm");
-        enter_field(ctx, e, "Diameter mm", "17", false);
-        click(ctx, e, "Add diameter");
-    });
-    assert_eq!(
-        prepared,
-        crate::transaction_tests::constraints(&lists),
-        "the label and the lists asked for different things"
-    );
-    rig.press("Apply constraints");
-    let request = rig.e.take_apply_request().expect("Apply asked");
-    assert_eq!(
-        crate::transaction_tests::constraints(&request),
-        crate::transaction_tests::constraints(&lists)
-    );
-    assert_eq!(
-        (
-            crate::transaction_tests::constraints(&request).remove.len(),
-            crate::transaction_tests::constraints(&request).add.len()
-        ),
-        (1, 1)
-    );
-    let fixed = stored
-        .constraints
-        .iter()
-        .find(|c| matches!(c.rule, SketchConstraintRule::Fixed { .. }))
-        .expect("the Fixed centre");
-    seen.set(Some((rule, fixed.id)));
-    println!(
-        "\nFCAD_31L_NATIVE_CIRCLE_REQUEST stored=(4.5,0,1.2) solved=(0,0,10) diameter=17 removes=1 adds=1"
-    );
-    (rig.e, request)
-}
-
-/// §31L, native: the SAVED cylinder. The form of its cold rebuild holds R 8.5 with a new UUID and
+/// §31L, native: the SAVED cylinder. The form of its cold rebuild holds R 8.5 with its stored UUID and
 /// the Fixed centre under its own; the drawing of that rebuild is the circle (0, 0) r 8.5; every
 /// rim vertex of the exported STL, read here and not by the writer, is on it.
 pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, was: Replaced) {
@@ -1824,7 +1387,7 @@ pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, wa
     );
     let (dimensions, _) = e.draft_dimensions().expect("a draft");
     assert_eq!(dimensions.len(), 1);
-    assert_ne!(dimensions[0].id, was.0, "the Radius is a new rule");
+    assert_eq!(dimensions[0].id, was.0, "Set keeps the Radius UUID");
     let kept = facts.constraint_sketches[0]
         .stored
         .as_ref()
@@ -1852,4 +1415,30 @@ pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, wa
             "a rim vertex {p:?} is {d} from the centre"
         );
     }
+}
+
+#[test]
+fn returning_to_a_dimension_after_picking_a_line_keeps_the_legacy_field() {
+    let mut rig = Rig::lengths(1.);
+    let width = rule_of(&rig.stored, 60.);
+    rig.target(Target::Dimension);
+    let at = rig.at_label("60 mm");
+    rig.click(at);
+    rig.settle();
+    rig.type_length("55.5");
+    assert_eq!(rig.typed(), "55.5");
+    rig.target(Target::Object);
+    rig.click(rig.mid(2));
+    rig.settle();
+    assert_eq!(rig.picks().0, Some(rig.ids[2]));
+    rig.target(Target::Dimension);
+    let at = rig.at_label("60 mm");
+    rig.click(at);
+    rig.settle();
+    assert_eq!(rig.picks().0, Some(rig.ids[0]));
+    assert_eq!(rule_of(&rig.stored, 60.), width);
+    assert_eq!(rig.edits(), SketchConstraintEdits::default());
+    assert_eq!(rig.history(), (0, 0));
+    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
+    assert_eq!(rig.typed(), "55.5");
 }

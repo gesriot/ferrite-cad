@@ -232,11 +232,6 @@ pub fn annulus(request: &EditRequest) -> AnnulusValues {
     }
 }
 
-pub fn solve(
-    result: &ferritecad_jobs::EditedDocument,
-) -> Option<ferritecad_eval::SketchSolveReport> {
-    solve_path(&result.destination)
-}
 pub fn solve_path(path: &std::path::Path) -> Option<ferritecad_eval::SketchSolveReport> {
     let document = Document::open_read_only(path).expect("published document");
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("native kernel");

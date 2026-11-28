@@ -99,13 +99,6 @@ pub(crate) fn actions(source: &ExtrudeEditSource, key: ModelKey) -> Vec<ModelEdi
         out.push(ModelEdit::Parameters);
     }
     if source
-        .constraint_sketches
-        .iter()
-        .any(|c| c.sketch == id && c.refusal.is_none())
-    {
-        out.push(ModelEdit::Constraints);
-    }
-    if source
         .cut_features
         .iter()
         .any(|c| c.feature == id && c.refusal.is_none() && c.saved.is_some())
@@ -171,10 +164,6 @@ fn open_editor(
         ModelEdit::NewSketch => creates.sketch.viewport.begin_new(path, source, Some(id)),
         ModelEdit::Parameters => creates.sketch.parameters.begin(source),
         ModelEdit::Height => edits.begin_selected(path, source, id),
-        ModelEdit::Constraints => creates
-            .sketch
-            .constraints
-            .begin_with(path, source, accepted, id),
         ModelEdit::Cut => creates.sketch.cuts.begin_edit(path, source, id),
         ModelEdit::Fillet => creates.sketch.fillets.begin_radius(path, source, id),
         ModelEdit::Chamfer => creates.sketch.chamfers.begin_distance(path, source, id),

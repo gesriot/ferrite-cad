@@ -18,7 +18,13 @@ fn solved(sketch: ObjectId, source: &Sketch) -> (Sketch, Option<usize>) {
     }
 }
 
-fn same_model(ui: &Path, peer: &Path, sketch: ObjectId, wanted: &Sketch, freedom: usize) {
+pub(super) fn same_model(
+    ui: &Path,
+    peer: &Path,
+    sketch: ObjectId,
+    wanted: &Sketch,
+    freedom: usize,
+) {
     let window = Document::open_read_only(ui).expect("window revision");
     let cli = Document::open_read_only(peer).expect("CLI output");
     assert_eq!(window.meta().document_id, cli.meta().document_id);

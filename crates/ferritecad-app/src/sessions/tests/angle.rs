@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §30E: real session workers, current snapshots, strict SQL/CLI and geometry peers.
 use super::*;
+mod sector_set;
 use crate::sketch::tests::angle_apply::typed_angle;
 use ferritecad_document::ObjectPayload;
 use ferritecad_jobs::EditRequest;
@@ -257,14 +258,14 @@ fn create(root: &Path, axis: bool) -> PathBuf {
     ]);
     path
 }
-fn constraint_request(path: &Path) -> ferritecad_jobs::EditRequest {
+fn constraint_request(path: &Path, width: f64, height: f64) -> ferritecad_jobs::EditRequest {
     use ferritecad_document::{
         AddLineConstraint, AddSketchConstraint, LineConstraintKind as L, LineEndpoint,
         LineLengthMm, SketchConstraintEdits, SketchCoordinateMm,
     };
     let reading = crate::sketch_facts::read(path).expect("reading");
-    let choice = &reading.constraint_sketches[0];
-    let curves = &choice.stored.as_ref().expect("Sketch").curves;
+    let (sketch, stored) = crate::sketch_mode::tests::curve_edits::stored(path);
+    let curves = &stored.curves;
     let on = |i: usize, kind| {
         AddSketchConstraint::Line(AddLineConstraint::Line {
             curve: curves[i].id,
@@ -284,13 +285,13 @@ fn constraint_request(path: &Path) -> ferritecad_jobs::EditRequest {
                 y: SketchCoordinateMm::new(-3.25).expect("y"),
             },
         ),
-        on(0, L::Distance(LineLengthMm::new(6.).expect("length"))),
-        on(1, L::Distance(LineLengthMm::new(13.75).expect("height"))),
+        on(0, L::Distance(LineLengthMm::new(width).expect("length"))),
+        on(1, L::Distance(LineLengthMm::new(height).expect("height"))),
     ];
     ferritecad_jobs::EditRequest {
         changes: crate::transaction_tests::constraint_changes(
             path,
-            choice.sketch,
+            sketch,
             &(SketchConstraintEdits {
                 remove: vec![],
                 add,
@@ -359,7 +360,7 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     let mut old_ids = Vec::new();
     let mut height = 12.75;
     if constrained {
-        let r = constraint_request(&profile);
+        let r = constraint_request(&profile, 6., 13.75);
         old_ids = stored_constraints(&profile).iter().map(|c| c.id).collect();
         apply_constraints_native(&mut s, &r);
         let cp = root.path().join("peer-constraints.fcad");
@@ -373,19 +374,13 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         );
         peer_before = cp;
         height = 13.75;
-        let read = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
+        let (_, constrained) = crate::sketch_mode::tests::curve_edits::stored(
+            &s.export_path().expect("accepted constraints"),
+        );
         assert_eq!(
-            read.constraint_sketches[0]
-                .stored
-                .as_ref()
-                .expect("stored")
-                .curves,
-            crate::sketch_facts::read(&profile)
-                .expect("profile")
-                .constraint_sketches[0]
-                .stored
-                .as_ref()
-                .expect("stored")
+            constrained.curves,
+            crate::sketch_mode::tests::curve_edits::stored(&profile)
+                .1
                 .curves,
             "solved coordinates must not be stored"
         );
@@ -427,13 +422,12 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     assert_eq!(
         crate::sketch_facts::read(&applied)
             .expect("reading")
-            .constraint_sketches
+            .objects
             .iter()
-            .find_map(|s| match s.profile_use {
-                Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
-                    axis: revolve_axis,
-                    ..
-                }) => Some(revolve_axis),
+            .find_map(|o| match &o.payload {
+                ObjectPayload::Revolve(r)
+                    if matches!(r.extent, ferritecad_document::RevolveExtent::Partial { .. }) =>
+                    Some(r.axis),
                 _ => None,
             })
             .expect("partial profile"),
@@ -584,11 +578,7 @@ fn native_constraints_then_angle_preserve_stored_approximation_and_cli_cells() {
 fn a_refused_angle_apply_leaves_no_publication() {
     let root = tempfile::tempdir().expect("root");
     let source = root.path().join("source.fcad");
-    crate::constraints::tests::revolve::write_sector(
-        &source,
-        &crate::sketch::tests::angle_apply::RADIAL,
-        137.5,
-    );
+    crate::feature_tests::write_sector(&source, &crate::sketch::tests::angle_apply::RADIAL, 137.5);
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(test_open::topology(&source, root.path()).expect("session"));
@@ -617,7 +607,7 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
     let source = create(root.path(), false);
     // Store constraints through the document API without asking the absent solver to solve.
     let reading = crate::sketch_facts::read(&source).expect("reading");
-    let id = reading.constraint_sketches[0].sketch;
+    let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
     let mut d = Document::open(&source).expect("document");
     let o = d.object(id).expect("row").expect("Sketch");
     let ObjectPayload::Sketch(mut sketch) = o.payload else {
@@ -669,7 +659,15 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
 #[test]
 fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     let Some(directory) = std::env::var_os("FCAD_30E_GUI_DIR") else {
-        eprintln!("skipped: set FCAD_30E_GUI_DIR after the real window scenario");
+        if native()
+            && ferritecad_fixtures::native_dependencies(&[(
+                ferritecad_eval::solver_available(),
+                "PLANEGCS",
+            )])
+        {
+            sector_set::through_widgets();
+        }
+        eprintln!("Set FCAD_30E_GUI_DIR to also compare the recorded window session.");
         return;
     };
     assert!(native(), "GUI comparison requires OCCT");
@@ -815,80 +813,11 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
         198.125,
     );
 
-    use ferritecad_document::{
-        AddLineConstraint, AddSketchConstraint, LineConstraintKind, LineLengthMm,
-        SketchConstraintRule,
-    };
     let source = directory.join("source/constrained.fcad");
-    let reading = crate::sketch_facts::read(&source).expect("constrained");
-    let choice = &reading.constraint_sketches[0];
-    let stored = choice.stored.as_ref().expect("stored");
-    let curve = stored.curves[1].id;
-    let old = stored
-        .constraints
-        .iter()
-        .find(|c| matches!(c.rule, SketchConstraintRule::Distance { a, .. } if a.curve==curve))
-        .expect("height")
-        .id;
-    let r = ferritecad_jobs::EditRequest {
-        changes: crate::transaction_tests::constraint_changes(
-            &(source.clone()),
-            choice.sketch,
-            &(ferritecad_document::SketchConstraintEdits {
-                remove: vec![old],
-                add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
-                    curve,
-                    kind: LineConstraintKind::Distance(LineLengthMm::new(13.75).expect("height")),
-                })],
-            }),
-        ),
-        source: source.clone(),
-        expected: reading.version,
-        destination: PathBuf::new(),
-    };
-    let cp = root.path().join("constrained.fcad");
-    constraint_peer(&source, &r, root.path(), &cp);
-    let reading = crate::sketch_facts::read(&cp).expect("constraint peer");
-    let a = EditRequest {
-        source: cp.clone(),
-        expected: reading.version,
-
-        changes: vec![
-            ferritecad_document::EditChange::constant(
-                ferritecad_fixtures::expression_slot(
-                    &reading,
-                    ferritecad_document::ExpressionSlot::RevolveAngle,
-                )
-                .object,
-                ferritecad_document::ExpressionSlot::RevolveAngle,
-                212.25_f64.to_radians(),
-            )
-            .expect("validated expression"),
-        ],
-        destination: PathBuf::new(),
-    };
-    let ca = root.path().join("constrained-angle.fcad");
-    peer(&cp, &a, root.path(), &ca);
     let saved = directory.join("constrained-saved.fcad");
-    let old_ids: Vec<_> = stored.constraints.iter().map(|c| c.id).collect();
-    let pairs = same_model_with_explicit_new_ids(
-        &saved,
-        &ca,
-        choice.sketch,
-        &old_ids,
-        "GUI constraint/angle cells",
-    );
-    assert_eq!(pairs.len(), 1, "only replacement length gets a new UUID");
-    let after = crate::sketch_facts::read(&saved).expect("saved");
-    assert_eq!(
-        after.constraint_sketches[0]
-            .stored
-            .as_ref()
-            .expect("stored")
-            .curves,
-        stored.curves,
-        "solver baked coordinates"
-    );
+    let ca = sector_set::compare(&source, &saved, root.path());
+    let (sketch, original) = crate::sketch_mode::tests::curve_edits::stored(&source);
+    let old_ids: Vec<_> = original.constraints.iter().map(|c| c.id).collect();
     let (stl, fbx) = peer_bytes(&ca, root.path(), "constrained");
     assert_eq!(bytes("constrained-unsaved.stl"), stl);
     assert_eq!(bytes("constrained-unsaved.fbx"), fbx);
@@ -918,30 +847,24 @@ fn native_compare_real_angle_gui_artifacts_with_negative_controls() {
     let db = rusqlite::Connection::open(&changed).expect("control db");
     db.execute(
         "UPDATE objects SET name='wrong Sketch' WHERE id=?1",
-        [choice.sketch.to_bytes().as_slice()],
+        [sketch.to_bytes().as_slice()],
     )
     .expect("rename");
     drop(db);
     control("Sketch metadata", &|| {
-        same_model_with_explicit_new_ids(
-            &changed,
-            &ca,
-            choice.sketch,
-            &old_ids,
-            "negative metadata",
-        );
+        same_model_with_explicit_new_ids(&changed, &ca, sketch, &old_ids, "negative metadata");
     });
     let changed = root.path().join("corrupt-hash.fcad");
     std::fs::copy(&saved, &changed).expect("control copy");
     let db = rusqlite::Connection::open(&changed).expect("control db");
     db.execute(
         "UPDATE objects SET payload_hash=zeroblob(32) WHERE id=?1",
-        [choice.sketch.to_bytes().as_slice()],
+        [sketch.to_bytes().as_slice()],
     )
     .expect("hash");
     drop(db);
     control("payload hash", &|| {
-        same_model_with_explicit_new_ids(&changed, &ca, choice.sketch, &old_ids, "negative hash");
+        same_model_with_explicit_new_ids(&changed, &ca, sketch, &old_ids, "negative hash");
     });
-    eprintln!("FCAD_30E_GUI_COMPARE_OK negative_controls=7 all_SQL_cells=true");
+    eprintln!("FCAD_30E_GUI_COMPARE_OK negative_controls=8 all_SQL_cells=true");
 }

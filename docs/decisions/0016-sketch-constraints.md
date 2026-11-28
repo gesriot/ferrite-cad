@@ -54,7 +54,9 @@ constraints the input itself is the prediction.
 Write SetCurveGeometry only for surviving stored curves whose predicted position differs
 from the preview by more than 1e-6 mm in any coordinate or radius. Solve again with those
 writes if needed. Check every curve, including new curves, against the preview at the same
-tolerance. If the solver settles elsewhere, keep the draft and its history; send no request.
+tolerance. If this second solve misses the preview, include every surviving stored curve
+connected to a written curve by the final constraints and solve once more with those writes.
+If the solver still settles elsewhere, keep the draft and its history; send no request.
 The final prediction and the committed drawing have the same input and must agree within
 1e-9 mm. Prediction runs on Finish only. Drop cancelled changes; an empty difference costs
 no document version.

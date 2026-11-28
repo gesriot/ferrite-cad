@@ -180,7 +180,7 @@ fn native_conflicting_sketch_opens_with_named_rules_and_an_unbuilt_dependent() {
         return;
     }
     let (_root, path, source, curves) = crate::constraints::tests::diameter::round_fixture(&[5.]);
-    let sketch = source.constraint_sketches[0].sketch;
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&source);
     let ids = [StableEntityId::new(), StableEntityId::new()];
     let mut document = Document::open(&path).expect("valid document");
     let changes: Vec<_> = ids
