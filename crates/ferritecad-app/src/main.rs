@@ -3563,8 +3563,8 @@ impl ApplicationHandler<AppEvent> for App {
                 self.creates
                     .sketch
                     .set_session(session_idle && !self.edits.busy(), self.sessions.dirty());
-                // Finish and the sweep form's Apply reach `apply_expressions`, so they
-                // ask its question. `settled` counts the open form itself as busy.
+                // Finish and sweep Apply use their handler's guard, `can_submit_sketch_or_sweep`.
+                // `settled` counts the open form itself as busy.
                 self.creates.sketch.viewport.set_apply(sketch_apply);
                 self.creates.sketch.sweeps.set_apply(sketch_apply);
                 self.creates.sketch.set_angle_apply(angle_apply);

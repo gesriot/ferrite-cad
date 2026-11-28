@@ -1853,3 +1853,29 @@ pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, wa
         );
     }
 }
+
+#[test]
+fn returning_to_a_dimension_after_picking_a_line_keeps_the_legacy_field() {
+    let mut rig = Rig::lengths(1.);
+    let width = rule_of(&rig.stored, 60.);
+    rig.target(Target::Dimension);
+    let at = rig.at_label("60 mm");
+    rig.click(at);
+    rig.settle();
+    rig.type_length("55.5");
+    assert_eq!(rig.typed(), "55.5");
+    rig.target(Target::Object);
+    rig.click(rig.mid(2));
+    rig.settle();
+    assert_eq!(rig.picks().0, Some(rig.ids[2]));
+    rig.target(Target::Dimension);
+    let at = rig.at_label("60 mm");
+    rig.click(at);
+    rig.settle();
+    assert_eq!(rig.picks().0, Some(rig.ids[0]));
+    assert_eq!(rule_of(&rig.stored, 60.), width);
+    assert_eq!(rig.edits(), SketchConstraintEdits::default());
+    assert_eq!(rig.history(), (0, 0));
+    assert!(rig.e.take_request().is_none() && rig.e.take_apply_request().is_none());
+    assert_eq!(rig.typed(), "55.5");
+}

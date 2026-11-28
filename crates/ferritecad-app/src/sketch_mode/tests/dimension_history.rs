@@ -367,3 +367,109 @@ fn a_refused_viewport_angle_keeps_its_text_selection_and_history() {
         "110",
     );
 }
+
+fn value_field(w: &Window, rule: StableEntityId) -> &str {
+    let (selected, _, text) = w
+        .creates
+        .sketch
+        .viewport
+        .value_field
+        .as_ref()
+        .expect("Value");
+    assert_eq!(*selected, rule);
+    text
+}
+
+#[test]
+fn two_viewports_on_one_document_keep_their_own_dimension_text_and_edits() {
+    if !native() {
+        return;
+    }
+    let (_root, path, sketch, before, [width, height]) = lengths();
+    let bytes = std::fs::read(&path).expect("source");
+    let open_sketch = || {
+        let mut w = open(&path, Drawn::Native);
+        w.input.frame(([-40.; 3], [40.; 3])).expect("fit");
+        enter(&mut w, sketch, ModelEdit::Sketch);
+        let ui = Ui::new(&mut w);
+        (w, ui)
+    };
+    let (mut a, mut a_ui) = open_sketch();
+    let (mut b, mut b_ui) = open_sketch();
+    let base = version(&a);
+    assert_eq!(version(&b), base);
+    click_label(&mut a, &mut a_ui, width);
+    a_ui.replace_dimension_text(&mut a, "70");
+    a_ui.press(&mut a, "Set", false);
+    a_ui.settle(&mut a);
+    let a_state = draft(&a).state.clone();
+    assert_eq!(a_state.selected, [Selection::Constraint(width)]);
+    assert_eq!(value_field(&a, width), "70");
+    assert_eq!(draft(&a).constraint_counts(), (0, 0, 1));
+    assert_eq!(draft(&b).state.constraints, before.constraints);
+    assert!(draft(&b).state.selected.is_empty());
+    click_label(&mut b, &mut b_ui, height);
+    b_ui.replace_dimension_text(&mut b, "33");
+    assert_eq!(value_field(&b, height), "33");
+    assert_eq!(draft(&b).state.constraints, before.constraints);
+    assert!(draft(&b).undo.is_empty());
+    b_ui.press(&mut b, "Set", false);
+    b_ui.settle(&mut b);
+    assert_eq!(draft(&b).state.selected, [Selection::Constraint(height)]);
+    assert_eq!(value_field(&b, height), "33");
+    for (w, values) in [(&a, [70., 30.]), (&b, [60., 33.])] {
+        let state = &draft(w).state;
+        for (rule, value) in [width, height].into_iter().zip(values) {
+            let c = state
+                .constraints
+                .iter()
+                .find(|c| c.id == rule)
+                .expect("saved rule");
+            assert_eq!(draft::dimension(c).expect("length").1.value(), value);
+        }
+        assert_eq!(draft(w).constraint_counts(), (0, 0, 1));
+        assert_eq!(draft(w).undo.len(), 1);
+        assert_eq!(version(w), base);
+    }
+    assert_eq!(draft(&a).state, a_state);
+    assert_eq!(value_field(&a, width), "70");
+    assert_eq!(std::fs::read(path).expect("source"), bytes);
+}
+
+#[test]
+fn returning_to_a_dimension_after_picking_a_line_keeps_unsubmitted_text() {
+    if !native() {
+        return;
+    }
+    let (_root, path, sketch, before, [width, _]) = lengths();
+    let bytes = std::fs::read(&path).expect("source");
+    let mut w = open(&path, Drawn::Native);
+    let base = version(&w);
+    w.input.frame(([-40.; 3], [40.; 3])).expect("fit");
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click_label(&mut w, &mut ui, width);
+    ui.replace_dimension_text(&mut w, "55.5");
+    assert_eq!(value_field(&w, width), "55.5");
+    let shown = draft(&w).state.clone();
+    let curve = &shown.curves[2];
+    let SketchGeometry::Line { start, end } = curve.geometry else {
+        panic!("third side");
+    };
+    click(
+        &mut w,
+        point((start.x + end.x) / 2., (start.y + end.y) / 2.),
+        false,
+    );
+    ui.settle(&mut w);
+    assert_eq!(draft(&w).state.selected, [Selection::Curve(curve.id)]);
+    click_label(&mut w, &mut ui, width);
+    ui.settle(&mut w);
+    assert_eq!(draft(&w).state, shown);
+    assert_eq!(draft(&w).state.constraints, before.constraints);
+    assert!(draft(&w).undo.is_empty() && draft(&w).redo.is_empty());
+    assert!(w.creates.sketch.viewport.take_request().is_none());
+    assert_eq!(version(&w), base);
+    assert_eq!(std::fs::read(path).expect("source"), bytes);
+    assert_eq!(value_field(&w, width), "55.5");
+}
