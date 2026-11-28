@@ -472,3 +472,107 @@ fn native_collinear_viewport_and_cli_publish_the_same_geometry() {
         assert_eq!(solved(path).1.0, 16);
     }
 }
+
+/// A pair in one tab is independent of the pending Collinear in the other.
+#[test]
+fn native_picked_pair_after_collinear_in_two_plate_tabs() {
+    if !ferritecad_fixtures::native_dependencies(&[
+        (ferritecad_occt::is_available(), "OCCT"),
+        (ferritecad_eval::solver_available(), "PLANEGCS"),
+    ]) {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let plate = root.path().join("plate.fcad");
+    let copy = root.path().join("copy.fcad");
+    ferritecad_jobs::create_document(
+        ferritecad_jobs::CreateDocumentRequest::new(
+            &plate,
+            ferritecad_jobs::NewDocument::SamplePlate(ferritecad_jobs::PlateSize {
+                width: 80.,
+                depth: 40.,
+                height: 12.,
+            }),
+            "keep",
+        ),
+        &OperationContext::default(),
+    )
+    .expect("sample plate");
+    std::fs::copy(&plate, &copy).expect("copy");
+    let (sketch, saved) = super::curve_edits::stored(&plate);
+    let pick_pair = |w: &mut Window, sides: [usize; 2]| {
+        w.input
+            .frame(([-55., -40., -10.], [110., 70., 10.]))
+            .expect("plate in view");
+        for (i, side) in sides.into_iter().enumerate() {
+            let (p, q) = super::polygon_rules::ends(&saved, side);
+            click(w, point((p.x + q.x) / 2., (p.y + q.y) / 2.), i == 1);
+        }
+        let selected = sides.map(|i| Selection::Curve(saved.curves[i].id));
+        assert_eq!(
+            w.creates
+                .sketch
+                .viewport
+                .draft
+                .as_ref()
+                .expect("draft")
+                .state
+                .selected,
+            selected
+        );
+        selected
+    };
+    let facts = |w: &Window| {
+        let d = w.creates.sketch.viewport.draft.as_ref().expect("draft");
+        (d.state.clone(), d.undo.len(), d.redo.len(), version(w))
+    };
+    let mut w = open(&plate, Drawn::Native);
+    let a = w.sessions.tab();
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    pick_pair(&mut w, [0, 2]);
+    press_rule(&mut ui, &mut w, "Collinear");
+    let state_a = facts(&w);
+    assert_eq!((state_a.1, state_a.2), (1, 0));
+    w.open(&copy);
+    let b = w.sessions.tab();
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let pair = pick_pair(&mut w, [1, 3]);
+    let state_b = facts(&w);
+    for _ in 0..20 {
+        w.switch(a);
+        assert_eq!(facts(&w), state_a);
+        w.switch(b);
+        assert_eq!(facts(&w), state_b);
+    }
+    press_rule(&mut ui, &mut w, "Collinear");
+    let added = facts(&w);
+    assert_eq!(added.3, state_b.3);
+    assert_eq!((added.1, added.2), (1, 0));
+    assert_eq!(added.0.constraints.len(), state_b.0.constraints.len() + 1);
+    let rule = added.0.constraints.last().expect("added Collinear");
+    let segment = |curve| {
+        ferritecad_document::SketchSegmentRef::new(
+            SketchPointRef::new(curve, SketchPointSelector::Start),
+            SketchPointRef::new(curve, SketchPointSelector::End),
+        )
+    };
+    assert_eq!(
+        rule.rule,
+        SketchConstraintRule::Collinear {
+            a: segment(saved.curves[1].id),
+            b: segment(saved.curves[3].id),
+        }
+    );
+    w.switch(a);
+    assert_eq!(facts(&w), state_a);
+    assert!(!w.sessions.dirty());
+    w.switch(b);
+    assert_eq!(facts(&w), added);
+    assert!(!w.sessions.dirty());
+    let another = rules::Button::Equal.rule(&added.0.curves, &added.0.selected, true);
+    assert_eq!(
+        added.0.selected, pair,
+        "the pair is not consumed; Equal: {another:?}"
+    );
+}

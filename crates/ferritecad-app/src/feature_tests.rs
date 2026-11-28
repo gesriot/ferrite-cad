@@ -587,6 +587,53 @@ pub(crate) fn persist_rectangle_lengths(path: &std::path::Path) -> crate::sketch
     source
 }
 
+/// A stored (4.5, 0), R1.2 circle constrained to the origin and R10.
+pub(crate) fn write_guessed_circle(path: &std::path::Path) {
+    use ferritecad_document::{
+        CircleConstraintKind, CircleRadiusMm, Document, SketchConstraintEdits, SketchCoordinateMm,
+    };
+    use ferritecad_kernel::OperationContext;
+
+    ferritecad_jobs::create_document_with_kernel(
+        ferritecad_jobs::CreateDocumentRequest::new(
+            path,
+            ferritecad_jobs::NewDocument::CircleExtrude(
+                ferritecad_document::CircleExtrusion::new([4.5, 0.], 1.2, 15.).expect("a circle"),
+            ),
+            "test",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("the source");
+    let mut document = Document::open(path).expect("document");
+    let (sketch, drawing) = ferritecad_fixtures::sketch(&document).expect("circle sketch");
+    let circle = drawing.curves[0].id;
+    let prepared = ferritecad_fixtures::constraint_changes(
+        &document,
+        sketch,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                AddSketchConstraint::Circle {
+                    curve: circle,
+                    kind: CircleConstraintKind::Radius(CircleRadiusMm::new(10.).expect("radius")),
+                },
+                AddSketchConstraint::Circle {
+                    curve: circle,
+                    kind: CircleConstraintKind::FixedCenter {
+                        x: SketchCoordinateMm::new(0.).expect("x"),
+                        y: SketchCoordinateMm::new(0.).expect("y"),
+                    },
+                },
+            ],
+        },
+    )
+    .expect("prepare");
+    document.write_changes(&prepared).expect("rules");
+    document.close().expect("close");
+}
+
 fn write_ruled_quadrilateral(
     path: &std::path::Path,
     rules: impl FnOnce(&[StableEntityId]) -> Vec<AddSketchConstraint>,

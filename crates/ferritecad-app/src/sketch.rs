@@ -216,7 +216,6 @@ impl Editor {
         can_begin: bool,
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
-        accepted: &accepted::Accepted,
     ) {
         if self.active() {
             return;
@@ -225,7 +224,7 @@ impl Editor {
             .id_salt("saved-sketch-actions")
             .max_height(180.)
             .show(ui, |ui| {
-                self.draw_choice_rows(ui, can_begin, path, source, accepted);
+                self.draw_choice_rows(ui, can_begin, path, source);
             });
     }
     fn draw_choice_rows(
@@ -234,11 +233,8 @@ impl Editor {
         can_begin: bool,
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
-        accepted: &accepted::Accepted,
     ) {
         if !self.active() {
-            self.constraints
-                .choices(ui, can_begin, path, source, accepted);
             self.cuts.choices(ui, can_begin, path, source);
             self.fillets.choices(ui, can_begin, path, source);
             self.keep_solids.draw(ui, path, source);
@@ -1667,13 +1663,7 @@ pub(crate) mod tests {
                         ..Default::default()
                     },
                 );
-                e.draw_choices(
-                    ui,
-                    true,
-                    Some(path),
-                    Some(source),
-                    &accepted::Accepted::default(),
-                );
+                e.draw_choices(ui, true, Some(path), Some(source));
                 e.draw(ui, false, "");
                 crate::edits::Edits::default().draw(ui, true, source.unavailable_reason());
             },

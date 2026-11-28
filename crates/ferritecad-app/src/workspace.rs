@@ -36,7 +36,7 @@ use ferritecad_ui::{
 };
 use ferritecad_viewport::PixelRect;
 
-use crate::{Sections, commands, in_tab_scope, sketch::accepted::Accepted};
+use crate::{Sections, commands, in_tab_scope};
 
 /// The most room the action buttons and the tabs may take at the top, each, in
 /// points: two rows. The buttons wrap into them at ordinary widths so that all
@@ -84,8 +84,6 @@ pub(crate) fn central_of(ctx: &egui::Context) -> Option<egui::Rect> {
 pub(crate) struct Scene<'a> {
     pub(crate) document: Option<&'a Path>,
     pub(crate) edit_source: Option<&'a ExtrudeEditSource>,
-    /// §31K: the drawings of the same accepted scene, as the same reading saw them.
-    pub(crate) sketches: &'a Accepted,
     pub(crate) definitions: &'a [Selected<'a>],
     pub(crate) chosen_row: Option<usize>,
     pub(crate) offers: &'a [RowVisibility],
@@ -409,10 +407,9 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
         if sections.held_back {
             ui.label(
                 "Copy workflows require a saved document with no unsaved changes. \
-                 Height, vertices, constraints, Circle, annulus, a saved partial Revolve \
-                 angle, existing Cut parameters, Fillet radii and Chamfer distances can \
-                 still be changed with Apply, and a new Cut, Fillet or Chamfer added with \
-                 Add cut, Add fillet or Add chamfer.",
+                 Height, a saved partial Revolve angle, existing Cut parameters, Fillet radii \
+                 and Chamfer distances can still be changed with Apply, and a new Cut, Fillet or \
+                 Chamfer added with Add cut, Add fillet or Add chamfer.",
             );
         }
         in_tab_scope(ui, "tab-forms", forms_scope, |ui| {
@@ -428,13 +425,9 @@ fn actions(ui: &mut egui::Ui, view: &mut View<'_>, answers: &mut Answers) {
                     &mut answers.chosen,
                 );
             }
-            sections.sketch.draw_choices(
-                ui,
-                sections.can_edit,
-                scene.document,
-                scene.edit_source,
-                scene.sketches,
-            );
+            sections
+                .sketch
+                .draw_choices(ui, sections.can_edit, scene.document, scene.edit_source);
             sections.sketch.draw(
                 ui,
                 sections.creating || sections.edits.running(),
@@ -543,7 +536,6 @@ pub(crate) fn quiet_layout(
         scene: Scene {
             document: None,
             edit_source: None,
-            sketches: &Accepted::default(),
             definitions: &[],
             chosen_row: None,
             offers: &[],

@@ -1192,13 +1192,7 @@ pub(crate) mod tests {
                         ..Default::default()
                     },
                 );
-                crate::sketch::Editor::default().draw_choices(
-                    ui,
-                    false,
-                    Some(path),
-                    Some(reading),
-                    &crate::sketch::accepted::Accepted::default(),
-                );
+                crate::sketch::Editor::default().draw_choices(ui, false, Some(path), Some(reading));
                 edits.draw_with(ui, false, None, offer);
             },
         );
@@ -1354,7 +1348,6 @@ pub(crate) mod tests {
                             false,
                             Some(&path),
                             Some(&reading),
-                            &crate::sketch::accepted::Accepted::default(),
                         );
                         let choice = e.draw_with(ui, false, None, offer);
                         if choice != ferritecad_ui::EditChoice::Waiting {

@@ -546,37 +546,6 @@ impl Editor {
         });
         true
     }
-    pub(crate) fn choices(
-        &mut self,
-        ui: &mut egui::Ui,
-        can_begin: bool,
-        path: Option<&Path>,
-        source: Option<&ExtrudeEditSource>,
-        accepted: &Accepted,
-    ) {
-        if self.active() {
-            return;
-        }
-        if let (Some(path), Some(source)) = (path, source) {
-            for choice in &source.constraint_sketches {
-                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-                let response = ui.add_enabled(
-                    (can_begin || self.can_begin) && refusal.is_none(),
-                    egui::Button::new(format!(
-                        "Edit constraints {} — {}…",
-                        choice.name.as_deref().unwrap_or("Unnamed"),
-                        choice.sketch
-                    )),
-                );
-                if response.clicked() {
-                    self.begin_with(path, source, accepted, choice.sketch);
-                }
-                if let Some(reason) = refusal {
-                    response.on_hover_text(reason);
-                }
-            }
-        }
-    }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool) {
         let (apply, unsaved) = (self.can_apply && !running, self.unsaved);
         // A request of this form waits to be taken: nothing on the canvas may begin.

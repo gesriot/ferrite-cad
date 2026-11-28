@@ -729,12 +729,16 @@ fn saved_polygon_circle_and_annulus_offer_no_retired_editors_in_tree_menu_or_wor
         }
         commands::select_row(source, w.tabs.model_navigation(w.sessions.tab()), row);
         let mut ui = Ui::new(&mut w);
+        let labels = text(&ui.settle(&mut w));
         for label in retired {
-            assert!(
-                !text(&ui.settle(&mut w)).iter().any(|word| word == label),
-                "{label}"
-            );
+            assert!(!labels.iter().any(|word| word == label), "{label}");
         }
+        assert!(
+            !labels
+                .iter()
+                .any(|word| word.starts_with("Edit constraints ")),
+            "a named sketch still offers the retired workspace editor: {labels:?}"
+        );
         enter(&mut w, f.sketch, ModelEdit::Sketch);
         let labels = text(&ui.settle(&mut w));
         assert!(labels.iter().any(|word| word == "Finish"));
