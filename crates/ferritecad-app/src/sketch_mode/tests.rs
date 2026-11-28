@@ -551,4 +551,5 @@ mod collinear;
 mod diameter;
 mod dimension_history;
 mod dragging;
+mod dressed_plate;
 mod saved_angle;

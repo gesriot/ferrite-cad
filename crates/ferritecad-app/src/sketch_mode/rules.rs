@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Selection order, measured dimensions and button availability have no screen dependencies.
 use ferritecad_document::{
-    Expression, LineLengthMm, Point2, SketchConstraint, SketchConstraintRule as Rule, SketchCurve,
-    SketchGeometry as G, SketchPointRef as P, SketchPointSelector as S, SketchSegmentRef,
+    CircleRadiusMm, DirectedAngle, Expression, LineLengthMm, Point2, SketchConstraint,
+    SketchConstraintRule as Rule, SketchCurve, SketchGeometry as G, SketchPointRef as P,
+    SketchPointSelector as S, SketchSegmentRef,
 };
 use ferritecad_types::StableEntityId as Id;
 
@@ -242,7 +243,6 @@ impl Button {
 }
 
 pub(super) fn set_number(rule: &mut Rule, text: &str, diameter: bool) -> Result<(), String> {
-    use crate::constraints::{parse_angle, parse_length, parse_radius};
     let (slot, value) = match rule {
         Rule::Distance { distance, .. } => (distance, parse_length(text)?.get()),
         Rule::Radius { radius, .. } => (radius, parse_radius(text, diameter)?.get()),
@@ -251,4 +251,42 @@ pub(super) fn set_number(rule: &mut Rule, text: &str, diameter: bool) -> Result<
     };
     *slot = Expression::constant(value).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// A typed line length in millimetres, with the dimension field's refusal.
+pub(crate) fn parse_length(text: &str) -> std::result::Result<LineLengthMm, String> {
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| ferritecad_types::CadError::input("enter a finite positive Line length in mm"))
+        .and_then(LineLengthMm::new)
+        .map_err(|e| e.to_string())
+}
+/// A positive radius, converting a diameter field to the stored radius.
+pub(crate) fn parse_radius(
+    text: &str,
+    diameter: bool,
+) -> std::result::Result<CircleRadiusMm, String> {
+    Ok(match diameter {
+        false => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(|v| CircleRadiusMm::new(v).ok())
+            .ok_or_else(|| "Enter a positive radius in mm.".to_owned())?,
+        true => text
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "Enter a positive diameter in mm.".to_owned())
+            .and_then(|v| CircleRadiusMm::from_diameter_mm(v).map_err(|e| e.to_string()))?,
+    })
+}
+/// A directed angle typed in degrees, retaining the validated angle in radians.
+pub(crate) fn parse_angle(text: &str) -> std::result::Result<DirectedAngle, String> {
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| {
+            ferritecad_types::CadError::input("enter the angle in degrees, from -180 to 180")
+        })
+        .and_then(DirectedAngle::from_degrees)
+        .map_err(|e| e.to_string())
 }
