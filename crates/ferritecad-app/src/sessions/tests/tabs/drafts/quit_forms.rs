@@ -6,7 +6,7 @@ use crate::restores::Restores;
 use crate::tabs::{Forms, QuitId};
 
 impl Window {
-    pub(super) fn park_quit_form(&mut self) -> QuitId {
+    pub(crate) fn park_quit_form(&mut self) -> QuitId {
         self.tabs
             .ask_quit_form(
                 &self.sessions,
@@ -30,7 +30,7 @@ impl Window {
             &mut self.creates,
         );
     }
-    pub(super) fn stop_quit(&mut self) {
+    pub(crate) fn stop_quit(&mut self) {
         self.tabs.abort_quit();
         self.restore_after_quit();
     }

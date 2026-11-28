@@ -567,3 +567,66 @@ fn removing_a_saved_rule_in_one_viewport_preserves_the_other_viewports_markers_a
     assert_eq!(draft(&a).state, a_after);
     assert_eq!(std::fs::read(&path).expect("source"), source);
 }
+
+#[test]
+fn cancelling_close_or_quit_restores_the_same_dimension_text_and_both_draft_histories() {
+    if !native() {
+        return;
+    }
+    let (_root, path, sketch, _, [width, _]) = lengths();
+    let source = std::fs::read(&path).expect("source");
+    let mut w = open(&path, Drawn::Native);
+    let base = version(&w);
+    w.input.frame(([-40.; 3], [40.; 3])).expect("fit");
+    enter(&mut w, sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click_label(&mut w, &mut ui, width);
+    for value in ["55", "53"] {
+        ui.replace_dimension_text(&mut w, value);
+        ui.press(&mut w, "Set", false);
+    }
+    ui.press(&mut w, "Undo", true);
+    ui.replace_dimension_text(&mut w, "58.25");
+    let state = draft(&w).state.clone();
+    let undo = draft(&w).undo.clone();
+    let redo = draft(&w).redo.clone();
+    let changes = draft(&w).changes().expect("pending width edit");
+    assert_eq!((undo.len(), redo.len()), (1, 1));
+    assert!(!changes.is_empty());
+    assert_eq!(state.selected, [Selection::Constraint(width)]);
+    let restored = |w: &mut Window, ui: &mut Ui| {
+        ui.settle(w);
+        assert_eq!(value_field(w, width), "58.25");
+        assert_eq!(draft(w).state, state);
+        assert_eq!(draft(w).undo, undo);
+        assert_eq!(draft(w).redo, redo);
+        assert_eq!(draft(w).changes().expect("pending edit"), changes);
+        assert_eq!(version(w), base);
+        assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
+        assert!(w.creates.sketch.viewport.take_request().is_none());
+    };
+    restored(&mut w, &mut ui);
+    let first = w.ask_form_close();
+    assert!(!w.creates.sketch.viewport.active());
+    assert!(w.back_from_form_close(first));
+    restored(&mut w, &mut ui);
+    let second = w.ask_form_close();
+    assert!(!w.back_from_form_close(first));
+    assert!(!w.creates.sketch.viewport.active());
+    assert!(w.back_from_form_close(second));
+    restored(&mut w, &mut ui);
+
+    assert!(w.begin_quit());
+    let previous = w.park_quit_form();
+    assert!(!w.creates.sketch.viewport.active());
+    w.stop_quit();
+    restored(&mut w, &mut ui);
+    assert!(w.begin_quit());
+    let current = w.park_quit_form();
+    assert_ne!(previous, current);
+    assert!(!w.tabs.confirm_quit_form(&w.sessions, previous));
+    assert!(!w.creates.sketch.viewport.active());
+    w.stop_quit();
+    restored(&mut w, &mut ui);
+    assert_eq!(std::fs::read(path).expect("source"), source);
+}
