@@ -33,7 +33,7 @@ surviving commands.
 | Pick an obscured rule from the complete list of curves and constraints | Select geometry, markers and labels in the viewport. |
 | Stage a batch containing an intermediate unsolvable set of rules | Each viewport rule edit solves immediately. Submit a complete batch through CLI `edit`. |
 | Replace a dimension by removing its rule and adding another | **Set** changes the value and preserves the constraint UUID. |
-| Restore all saved vertices in one undoable draft step | Undo draft steps or Cancel the draft. |
+| Restore all saved vertices, or clear all pending constraint changes, in one undoable draft step | Undo draft steps or Cancel the draft. |
 | Write a sketch copy while keeping the open tab at its original revision | Save As before editing or use CLI `edit … -o COPY`. Numeric feature editors retain their copy workflow. |
 | Keep three alternative drawing drafts and publish sketch and solid together | Empty document, finished sketch and applied sweep have separate accepted versions and Undo steps. |
 | Keep an independent fitted 2D view for each draft | Sketch mode uses the tab camera and offers **Look at sketch**. |

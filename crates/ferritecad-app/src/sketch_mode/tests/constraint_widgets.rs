@@ -818,6 +818,57 @@ fn deleting_a_saved_viewport_marker_removes_only_its_rule() {
 }
 
 #[test]
+fn draft_history_restores_each_saved_marker_removal_and_cancel_discards_both() {
+    if !native() {
+        return;
+    }
+    let (f, _, ids) = saved_horizontal_lines();
+    let mut w = open(&f.path, Drawn::Native);
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let (_, saved) = super::curve_edits::stored(&f.path);
+    let accepted = super::window::version(&w);
+    let original = std::fs::read(&f.path).expect("source bytes");
+    let mut ui = Ui::new(&mut w);
+    let changes = |w: &Window| {
+        w.creates
+            .sketch
+            .viewport
+            .draft
+            .as_ref()
+            .expect("open draft")
+            .changes()
+            .expect("request")
+    };
+    let removed = ids.map(|constraint| EditChange::RemoveConstraint {
+        sketch: f.sketch,
+        constraint,
+    });
+    for (i, id) in ids.into_iter().enumerate() {
+        click_label(&mut w, &mut ui, id);
+        ui.press(&mut w, "Delete", true);
+        assert_eq!(changes(&w), removed[..=i]);
+    }
+    for n in [1, 0] {
+        ui.press(&mut w, "Undo", true);
+        assert_eq!(changes(&w), removed[..n]);
+    }
+    for n in [1, 2] {
+        ui.press(&mut w, "Redo", true);
+        assert_eq!(changes(&w), removed[..n]);
+    }
+    ui.press(&mut w, "Cancel", true);
+    assert!(!w.creates.sketch.viewport.active());
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let d = w.creates.sketch.viewport.draft.as_ref().expect("reopened");
+    assert_eq!(d.state.constraints, saved.constraints);
+    assert!(d.undo.is_empty() && d.redo.is_empty());
+    assert!(changes(&w).is_empty());
+    assert_eq!(super::window::version(&w), accepted);
+    assert_eq!(std::fs::read(&f.path).expect("source bytes"), original);
+    assert!(!w.sessions.can_undo());
+}
+
+#[test]
 fn deleting_a_constrained_line_solves_the_remaining_drawing_once() {
     if !native() {
         return;
