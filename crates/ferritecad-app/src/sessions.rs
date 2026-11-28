@@ -3832,7 +3832,7 @@ pub(crate) mod tests {
                 &path,
                 ferritecad_jobs::NewDocument::SketchExtrude(
                     ferritecad_document::PolygonExtrusion::new(
-                        crate::constraints::tests::collinear::U_PROFILE.to_vec(),
+                        crate::feature_tests::U_PROFILE.to_vec(),
                         10.,
                     )
                     .expect("a U"),

@@ -11,7 +11,7 @@ mod rules;
 mod snapping;
 #[cfg(test)]
 pub(crate) use integration::apply_viewport_input;
-pub(crate) use integration::sync;
+pub(crate) use integration::{input_editable, sync};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -95,15 +95,17 @@ impl Editor {
             .map(|(_, report)| report.clone());
         draft.state.constraints = stored.constraints.clone();
         draft.original = Some(stored.clone());
-        draft.state.curves = presentation
-            .curves()
-            .iter()
-            .map(|c| SketchCurve {
-                id: c.id(),
-                construction: c.is_construction(),
-                geometry: c.geometry().clone(),
-            })
-            .collect();
+        draft.open_curves(
+            presentation
+                .curves()
+                .iter()
+                .map(|c| SketchCurve {
+                    id: c.id(),
+                    construction: c.is_construction(),
+                    geometry: c.geometry().clone(),
+                })
+                .collect(),
+        );
         self.open(path, source.version, draft);
         true
     }
@@ -250,7 +252,8 @@ impl Editor {
             drag::cancel(&mut self.gesture, draft);
             self.snapping.held = None;
         }
-        ui.add_enabled_ui(!running && self.gesture.is_none(), |ui| {
+        let panel_enabled = !running && self.gesture.is_none();
+        ui.add_enabled_ui(panel_enabled, |ui| {
             if draft.original.is_none() {
                 ui.add_enabled_ui(
                     draft.state.curves.is_empty() && draft.pending.is_none(),
@@ -330,8 +333,8 @@ impl Editor {
                     draft.history(false);
                 }
             });
-            // A drag owns the drawing until release: Escape cancels it above, Delete is ignored.
-            if self.gesture.is_none() && !ui.ctx().egui_wants_keyboard_input() {
+            // Raw keyboard events reach a disabled egui panel.
+            if panel_enabled && !ui.ctx().egui_wants_keyboard_input() {
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                     draft.escape();
                 }

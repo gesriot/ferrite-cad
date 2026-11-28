@@ -269,6 +269,13 @@ fn revolve_widgets(partial: bool, line_axis: bool) {
     let f = Drawing::new(curves, false);
     let mut w = open(&f.path, Drawn::Native);
     enter(&mut w, f.sketch, ModelEdit::Revolve);
+    assert!(crate::numeric::can_submit_sketch_or_sweep(
+        &w.creates,
+        &crate::Loads::default(),
+        &crate::exports::Exports::default(),
+        &w.edits,
+        &w.sessions,
+    ));
     let mut ui = Ui::new(&mut w);
     if partial {
         ui.press(&mut w, "Angle (°)", true);
@@ -753,6 +760,13 @@ fn apply_requires_idle_and_enabled_owner_permission() {
     let f = Drawing::new(rectangle(), false);
     let mut w = open(&f.path, Drawn::Mock);
     enter(&mut w, f.sketch, ModelEdit::Extrude);
+    assert!(crate::numeric::can_submit_sketch_or_sweep(
+        &w.creates,
+        &crate::Loads::default(),
+        &crate::exports::Exports::default(),
+        &w.edits,
+        &w.sessions,
+    ));
     let ctx = egui::Context::default();
     let editor = &mut w.creates.sketch.sweeps;
     for (permission, running) in [(false, false), (true, true), (true, false)] {

@@ -90,11 +90,12 @@ pub(crate) fn click(w: &mut Window, at: Point2, shift: bool) {
         .input
         .take_pick()
         .expect("existing reducer emitted a click");
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
     assert!(
         w.creates
             .sketch
             .viewport
-            .take_click(&mut w.input, [x, y], shift, true),
+            .take_click(&mut w.input, [x, y], shift, editable),
         "the mode consumes the click before entity picking"
     );
 }
@@ -115,6 +116,19 @@ pub(crate) fn finish(w: &mut Window, ui: &mut Ui) -> EditRequest {
 }
 pub(crate) fn apply(w: &mut Window, request: EditRequest) -> bool {
     apply_with_upload(w, request, Ok(()))
+}
+
+pub(super) fn publish(w: &mut Window, request: EditRequest) {
+    let before = version(w);
+    assert_eq!(before, request.expected);
+    assert!(apply(w, request));
+    let accepted = version(w);
+    assert_ne!(accepted, before);
+    w.step(true);
+    assert_eq!(version(w), before, "one Undo restores the starting version");
+    w.step(false);
+    assert_eq!(version(w), accepted);
+    assert!(!w.sessions.can_redo());
 }
 
 pub(crate) fn apply_with_upload(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use std::path::PathBuf;
 
-use crate::{App, AppEvent, dialogs, edits, sessions};
+use crate::{App, AppEvent, Loads, creates::Creates, dialogs, edits, exports::Exports, sessions};
 use ferritecad_document::{DOCUMENT_EXTENSION, DocumentVersion, EditChange};
 use ferritecad_jobs::EditRequest;
 
@@ -20,7 +20,11 @@ pub(crate) enum Form {
     Constraints,
 }
 
-/// The open form may apply while its session and document I/O are idle.
+/// Window state checked by a form button and rechecked when it submits its request.
+pub(crate) type FormGuard =
+    fn(&Creates, &Loads, &Exports, &edits::Edits, &sessions::Sessions) -> bool;
+
+/// Common admission check for the form guards. Each button uses its own form guard.
 pub(crate) fn can_apply(
     creates: &crate::creates::Creates,
     loads: &crate::Loads,
@@ -34,13 +38,133 @@ pub(crate) fn can_apply(
         && sessions.takes_form_apply()
 }
 
+/// An open sketch or sweep can submit while the Height editor is closed.
+/// Finish, sweep Apply and both request handlers check this guard.
+pub(crate) fn can_submit_sketch_or_sweep(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && !edits.busy()
+}
+
+/// Both the Height button and its handler allow the open Height editor to submit.
+pub(crate) fn can_apply_height(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && !creates.sketch.active()
+}
+
+/// Both Keep solids actions and their handler wait for any open editor to close.
+pub(crate) fn can_keep_solids(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && !creates.sketch.active() && !edits.busy()
+}
+
+/// Shared by the saved Revolve angle form's Apply button and its request handler.
+pub(crate) fn can_apply_angle(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions)
+        && creates.can_apply_angle()
+        && !edits.busy()
+}
+
+/// Shared by the saved Cut form's Apply button and its request handler.
+pub(crate) fn can_apply_cut(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && creates.can_apply_cut() && !edits.busy()
+}
+
+/// Shared by the Cut creation form's Add button and its request handler.
+pub(crate) fn can_add_cut(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && creates.can_add_cut() && !edits.busy()
+}
+
+/// Shared by the saved Fillet radius form's Apply button and its request handler.
+pub(crate) fn can_apply_fillet_radius(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions)
+        && creates.can_apply_fillet_radius()
+        && !edits.busy()
+}
+
+/// Shared by the Fillet creation form's Add button and its request handler.
+pub(crate) fn can_add_fillet(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions) && creates.can_add_fillet() && !edits.busy()
+}
+
+/// Shared by the saved Chamfer distance form's Apply button and its request handler.
+pub(crate) fn can_apply_chamfer_distance(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions)
+        && creates.can_apply_chamfer_distance()
+        && !edits.busy()
+}
+
+/// Shared by the Chamfer creation form's Add button and its request handler.
+pub(crate) fn can_add_chamfer(
+    creates: &Creates,
+    loads: &Loads,
+    exports: &Exports,
+    edits: &edits::Edits,
+    sessions: &sessions::Sessions,
+) -> bool {
+    can_apply(creates, loads, exports, edits, sessions)
+        && creates.can_add_chamfer()
+        && !edits.busy()
+}
+
 impl App {
     pub(crate) fn apply_expressions(
         &mut self,
+        allowed: FormGuard,
         expected: DocumentVersion,
         changes: Vec<EditChange>,
     ) {
-        if !can_apply(
+        if !allowed(
             &self.creates,
             &self.loads,
             &self.exports,
@@ -59,6 +183,28 @@ impl App {
                 });
             });
         self.input.request_redraw();
+    }
+
+    pub(crate) fn apply_edge_and_piece_requests(&mut self) {
+        if let Some(request) = self.creates.sketch.fillets.take_apply_request() {
+            self.apply_expressions(can_apply_fillet_radius, request.expected, request.changes);
+        }
+        if let Some(request) = self.creates.sketch.fillets.take_add_request() {
+            self.apply_expressions(can_add_fillet, request.expected, request.changes);
+        }
+        if let Some(request) = self.creates.sketch.chamfers.take_apply_request() {
+            self.apply_expressions(
+                can_apply_chamfer_distance,
+                request.expected,
+                request.changes,
+            );
+        }
+        if let Some(request) = self.creates.sketch.chamfers.take_add_request() {
+            self.apply_expressions(can_add_chamfer, request.expected, request.changes);
+        }
+        if let Some(request) = self.creates.sketch.keep_solids.take_request() {
+            self.apply_expressions(can_keep_solids, request.expected, request.changes);
+        }
     }
 
     pub(crate) fn ask_where_to_edit(

@@ -5,7 +5,7 @@
 //! and loses its drawing; it is never shown a drawing of a version it was not made on.
 
 use super::*;
-use crate::sketch::accepted::{Curve, Drawing, Target, Unavailable};
+use crate::sketch::accepted::{Curve, Drawing, Target};
 
 /// The constraints form on the shown tab, opened as the window opens it: from the facts and
 /// the drawing of the scene it is showing.
@@ -150,69 +150,6 @@ fn the_drawing_the_target_and_the_picks_of_a_form_follow_its_tab() {
     );
     assert!(w.can_leave(), "a released pan does not");
     assert!(!w.sessions.dirty(), "a view is not a change");
-}
-
-#[test]
-fn a_form_held_on_another_version_loses_its_drawing_and_keeps_its_picks() {
-    let user = tempfile::tempdir().expect("user");
-    let (a_file, b_file) = (user.path().join("a.fcad"), user.path().join("b.fcad"));
-    plate(&a_file, 12.0);
-    plate(&b_file, 15.0);
-    let mut w = Window::new(Drawn::Mock, None);
-    w.open(&a_file);
-    let a = w.sessions.tab();
-    let feature = w.feature();
-    let in_a = open_constraints(&mut w);
-    // Two picks made through the lists, as a person makes them.
-    w.creates.sketch.constraints.pick_for_tests(in_a[1].id);
-    w.open(&b_file);
-
-    // Behind the window's back A's session accepts another version.
-    let hidden = w.tabs.hidden_sessions_mut(a).expect("A");
-    let (tx, rx) = mpsc::channel();
-    let generation = hidden
-        .apply(
-            hidden.export_source().expect("open").version(),
-            vec![
-                ferritecad_document::EditChange::constant(
-                    feature,
-                    ferritecad_document::ExpressionSlot::ExtrudeDistance,
-                    20.0,
-                )
-                .expect("test value"),
-            ],
-            move |_, reply| {
-                tx.send(reply).expect("deliver");
-            },
-        )
-        .expect("started");
-    assert!(matches!(
-        hidden.finish_apply(generation, wait(&rx)),
-        Edited::Show(_)
-    ));
-    hidden.commit_staged().expect("accepted");
-    assert!(hidden.finish_scene(generation, Ok(())));
-
-    w.round(a);
-    assert!(w.sessions.stale_draft(), "the form is held");
-    let (drawing, _) = w
-        .creates
-        .sketch
-        .constraints
-        .draft_canvas()
-        .expect("the draft is kept");
-    assert_eq!(drawing, &Drawing::Unavailable(Unavailable::OtherVersion));
-    assert_eq!(
-        w.creates.sketch.constraints.draft_state().expect("draft").0,
-        Some(in_a[1].id),
-        "the picks of a held form are kept"
-    );
-    // Cancel ends it, and a form opened afresh on the version now shown is handed that
-    // version's own drawing.
-    w.creates.sketch.constraints.dismiss();
-    w.sessions.release_stale_draft();
-    let again = open_constraints(&mut w);
-    assert_eq!(again.len(), 4);
 }
 
 #[test]

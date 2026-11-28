@@ -33,11 +33,13 @@ surviving commands.
 | Pick an obscured rule from the complete list of curves and constraints | Select geometry, markers and labels in the viewport. |
 | Stage a batch containing an intermediate unsolvable set of rules | Each viewport rule edit solves immediately. Submit a complete batch through CLI `edit`. |
 | Replace a dimension by removing its rule and adding another | **Set** changes the value and preserves the constraint UUID. |
-| Restore all saved vertices in one undoable draft step | Undo draft steps or Cancel the draft. |
+| Restore all saved vertices, or clear all pending constraint changes, in one undoable draft step | Undo draft steps or Cancel the draft. |
 | Write a sketch copy while keeping the open tab at its original revision | Save As before editing or use CLI `edit … -o COPY`. Numeric feature editors retain their copy workflow. |
 | Keep three alternative drawing drafts and publish sketch and solid together | Empty document, finished sketch and applied sweep have separate accepted versions and Undo steps. |
 | Keep an independent fitted 2D view for each draft | Sketch mode uses the tab camera and offers **Look at sketch**. |
 | Cancel a pan with Escape to restore the view, or end it by leaving the window or starting a job | A pan ends on release wherever the pointer is, or on focus loss; the view stays where it ended. |
+| A constraints form returned on another version hid that version's drawing | Sketch mode keeps a held draft visible, like other held forms keep their values; Finish is refused with the reason, and Cancel shows the accepted sketch |
+| Changing a sketch's stored rules in the window (a dimension value, or adding, removing or replacing a constraint) solved from the stored coordinates, as a CLI edit of the rules alone does | The window solves from the drawing it shows and saves that drawing (ADR 0016); a CLI edit of the rules alone still solves from the stored coordinates |
 
 ## Known gaps
 

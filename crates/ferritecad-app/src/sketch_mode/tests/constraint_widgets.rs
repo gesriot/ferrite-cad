@@ -7,7 +7,7 @@ use ferritecad_ui::ModelEdit;
 
 fn native() -> bool {
     ferritecad_fixtures::native_dependencies(&[
-        (ferritecad_eval::solver_available(), "PlaneGCS"),
+        (ferritecad_eval::solver_available(), "PLANEGCS"),
         (ferritecad_occt::is_available(), "OCCT"),
     ])
 }
@@ -283,6 +283,246 @@ fn rectangle_widgets_constrain_the_drawing_in_one_transaction_and_extrude_it() {
         .take_request()
         .expect("fixture operation");
     assert!(apply(&mut w, sweep));
+}
+
+/// The focused Value field and Set share the panel's job and handle-capture guard.
+#[test]
+fn focused_dimensions_freeze_during_a_job_or_handle_capture_and_resume_on_click() {
+    if !native() {
+        return;
+    }
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 10.,
+    });
+    for (label, curves, first_pick, initial, handle) in [
+        (
+            "Radius",
+            vec![circle.clone()],
+            point(10., 0.),
+            "10",
+            point(0., 0.),
+        ),
+        (
+            "Diameter",
+            vec![circle],
+            point(10., 0.),
+            "20",
+            point(0., 0.),
+        ),
+        (
+            "Distance",
+            vec![line([-10., 0.], [10., 0.])],
+            point(0., 0.),
+            "20",
+            point(-10., 0.),
+        ),
+        (
+            "Angle",
+            vec![line([-10., 0.], [0., 0.]), line([5., 0.], [5., 10.])],
+            point(5., 5.),
+            "-90",
+            point(5., 10.),
+        ),
+    ] {
+        let f = fixtures::Drawing::new(curves, false);
+        let mut w = open(&f.path, Drawn::Native);
+        enter(&mut w, f.sketch, ModelEdit::Sketch);
+        let mut ui = Ui::new(&mut w);
+        click(&mut w, first_pick, false);
+        if label == "Angle" {
+            click(&mut w, point(-5., 0.), true);
+        }
+        press_rule(&mut ui, &mut w, label);
+        ui.type_value(&mut w, initial, "20");
+        let field = |w: &Window| {
+            w.creates
+                .sketch
+                .viewport
+                .value_field
+                .as_ref()
+                .expect("selected dimension")
+                .2
+                .clone()
+        };
+        let state = |w: &Window| {
+            let draft = w
+                .creates
+                .sketch
+                .viewport
+                .draft
+                .as_ref()
+                .expect("open sketch");
+            (draft.state.clone(), draft.undo.clone(), draft.redo.clone())
+        };
+        assert_eq!(field(&w), "20");
+        let before = state(&w);
+        let request = EditRequest {
+            source: f.path.clone(),
+            expected: super::window::version(&w),
+            changes: vec![],
+            destination: f.path.with_extension("copy"),
+        };
+        let (finish, wait) = std::sync::mpsc::channel();
+        w.edits
+            .start(request, |_, _, _| {
+                std::thread::spawn(move || {
+                    let _ = wait.recv();
+                })
+            })
+            .expect("start edit worker");
+        assert!(w.edits.running());
+        ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        assert_eq!(field(&w), "20", "{label} during a job");
+        assert_eq!(state(&w), before);
+        finish.send(()).expect("release worker");
+        w.edits.stop_all();
+        ui.type_value(&mut w, "20", "13.5");
+        assert_eq!(field(&w), "13.5");
+        assert_eq!(state(&w), before);
+
+        super::dragging::press(&mut w, handle);
+        assert!(w.creates.sketch.viewport.gesturing(), "{label} handle");
+        ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        assert_eq!(field(&w), "13.5", "{label} during capture");
+        assert_eq!(state(&w), before);
+        super::dragging::release(&mut w);
+    }
+}
+
+#[test]
+fn pending_finish_blocks_shortcuts_and_viewport_edits_until_publication() {
+    use super::window::version;
+    use winit::keyboard::{Key, ModifiersState};
+
+    if !native() {
+        return;
+    }
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 10.,
+    });
+    let f = fixtures::Drawing::new(vec![circle], false);
+    let mut w = open(&f.path, Drawn::Native);
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let mut ui = Ui::new(&mut w);
+    click(&mut w, point(10., 0.), false);
+    press_rule(&mut ui, &mut w, "Radius");
+    let snapshot = |w: &Window| {
+        let d = w
+            .creates
+            .sketch
+            .viewport
+            .draft
+            .as_ref()
+            .expect("open sketch");
+        (
+            d.state.clone(),
+            d.undo.clone(),
+            d.redo.clone(),
+            d.tool,
+            d.pending,
+        )
+    };
+    let radius = snapshot(&w).0.constraints[0].clone();
+    assert_eq!(snapshot(&w).0.selected, [Selection::Constraint(radius.id)]);
+
+    // An edit worker can finish while this same draft is still on screen.
+    let original = version(&w);
+    let request = EditRequest {
+        source: f.path.clone(),
+        expected: original,
+        changes: vec![],
+        destination: f.path.with_extension("copy"),
+    };
+    w.edits
+        .start(request, |_, _, _| std::thread::spawn(|| {}))
+        .expect("start worker");
+    let before = snapshot(&w);
+    assert!(!input_editable(&w.creates, &w.edits, &w.sessions));
+    super::dragging::press(&mut w, point(0., 0.));
+    assert!(!w.creates.sketch.viewport.gesturing());
+    super::dragging::release(&mut w);
+    click(&mut w, point(-4., 3.), false);
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
+    assert!(
+        w.creates
+            .sketch
+            .viewport
+            .take_history(&mut w.input, true, editable)
+    );
+    assert_eq!(snapshot(&w), before);
+    w.edits.stop_all();
+    assert!(input_editable(&w.creates, &w.edits, &w.sessions));
+    ui.key(&mut w, egui::Key::Delete);
+    assert_eq!(constraint_count(&w), 0);
+    ui.press(&mut w, "Undo", true);
+    assert_eq!(snapshot(&w).0, before.0);
+
+    // Leave a first point pending so an unguarded Escape or click is observable.
+    ui.press(&mut w, "Line", false);
+    click(&mut w, point(-8., 6.), false);
+    let before = snapshot(&w);
+    assert!(matches!(before.4, Some(Pending::Line { .. })));
+    assert!(!before.1.is_empty() && !before.2.is_empty());
+    let request = finish(&mut w, &mut ui);
+    assert_eq!(
+        request.changes,
+        [EditChange::AddConstraint {
+            sketch: f.sketch,
+            constraint: radius,
+        }]
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let address = w
+        .sessions
+        .apply(request.expected, request.changes, move |_, result| {
+            let _ = tx.send(result);
+        })
+        .expect("owner accepts Finish");
+    assert!(w.sessions.busy());
+    ui.press(&mut w, "Delete", true);
+    for key in [egui::Key::Delete, egui::Key::Backspace, egui::Key::Escape] {
+        ui.key(&mut w, key);
+        assert_eq!(snapshot(&w), before, "{key:?} during Finish");
+    }
+    let primary = if cfg!(target_os = "macos") {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    let editable = input_editable(&w.creates, &w.edits, &w.sessions);
+    for (modifiers, expected) in [
+        (primary, crate::DocumentCommand::Undo),
+        (
+            primary | ModifiersState::SHIFT,
+            crate::DocumentCommand::Redo,
+        ),
+    ] {
+        let command =
+            crate::document_command(&Key::Character("z".into()), Some("z"), modifiers, false);
+        assert_eq!(command, Some(expected));
+        assert!(w.creates.sketch.viewport.take_history(
+            &mut w.input,
+            command == Some(crate::DocumentCommand::Undo),
+            editable,
+        ));
+        assert_eq!(snapshot(&w), before, "{expected:?} during Finish");
+    }
+    click(&mut w, point(7., 9.), false);
+    assert_eq!(snapshot(&w), before);
+    assert_eq!(version(&w), original);
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("Finish reply");
+    let crate::sessions::Edited::Show(path) = w.sessions.finish_apply(address, result) else {
+        panic!("accepted step");
+    };
+    w.show_staged(address, path.clone());
+    let accepted = super::curve_edits::stored(&path).1;
+    assert_eq!(accepted.constraints, before.0.constraints);
+    assert_eq!(accepted.curves, before.0.curves);
+    assert_ne!(version(&w), original);
 }
 
 #[test]
@@ -575,6 +815,57 @@ fn deleting_a_saved_viewport_marker_removes_only_its_rule() {
         }]
     );
     assert!(apply(&mut w, request));
+}
+
+#[test]
+fn draft_history_restores_each_saved_marker_removal_and_cancel_discards_both() {
+    if !native() {
+        return;
+    }
+    let (f, _, ids) = saved_horizontal_lines();
+    let mut w = open(&f.path, Drawn::Native);
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let (_, saved) = super::curve_edits::stored(&f.path);
+    let accepted = super::window::version(&w);
+    let original = std::fs::read(&f.path).expect("source bytes");
+    let mut ui = Ui::new(&mut w);
+    let changes = |w: &Window| {
+        w.creates
+            .sketch
+            .viewport
+            .draft
+            .as_ref()
+            .expect("open draft")
+            .changes()
+            .expect("request")
+    };
+    let removed = ids.map(|constraint| EditChange::RemoveConstraint {
+        sketch: f.sketch,
+        constraint,
+    });
+    for (i, id) in ids.into_iter().enumerate() {
+        click_label(&mut w, &mut ui, id);
+        ui.press(&mut w, "Delete", true);
+        assert_eq!(changes(&w), removed[..=i]);
+    }
+    for n in [1, 0] {
+        ui.press(&mut w, "Undo", true);
+        assert_eq!(changes(&w), removed[..n]);
+    }
+    for n in [1, 2] {
+        ui.press(&mut w, "Redo", true);
+        assert_eq!(changes(&w), removed[..n]);
+    }
+    ui.press(&mut w, "Cancel", true);
+    assert!(!w.creates.sketch.viewport.active());
+    enter(&mut w, f.sketch, ModelEdit::Sketch);
+    let d = w.creates.sketch.viewport.draft.as_ref().expect("reopened");
+    assert_eq!(d.state.constraints, saved.constraints);
+    assert!(d.undo.is_empty() && d.redo.is_empty());
+    assert!(changes(&w).is_empty());
+    assert_eq!(super::window::version(&w), accepted);
+    assert_eq!(std::fs::read(&f.path).expect("source bytes"), original);
+    assert!(!w.sessions.can_undo());
 }
 
 #[test]

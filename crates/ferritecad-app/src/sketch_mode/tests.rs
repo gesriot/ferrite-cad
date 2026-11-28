@@ -27,7 +27,7 @@ fn existing(curves: Vec<SketchCurve>) -> Draft {
         curves: curves.clone(),
         constraints: Vec::new(),
     });
-    draft.state.curves = curves;
+    draft.open_curves(curves);
     draft
 }
 
@@ -545,4 +545,10 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
     );
 }
 
+mod circular_rules;
+mod cli;
+mod collinear;
+mod diameter;
+mod dimension_history;
 mod dragging;
+mod saved_angle;

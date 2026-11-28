@@ -37,7 +37,7 @@ impl Ui {
             &w.input,
             self.confirmation.is_some(),
         );
-        let apply = crate::numeric::can_apply(
+        let apply = crate::numeric::can_submit_sketch_or_sweep(
             &w.creates,
             &crate::Loads::default(),
             &crate::exports::Exports::default(),
@@ -45,11 +45,9 @@ impl Ui {
             &w.sessions,
         );
         w.creates.sketch.viewport.set_apply(apply);
-        w.creates
-            .sketch
-            .sweeps
-            .set_apply(w.sessions.takes_form_apply());
+        w.creates.sketch.sweeps.set_apply(apply);
         let tab = w.sessions.tab().key();
+        let creating = w.creates.running() || w.sessions.busy();
         let (form, sketch) = w.creates.forms();
         let mut menu = None;
         let mut view = crate::workspace::View {
@@ -57,7 +55,7 @@ impl Ui {
             sections: crate::Sections {
                 dialog_failure: None,
                 sketch,
-                creating: false,
+                creating,
                 edits: &mut w.edits,
                 stl_form: None,
                 can_edit: false,
@@ -120,11 +118,12 @@ impl Ui {
         editor: &mut super::Editor,
         camera: &ferritecad_viewport::Camera,
         region: ferritecad_viewport::PixelRect,
-    ) {
+    ) -> egui::FullOutput {
         let mut output = self.ctx.run_ui(egui::RawInput::default(), |ui| {
             editor.paint(ui.ctx(), camera, region)
         });
         output.textures_delta.clear();
+        output
     }
 
     pub(crate) fn settle(&mut self, w: &mut Window) -> egui::FullOutput {
@@ -149,6 +148,16 @@ impl Ui {
                 egui::Event::Text(value.into()),
             ],
         );
+    }
+
+    /// Focus the Value box by its label, including when the box contains only whitespace.
+    pub(super) fn replace_dimension_text(&mut self, w: &mut Window, value: &str) {
+        let out = self.settle(w);
+        let label = rect(&out, "Value", true);
+        self.frame(w, clicks(egui::pos2(label.right() + 18., label.center().y)));
+        self.frame(w, vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
+        self.key(w, egui::Key::Backspace);
+        self.frame(w, vec![egui::Event::Text(value.into())]);
     }
 
     pub(crate) fn key(&mut self, w: &mut Window, key: egui::Key) {

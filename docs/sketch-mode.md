@@ -78,6 +78,9 @@ A new dimension starts at its measured value. Click its label to select it. Type
 width; the stored rule is a radius. A dimension driven by an expression shows its
 source instead: edit it in **Parameters**. Click a marker to select a geometric rule.
 The selected marker or dimension is highlighted like a selected curve.
+Finish saves the drawing as shown after a constraint is added, removed, replaced or given a
+new value. On a sketch with free degrees of freedom, a CLI edit that changes only the rules
+solves from the stored coordinates and can produce a different shape.
 
 To change a radius without retaining a dimension, set **Radius**, then delete the
 dimension before **Finish**; this requires the sketch solver.
@@ -105,5 +108,7 @@ new empty sketch creates it.
 If the rebuild refuses a change, the form shows the full reason and keeps the
 draft and its Undo history. For example, removing a side from a profile used by a
 built Extrude cannot leave that Extrude unbuilt. **Cancel** discards the draft
-without changing the document. Switching tabs parks the draft; closing its tab or
-quitting asks about it like any other open form. Drafts are not stored on disk.
+without changing the document. Switching tabs parks the draft. If the tab has accepted another
+version when you return, the draft stays visible with **Finish** disabled until you **Cancel**
+it and reopen the sketch. Closing the tab or quitting asks about the draft like any other open
+form. Drafts are not stored on disk.

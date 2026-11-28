@@ -15,6 +15,7 @@ mod canvas_form;
 mod close_form;
 /// §31L: the saved dimensions of a constraints form follow its tab.
 mod dimension_form;
+mod held_sketch;
 /// §31N: the saved rule markers of a constraints form follow its tab.
 mod marker_form;
 pub(in crate::sessions::tests::tabs) mod model_tree;
@@ -93,8 +94,13 @@ impl Window {
     /// What the window's frame tells the open forms, from its own predicates.
     fn tell_forms(&mut self) {
         let (loads, exports) = (Loads::default(), Exports::default());
-        let sketch =
-            crate::numeric::can_apply(&self.creates, &loads, &exports, &self.edits, &self.sessions);
+        let sketch = crate::numeric::can_submit_sketch_or_sweep(
+            &self.creates,
+            &loads,
+            &exports,
+            &self.edits,
+            &self.sessions,
+        );
         let constraints = crate::can_apply_constraints(
             &self.creates,
             &loads,

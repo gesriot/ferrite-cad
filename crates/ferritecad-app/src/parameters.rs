@@ -82,14 +82,15 @@ impl Editor {
         &mut self,
         sessions: &mut sessions::Sessions,
         available: commands::Availability,
+        source: &Source,
         request: Request,
         deliver: impl FnOnce(sessions::Address, Result<ProducedStep>) + Send + 'static,
     ) -> Option<sessions::Address> {
-        if let Err(reason) = available.and_then(commands::Access::operation) {
+        let draft = self.draft.as_mut()?;
+        if let Err(reason) = draft.can_apply(available, source) {
             sessions.status = reason.into();
             return None;
         }
-        let draft = self.draft.as_mut()?;
         let address = sessions.apply(request.expected, vec![request.change], deliver)?;
         // The field tag stays beside the owner's address; only the owner accepts the step.
         draft.pending = Some((address, request.field));
@@ -120,6 +121,22 @@ impl Editor {
 }
 
 impl Draft {
+    /// The fields and their handler use the same current source, operation and pending state.
+    fn can_apply<'a>(
+        &self,
+        available: commands::Availability,
+        source: &'a Source,
+    ) -> std::result::Result<(), &'a str> {
+        available.and_then(commands::Access::operation)?;
+        if let Some(reason) = source.refusal.as_deref() {
+            return Err(reason);
+        }
+        if self.pending.is_some() {
+            return Err("Wait for the pending parameter edit.");
+        }
+        Ok(())
+    }
+
     fn select(&mut self, selected: Option<ModelKey>, source: &Source) {
         let selected = selected
             .map(|key| key.0)
@@ -211,10 +228,18 @@ impl App {
             &self.input,
             self.model_confirmation.is_some(),
         );
+        let Some(source) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.scene.edit_source.as_ref())
+        else {
+            return;
+        };
         let proxy = self.proxy.clone();
         self.creates.sketch.parameters.apply(
             &mut self.sessions,
             available,
+            source,
             request,
             move |generation, result| {
                 let _ = proxy.send_event(AppEvent::Applied {

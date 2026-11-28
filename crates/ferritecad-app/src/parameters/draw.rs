@@ -26,9 +26,7 @@ impl Editor {
         self.document_arrived(Some(source));
         let Some(draft) = &mut self.draft else { return };
         draft.select(navigation.selected, source);
-        let can_apply = available.and_then(Access::operation).is_ok()
-            && source.refusal.is_none()
-            && draft.pending.is_none();
+        let can_apply = draft.can_apply(available, source).is_ok();
         let mut close = false;
         let height = ui.ctx().content_rect().height() * 0.75;
         crate::form_window(ui, "Parameters")

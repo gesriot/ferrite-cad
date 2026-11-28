@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Tab-owned sketch, sweep and numeric forms, separate from the accepted scene.
 use crate::sketch_facts::Source as ExtrudeEditSource;
-use ferritecad_jobs::EditRequest;
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
@@ -57,17 +56,6 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 }
 
 impl Editor {
-    pub(crate) fn edge_and_piece_requests(&mut self) -> impl Iterator<Item = EditRequest> + use<> {
-        [
-            self.fillets.take_apply_request(),
-            self.fillets.take_add_request(),
-            self.chamfers.take_apply_request(),
-            self.chamfers.take_add_request(),
-            self.keep_solids.take_request(),
-        ]
-        .into_iter()
-        .flatten()
-    }
     pub(crate) fn only_editing_cut(&self) -> bool {
         self.cuts.editing_saved()
             && self.angle.editing_angle.is_none()
@@ -425,6 +413,7 @@ pub(crate) fn number(s: &str) -> Result<f64> {
 pub(crate) mod tests {
     use super::*;
     use crate::sketch_facts::SketchProfileUse;
+    use ferritecad_jobs::EditRequest;
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
     /// §30Q: New over a tab's floating form, through real widgets.
@@ -606,7 +595,8 @@ pub(crate) mod tests {
         let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
         assert!(creates.sketch.begin_test_drawing(&path, &reading, id));
         assert!(creates.busy(), "New and Open still wait for this form");
-        let ready = numeric::can_apply(&creates, &loads, &exports, &edits, &sessions);
+        let ready =
+            numeric::can_submit_sketch_or_sweep(&creates, &loads, &exports, &edits, &sessions);
         creates.sketch.viewport.set_apply(ready);
         let ctx = egui::Context::default();
         replace_in_form(&ctx, &mut creates.sketch, "33", "41.3");
@@ -622,7 +612,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|v| { v.start_mm == [41.3, 15.5] })
         );
-        assert!(numeric::can_apply(
+        assert!(numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         loads
@@ -632,7 +622,7 @@ pub(crate) mod tests {
                 |_, _| std::thread::spawn(|| {}),
             )
             .expect("load");
-        assert!(!numeric::can_apply(
+        assert!(!numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         loads.stop_all();
@@ -640,7 +630,7 @@ pub(crate) mod tests {
         sessions
             .begin_apply(|_, _, _| std::thread::spawn(|| {}))
             .expect("operation");
-        assert!(!numeric::can_apply(
+        assert!(!numeric::can_submit_sketch_or_sweep(
             &creates, &loads, &exports, &edits, &sessions
         ));
         sessions.stop_all();
