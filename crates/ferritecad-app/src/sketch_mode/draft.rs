@@ -7,7 +7,7 @@ use ferritecad_document::{
 };
 use ferritecad_kernel::SketchPlane;
 use ferritecad_types::{ObjectId, Point3, StableEntityId, Transform, Vec3};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub(super) struct Plane {
@@ -104,6 +104,8 @@ pub(super) struct Draft {
     pub name: String,
     pub message: String,
     pub original: Option<Sketch>,
+    /// Construction flags and solved geometry shown when this draft opened.
+    opened_curves: BTreeMap<StableEntityId, (bool, SketchGeometry)>,
     pub planes: Vec<Plane>,
     pub plane: usize,
     pub state: State,
@@ -124,6 +126,7 @@ impl Draft {
             name,
             message: String::new(),
             original: None,
+            opened_curves: BTreeMap::new(),
             planes,
             plane,
             state: State::default(),
@@ -469,33 +472,30 @@ impl Draft {
         Ok(changes)
     }
 
+    pub(super) fn open_curves(&mut self, curves: Vec<SketchCurve>) {
+        self.opened_curves = curves
+            .iter()
+            .map(|c| (c.id, (c.construction, c.geometry.clone())))
+            .collect();
+        self.state.curves = curves;
+    }
+
     pub fn counts(&self) -> (usize, usize, usize) {
-        let Some(original) = &self.original else {
-            return (self.state.curves.len(), 0, 0);
-        };
-        let added = self
-            .state
-            .curves
-            .iter()
-            .filter(|c| !original.curves.iter().any(|o| o.id == c.id))
-            .count();
-        let removed = original
-            .curves
-            .iter()
-            .filter(|o| !self.state.curves.iter().any(|c| c.id == o.id))
-            .count();
-        let changed = self
-            .state
-            .curves
-            .iter()
-            .filter(|c| {
-                original
-                    .curves
-                    .iter()
-                    .any(|o| o.id == c.id && o.construction != c.construction)
-            })
-            .count();
-        (added, removed, changed)
+        let mut added = 0;
+        let mut changed = 0;
+        for curve in &self.state.curves {
+            if let Some((construction, geometry)) = self.opened_curves.get(&curve.id) {
+                if curve.construction != *construction
+                    || !super::prediction::agrees(geometry, &curve.geometry)
+                {
+                    changed += 1;
+                }
+            } else {
+                added += 1;
+            }
+        }
+        let retained = self.state.curves.len() - added;
+        (added, self.opened_curves.len() - retained, changed)
     }
 }
 

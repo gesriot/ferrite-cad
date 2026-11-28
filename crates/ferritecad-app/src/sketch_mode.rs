@@ -95,15 +95,17 @@ impl Editor {
             .map(|(_, report)| report.clone());
         draft.state.constraints = stored.constraints.clone();
         draft.original = Some(stored.clone());
-        draft.state.curves = presentation
-            .curves()
-            .iter()
-            .map(|c| SketchCurve {
-                id: c.id(),
-                construction: c.is_construction(),
-                geometry: c.geometry().clone(),
-            })
-            .collect();
+        draft.open_curves(
+            presentation
+                .curves()
+                .iter()
+                .map(|c| SketchCurve {
+                    id: c.id(),
+                    construction: c.is_construction(),
+                    geometry: c.geometry().clone(),
+                })
+                .collect(),
+        );
         self.open(path, source.version, draft);
         true
     }

@@ -129,6 +129,18 @@ fn set_updates_each_saved_distance_in_place_and_restores_only_its_own_rule() {
             .expect("report")
             .degrees_of_freedom()
     );
+    assert_eq!(before.constraints.len(), 8);
+    let labels = super::widgets::text(&ui.settle(&mut w));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "8 constraints: 0 added, 0 removed, 0 changed")
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "4 curves: 0 added, 0 removed, 4 changed")
+    );
     let geometry: Vec<_> = predicted
         .curves
         .iter()
@@ -209,6 +221,30 @@ fn set_updates_each_saved_distance_in_place_and_restores_only_its_own_rule() {
     assert_eq!(draft(&w).constraint_counts(), (1, 0, 1));
     assert!(w.creates.sketch.viewport.take_request().is_none());
     assert_eq!(super::curve_edits::stored(&path).1, before);
+
+    // Undo the complete second draft. The accepted sketch is solved, so its displayed
+    // geometry already differs from the raw coordinates in the file before any edit.
+    for _ in 0..draft(&w).undo.len() {
+        ui.press(&mut w, "Undo", true);
+    }
+    let labels = super::widgets::text(&ui.settle(&mut w));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "4 curves: 0 added, 0 removed, 0 changed")
+    );
+    assert_eq!(draft(&w).state.constraints, before.constraints);
+    assert!(
+        draft(&w)
+            .changes()
+            .expect("restored drawing and rules")
+            .is_empty()
+    );
+    ui.press(&mut w, "Finish", false);
+    assert!(w.creates.sketch.viewport.take_request().is_none());
+    assert!(!w.creates.sketch.viewport.active());
+    assert_eq!(version(&w), original_version);
+    assert!(!w.sessions.can_undo());
 }
 
 fn check_refused(

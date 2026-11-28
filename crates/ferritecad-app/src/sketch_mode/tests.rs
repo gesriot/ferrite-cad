@@ -27,7 +27,7 @@ fn existing(curves: Vec<SketchCurve>) -> Draft {
         curves: curves.clone(),
         constraints: Vec::new(),
     });
-    draft.state.curves = curves;
+    draft.open_curves(curves);
     draft
 }
 
