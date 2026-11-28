@@ -552,6 +552,7 @@ mod diameter;
 mod dimension_history;
 mod dragging;
 mod dressed_plate;
+mod horizontal_finish;
 mod polygon_plates;
 pub(crate) mod polygon_rules;
 pub(crate) mod revolved_profile;
