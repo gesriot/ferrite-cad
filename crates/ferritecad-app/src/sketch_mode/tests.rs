@@ -552,4 +552,6 @@ mod diameter;
 mod dimension_history;
 mod dragging;
 mod dressed_plate;
+mod polygon_rules;
+pub(crate) mod revolved_profile;
 mod saved_angle;

@@ -2,42 +2,16 @@
 //! Pin and dimension the base sketch while retaining its named downstream edges.
 use super::circular_rules::same_model;
 use super::cli::cli_edit;
-use super::constraint_widgets::press_rule;
 use super::curve_edits::stored;
 use super::dragging::{frame, movement, press, release};
+use super::polygon_rules::{add, close, distance, ends, orient, solve};
 use super::widgets::Ui;
 use super::window::{click, enter, finish, open, publish, version};
 use super::*;
-use crate::sessions::tests::tabs::{Drawn, Window};
+use crate::sessions::tests::tabs::Drawn;
 use ferritecad_document::{Document, Expression, SketchConstraintRule as Rule};
 use ferritecad_kernel::OperationContext;
 use ferritecad_ui::ModelEdit;
-
-fn ends(sketch: &Sketch, i: usize) -> (Point2, Point2) {
-    let SketchGeometry::Line { start, end } = sketch.curves[i].geometry else {
-        panic!("a side of the plate")
-    };
-    (start, end)
-}
-
-fn solve(sketch: ObjectId, drawing: &mut Sketch) -> usize {
-    let (next, report) = ferritecad_eval::solve_sketch(drawing, sketch)
-        .expect("consistent plate constraints")
-        .expect("constrained sketch");
-    *drawing = next;
-    report.degrees_of_freedom()
-}
-
-// Only the new UUID is shared with the peer. Its rule and coordinates come from
-// the original document, the widget action and the public sketch solver.
-fn add(w: &mut Window, ui: &mut Ui, sketch: ObjectId, peer: &mut Sketch, button: &str, rule: Rule) {
-    press_rule(ui, w, button);
-    let draft = w.creates.sketch.viewport.draft.as_ref().expect("draft");
-    let new = draft.state.constraints.last().expect("new rule");
-    assert_eq!(new.rule, rule, "{button}");
-    peer.constraints.push(SketchConstraint { id: new.id, rule });
-    solve(sketch, peer);
-}
 
 fn check_body(path: &Path, sketch: ObjectId, pin_y: f64, expected: f64) {
     let d = Document::open_read_only(path).expect("accepted document");
@@ -113,7 +87,6 @@ fn constrain_plate(path: &Path, root: &Path, removed_area: f64) {
     peer.curves[1].geometry = SketchGeometry::Line { start: corner, end };
     let handle = |i: usize, at| SketchPointRef::new(saved.curves[i].id, at);
     let start = |i| handle(i, SketchPointSelector::Start);
-    let end = |i| handle(i, SketchPointSelector::End);
     let literal = |v| Expression::constant(v).expect("finite millimetres");
     // The first click takes the preceding side's End. Extend the selection, then
     // toggle that first handle off to pin the second side's stored Start.
@@ -133,64 +106,12 @@ fn constrain_plate(path: &Path, root: &Path, removed_area: f64) {
         },
     );
 
+    close(&mut w, &mut ui, sketch, &mut peer);
     for i in 0..4 {
-        let next = (i + 1) % 4;
-        let (a, b) = if next == 0 {
-            (start(0), end(i))
-        } else {
-            (end(i), start(next))
-        };
-        let joint = ends(&peer, i).1;
-        click(&mut w, joint, false);
-        click(&mut w, joint, true);
-        add(
-            &mut w,
-            &mut ui,
-            sketch,
-            &mut peer,
-            "Coincident",
-            Rule::Coincident { a, b },
-        );
-    }
-    let pick_line = |w: &mut Window, drawing: &Sketch, i| {
-        let (p, q) = ends(drawing, i);
-        click(w, point((p.x + q.x) / 2., (p.y + q.y) / 2.), false);
-    };
-    for i in 0..4 {
-        pick_line(&mut w, &peer, i);
-        let (a, b) = (start(i), end(i));
-        let (button, rule) = if i % 2 == 0 {
-            ("Vertical", Rule::Vertical { a, b })
-        } else {
-            ("Horizontal", Rule::Horizontal { a, b })
-        };
-        add(&mut w, &mut ui, sketch, &mut peer, button, rule);
+        orient(&mut w, &mut ui, sketch, &mut peer, i, i % 2 == 0);
     }
     for (i, value) in [(1, 41.), (0, 14.25)] {
-        let (p, q) = ends(&peer, i);
-        let (a, b) = (start(i), end(i));
-        pick_line(&mut w, &peer, i);
-        let measured = (p.x - q.x).hypot(p.y - q.y);
-        add(
-            &mut w,
-            &mut ui,
-            sketch,
-            &mut peer,
-            "Distance",
-            Rule::Distance {
-                a,
-                b,
-                distance: literal(measured),
-            },
-        );
-        ui.replace_dimension_text(&mut w, &value.to_string());
-        ui.press(&mut w, "Set", false);
-        peer.constraints.last_mut().expect("distance").rule = Rule::Distance {
-            a,
-            b,
-            distance: literal(value),
-        };
-        solve(sketch, &mut peer);
+        distance(&mut w, &mut ui, sketch, &mut peer, i, value);
     }
     let expected = Sketch {
         constraints: peer.constraints.clone(),
