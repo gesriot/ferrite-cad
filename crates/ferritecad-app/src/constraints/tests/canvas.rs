@@ -1985,7 +1985,7 @@ pub(crate) fn saved_circle_is_what_the_rules_ask(saved: &Path, stl: &[u8], heigh
 }
 
 pub(super) fn read_stl_of(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
-    super::diameter::read_stl(bytes)
+    crate::feature_tests::read_stl(bytes)
 }
 
 pub(super) fn escape() -> egui::Event {

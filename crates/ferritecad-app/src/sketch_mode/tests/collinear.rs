@@ -2,7 +2,7 @@
 use super::cli::{cli_edit, export};
 use super::constraint_widgets::{click_label, press_rule};
 use super::widgets::Ui;
-use super::window::{apply, click, enter, finish, open, version};
+use super::window::{click, enter, finish, open, publish, version};
 use super::*;
 use crate::feature_tests::U_PROFILE;
 use crate::sessions::tests::tabs::{Drawn, Window};
@@ -49,19 +49,6 @@ fn pick_rims(w: &mut Window) {
     });
     click(w, midpoints[0], false);
     click(w, midpoints[1], true);
-}
-
-fn publish(w: &mut Window, request: EditRequest) {
-    let before = version(w);
-    assert_eq!(before, request.expected);
-    assert!(apply(w, request));
-    let accepted = version(w);
-    assert_ne!(accepted, before);
-    w.step(true);
-    assert_eq!(version(w), before, "one Undo restores the starting version");
-    w.step(false);
-    assert_eq!(version(w), accepted);
-    assert!(!w.sessions.can_redo());
 }
 
 /// Build the CLI edit using only the stored sketch and the public solver.

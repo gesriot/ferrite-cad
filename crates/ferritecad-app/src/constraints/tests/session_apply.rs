@@ -330,12 +330,6 @@ fn the_form_opens_on_a_document_with_unsaved_changes_only_when_the_window_says_s
     }
 }
 
-/// The request the peer command line takes for the same edits, in its own words.
-pub(crate) fn peer_request(path: &Path, sketch: ObjectId, edits: &SketchConstraintEdits) -> String {
-    let changes = crate::transaction_tests::constraint_changes(path, sketch, edits);
-    ferritecad_fixtures::edit_request_json(&changes).to_string()
-}
-
 fn pressed(ctx: &egui::Context, mut e: Editor, unsaved: bool) -> (Editor, EditRequest) {
     e.set_session(true, true, unsaved);
     click(ctx, &mut e, "Apply constraints");

@@ -497,3 +497,28 @@ pub(crate) fn write_round(
     .expect("round document");
     d.close().expect("close");
 }
+
+/// The signed volume, bounds and edge pairing of a binary STL, read here and not
+/// by the code that wrote it.
+pub(crate) fn read_stl(bytes: &[u8]) -> (Vec<[[f64; 3]; 3]>, f64) {
+    let count = u32::from_le_bytes(bytes[80..84].try_into().expect("count")) as usize;
+    assert_eq!(bytes.len(), 84 + 50 * count);
+    let mut faces = Vec::new();
+    let mut six = 0.;
+    for t in bytes[84..].as_chunks::<50>().0 {
+        let mut p = [[0.; 3]; 3];
+        for (i, point) in p.iter_mut().enumerate() {
+            for (j, coordinate) in point.iter_mut().enumerate() {
+                let k = 12 + 12 * i + 4 * j;
+                *coordinate = f64::from(f32::from_le_bytes(t[k..k + 4].try_into().expect("f32")));
+                assert!(coordinate.is_finite());
+            }
+        }
+        let [a, b, c] = p;
+        six += a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        faces.push(p);
+    }
+    (faces, six / 6.)
+}
