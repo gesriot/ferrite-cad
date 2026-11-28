@@ -493,3 +493,77 @@ fn returning_to_a_dimension_shows_its_current_value_after_a_selection_change() {
     assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
     assert_eq!(std::fs::read(path).expect("source"), bytes);
 }
+
+#[test]
+fn removing_a_saved_rule_in_one_viewport_preserves_the_other_viewports_markers_and_history() {
+    if !native() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("marked.fcad");
+    crate::feature_tests::write_marked_rectangle(&path);
+    let (sketch, saved) = super::curve_edits::stored(&path);
+    let find = |want: fn(&SketchConstraintRule) -> bool| {
+        let mut found = saved.constraints.iter().filter(|c| want(&c.rule));
+        let id = found.next().expect("saved rule").id;
+        assert!(found.next().is_none());
+        id
+    };
+    let parallel = find(|r| matches!(r, SketchConstraintRule::Parallel { .. }));
+    let horizontal = find(|r| matches!(r, SketchConstraintRule::Horizontal { .. }));
+    let source = std::fs::read(&path).expect("source");
+    let open_markers = || {
+        let mut w = open(&path, Drawn::Native);
+        enter(&mut w, sketch, ModelEdit::Sketch);
+        w.input
+            .frame(([-20., -20., -1.], [80., 50., 1.]))
+            .expect("fit");
+        let ui = Ui::new(&mut w);
+        (w, ui)
+    };
+    let painted = |w: &mut Window, ui: &Ui| {
+        let editor = &mut w.creates.sketch.viewport;
+        ui.paint(editor, w.input.camera(), w.input.region());
+        [parallel, horizontal].map(|id| editor.labels.iter().any(|(key, _)| *key == id))
+    };
+    let (mut a, mut a_ui) = open_markers();
+    let (mut b, mut b_ui) = open_markers();
+    let base = version(&a);
+    let b_original = draft(&b).state.clone();
+    assert!(b_original.selected.is_empty());
+    assert_eq!(painted(&mut a, &a_ui), [true, true]);
+    click_label(&mut a, &mut a_ui, parallel);
+    a_ui.press(&mut a, "Delete", true);
+    let a_after = draft(&a).state.clone();
+    assert_eq!(draft(&b).state, b_original);
+    assert!(draft(&b).undo.is_empty() && draft(&b).redo.is_empty());
+    assert_eq!(painted(&mut b, &b_ui), [true, true]);
+    click_label(&mut b, &mut b_ui, horizontal);
+    b_ui.press(&mut b, "Delete", true);
+    assert_eq!(draft(&a).state, a_after);
+    assert_eq!(painted(&mut a, &a_ui), [false, true]);
+    assert_eq!(painted(&mut b, &b_ui), [true, false]);
+    for (w, rule) in [(&a, parallel), (&b, horizontal)] {
+        let wanted: Vec<_> = saved
+            .constraints
+            .iter()
+            .filter(|c| c.id != rule)
+            .cloned()
+            .collect();
+        assert_eq!(draft(w).state.constraints, wanted);
+        assert!(draft(w).state.selected.is_empty());
+        assert_eq!(draft(w).undo.len(), 1);
+        assert!(draft(w).redo.is_empty());
+        assert_eq!(version(w), base);
+        assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
+    }
+    let b_after = draft(&b).state.clone();
+    b_ui.press(&mut b, "Undo", true);
+    assert_eq!(draft(&b).state.constraints, saved.constraints);
+    assert_eq!(draft(&b).redo.len(), 1);
+    assert_eq!(painted(&mut b, &b_ui), [true, true]);
+    b_ui.press(&mut b, "Redo", true);
+    assert_eq!(draft(&b).state, b_after);
+    assert_eq!(draft(&a).state, a_after);
+    assert_eq!(std::fs::read(&path).expect("source"), source);
+}

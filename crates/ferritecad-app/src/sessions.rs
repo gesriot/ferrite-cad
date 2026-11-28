@@ -4145,7 +4145,7 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("rectangle.fcad");
-        crate::constraints::tests::marker::write_marked_rectangle(&path);
+        crate::feature_tests::write_marked_rectangle(&path);
         let pristine = root.path().join("pristine.fcad");
         std::fs::copy(&path, &pristine).expect("a copy of the source");
         let seen = std::cell::Cell::new(None);

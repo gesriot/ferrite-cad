@@ -1773,38 +1773,6 @@ fn without_a_drawing_the_rule_rows_still_select_and_remove_and_closure_and_other
 }
 
 #[test]
-fn two_forms_over_one_document_keep_their_own_rule_selection_and_pending_removals() {
-    // Copies of a document share their curve and rule UUIDs; the forms must not.
-    let (_root, path, source) = markers_document();
-    let rules = rules_of(
-        &source.constraint_sketches[0]
-            .stored
-            .clone()
-            .expect("stored"),
-    );
-    let mut a = Rig::over(None, &path, &source, 1., enlarged);
-    let mut b = Rig::over(None, &path, &source, 1., enlarged);
-    a.choose_mark("Par");
-    a.press("Remove constraint");
-    let in_a = (a.mark(), a.edits());
-    assert_eq!(in_a.0, Some(rules.parallel));
-    // B has not been touched by any of it.
-    assert_eq!(
-        (b.mark(), b.edits()),
-        (None, SketchConstraintEdits::default())
-    );
-    let out = b.frame(vec![]);
-    assert!(has_marker(&out, "Par") && !has_marker(&out, "Par -> removed"));
-    b.choose_mark("H");
-    b.press("Remove constraint");
-    assert_eq!(b.edits().remove, vec![rules.horizontal]);
-    // A is what it was, and B's marker says what B prepared.
-    assert_eq!((a.mark(), a.edits()), in_a);
-    assert!(has_marker(&b.frame(vec![]), "H -> removed") && has_marker(&b.frame(vec![]), "Par"));
-    assert!(has_marker(&a.frame(vec![]), "Par -> removed") && has_marker(&a.frame(vec![]), "H"));
-}
-
-#[test]
 fn the_target_row_keeps_five_targets_and_fit_beside_rule_in_one_row_and_dimension_keeps_its_meaning()
  {
     let mut rig = Rig::markers(1.);
@@ -2128,91 +2096,6 @@ fn area_of(curves: &[Curve]) -> f64 {
         .sum::<f64>()
         .abs()
         / 2.
-}
-
-/// A rectangle whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin) and
-/// keeps the rules that solve it into a different shape: Line 1's start fixed at the origin, Line 1
-/// horizontal and 60 mm, Line 2 vertical and 30 mm, and Lines 1 and 3 of **equal length** and
-/// **parallel** (the EqualLength stored before the Parallel, so the two markers stand on one place
-/// and a click reaches the EqualLength). Solved: (0,0) (60,0) (60,30) (0,30), no degree of freedom
-/// left. Remove the EqualLength and the solver has one: the free corner stays where the Sketch
-/// stored it, (-5, 4) slid onto the line y = 30 of the Parallel, a 65 mm Line 3.
-pub(crate) fn write_marked_rectangle(path: &Path) {
-    ferritecad_jobs::create_document_with_kernel(
-        ferritecad_jobs::CreateDocumentRequest::new(
-            path,
-            ferritecad_jobs::NewDocument::SketchExtrude(
-                ferritecad_document::PolygonExtrusion::new(
-                    vec![[-6., -3.], [6., -2.], [7., 5.], [-5., 4.]],
-                    10.,
-                )
-                .expect("a guess"),
-            ),
-            "test",
-        ),
-        ferritecad_occt::OcctKernel::new,
-        &OperationContext::default(),
-    )
-    .expect("the source");
-    let mut document = Document::open(path).expect("document");
-    let choice = crate::sketch_facts::Source::read(&document)
-        .expect("catalogue")
-        .constraint_sketches[0]
-        .clone();
-    let ids: Vec<_> = choice
-        .stored
-        .as_ref()
-        .expect("stored")
-        .curves
-        .iter()
-        .map(|c| c.id)
-        .collect();
-    let line = |i: usize, kind| {
-        AddSketchConstraint::Line(AddLineConstraint::Line {
-            curve: ids[i],
-            kind,
-        })
-    };
-    let origin = SketchCoordinateMm::new(0.).expect("origin");
-    let prepared = ferritecad_fixtures::constraint_changes(
-        &document,
-        choice.sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![
-                line(
-                    0,
-                    LineConstraintKind::Fixed {
-                        at: LineEndpoint::Start,
-                        x: origin,
-                        y: origin,
-                    },
-                ),
-                line(0, LineConstraintKind::Horizontal),
-                line(
-                    0,
-                    LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
-                ),
-                line(1, LineConstraintKind::Vertical),
-                line(
-                    1,
-                    LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
-                ),
-                AddSketchConstraint::Line(AddLineConstraint::EqualLength {
-                    a: ids[0],
-                    b: ids[2],
-                }),
-                AddSketchConstraint::Line(AddLineConstraint::Relation {
-                    a: ids[0],
-                    b: ids[2],
-                    relation: LineRelation::Parallel,
-                }),
-            ],
-        },
-    )
-    .expect("prepare");
-    document.write_changes(&prepared).expect("rules");
-    document.close().expect("close");
 }
 
 fn find_rule(stored: &Sketch, want: fn(&SketchConstraintRule) -> bool) -> StableEntityId {

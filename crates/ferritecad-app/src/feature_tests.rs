@@ -585,3 +585,84 @@ pub(crate) fn persist_rectangle_lengths(path: &std::path::Path) -> crate::sketch
     document.close().expect("close");
     source
 }
+
+/// A rectangle whose Sketch STORES a rough guess (a 12 × 8 mm parallelogram about the origin) and
+/// keeps the rules that solve it into a different shape: Line 1's start fixed at the origin, Line 1
+/// horizontal and 60 mm, Line 2 vertical and 30 mm, and Lines 1 and 3 of **equal length** and
+/// **parallel** (the EqualLength stored before the Parallel, so the two markers stand on one place
+/// and a click reaches the EqualLength). Solved: (0,0) (60,0) (60,30) (0,30), no degree of freedom
+/// left. Remove the EqualLength and the solver has one: the free corner stays where the Sketch
+/// stored it, (-5, 4) slid onto the line y = 30 of the Parallel, a 65 mm Line 3.
+pub(crate) fn write_marked_rectangle(path: &std::path::Path) {
+    use ferritecad_document::{
+        AddLineConstraint, AddSketchConstraint, Document, LineConstraintKind, LineEndpoint,
+        LineLengthMm, LineRelation, SketchConstraintEdits, SketchCoordinateMm,
+    };
+    use ferritecad_kernel::OperationContext;
+
+    ferritecad_jobs::create_document_with_kernel(
+        ferritecad_jobs::CreateDocumentRequest::new(
+            path,
+            ferritecad_jobs::NewDocument::SketchExtrude(
+                ferritecad_document::PolygonExtrusion::new(
+                    vec![[-6., -3.], [6., -2.], [7., 5.], [-5., 4.]],
+                    10.,
+                )
+                .expect("a guess"),
+            ),
+            "test",
+        ),
+        ferritecad_occt::OcctKernel::new,
+        &OperationContext::default(),
+    )
+    .expect("the source");
+    let mut document = Document::open(path).expect("document");
+    let (sketch, drawing) = ferritecad_fixtures::sketch(&document).expect("profile sketch");
+    let ids: Vec<_> = drawing.curves.iter().map(|c| c.id).collect();
+    let line = |i: usize, kind| {
+        AddSketchConstraint::Line(AddLineConstraint::Line {
+            curve: ids[i],
+            kind,
+        })
+    };
+    let origin = SketchCoordinateMm::new(0.).expect("origin");
+    let prepared = ferritecad_fixtures::constraint_changes(
+        &document,
+        sketch,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                line(
+                    0,
+                    LineConstraintKind::Fixed {
+                        at: LineEndpoint::Start,
+                        x: origin,
+                        y: origin,
+                    },
+                ),
+                line(0, LineConstraintKind::Horizontal),
+                line(
+                    0,
+                    LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
+                ),
+                line(1, LineConstraintKind::Vertical),
+                line(
+                    1,
+                    LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
+                ),
+                AddSketchConstraint::Line(AddLineConstraint::EqualLength {
+                    a: ids[0],
+                    b: ids[2],
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
+                    a: ids[0],
+                    b: ids[2],
+                    relation: LineRelation::Parallel,
+                }),
+            ],
+        },
+    )
+    .expect("prepare");
+    document.write_changes(&prepared).expect("rules");
+    document.close().expect("close");
+}
