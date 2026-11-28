@@ -1534,35 +1534,6 @@ fn without_a_drawing_the_angle_rows_still_select_and_replace_and_other_profiles_
     assert!(rig.e.draft_turns().expect("draft").0.is_empty());
 }
 
-#[test]
-fn two_forms_over_one_document_keep_their_own_angle_selection_text_and_pending_replacement() {
-    // Copies of a document share their curve and rule UUIDs; the forms must not.
-    let (_root, path, source) = angles_document();
-    let rules = angle_rules(&dimension_stored(&source));
-    let mut a = Rig::over(None, &path, &source, 1., enlarged);
-    let mut b = Rig::over(None, &path, &source, 1., enlarged);
-    a.choose("A>B -70°");
-    a.type_angle("110");
-    a.press("Replace dimension");
-    let in_a = (a.turn(), a.degrees_typed(), a.edits());
-    assert_eq!(in_a.0, Some(rules[0]));
-    // B has not been touched by any of it.
-    assert_eq!(
-        (b.turn(), b.degrees_typed(), b.edits()),
-        (None, String::new(), SketchConstraintEdits::default())
-    );
-    assert!(
-        has_label(&b.frame(vec![]), "A>B -70°") && !has_label(&b.frame(vec![]), "A>B -70 -> 110°")
-    );
-    b.choose("A>B 180°");
-    b.type_angle("0");
-    b.press("Replace dimension");
-    assert_eq!(b.edits().remove, vec![rules[2]]);
-    // A is what it was; its text box holds A's text and B's holds B's.
-    assert_eq!((a.turn(), a.degrees_typed(), a.edits()), in_a);
-    assert_eq!(b.degrees_typed(), "0");
-}
-
 /// The cylinder of §31L with a Radius, only to show that a Circle has no angle.
 fn persisted_circle_for_angles() -> (
     tempfile::TempDir,

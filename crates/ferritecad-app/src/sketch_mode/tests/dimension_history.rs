@@ -396,6 +396,17 @@ fn two_viewports_on_one_document_keep_their_own_dimension_text_and_edits() {
     };
     let (mut a, mut a_ui) = open_sketch();
     let (mut b, mut b_ui) = open_sketch();
+    let labels = |w: &mut Window, ui: &Ui| {
+        let out = ui.paint(
+            &mut w.creates.sketch.viewport,
+            w.input.camera(),
+            w.input.region(),
+        );
+        super::widgets::text(&out)
+            .into_iter()
+            .filter(|s| s.ends_with(" mm"))
+            .collect::<Vec<_>>()
+    };
     let base = version(&a);
     assert_eq!(version(&b), base);
     click_label(&mut a, &mut a_ui, width);
@@ -411,12 +422,16 @@ fn two_viewports_on_one_document_keep_their_own_dimension_text_and_edits() {
     click_label(&mut b, &mut b_ui, height);
     b_ui.replace_dimension_text(&mut b, "33");
     assert_eq!(value_field(&b, height), "33");
+    assert_eq!(labels(&mut a, &a_ui), ["70 mm", "30 mm"]);
+    assert_eq!(labels(&mut b, &b_ui), ["60 mm", "30 mm"]);
     assert_eq!(draft(&b).state.constraints, before.constraints);
     assert!(draft(&b).undo.is_empty());
     b_ui.press(&mut b, "Set", false);
     b_ui.settle(&mut b);
     assert_eq!(draft(&b).state.selected, [Selection::Constraint(height)]);
     assert_eq!(value_field(&b, height), "33");
+    assert_eq!(labels(&mut a, &a_ui), ["70 mm", "30 mm"]);
+    assert_eq!(labels(&mut b, &b_ui), ["60 mm", "33 mm"]);
     for (w, values) in [(&a, [70., 30.]), (&b, [60., 33.])] {
         let state = &draft(w).state;
         for (rule, value) in [width, height].into_iter().zip(values) {
@@ -629,4 +644,97 @@ fn cancelling_close_or_quit_restores_the_same_dimension_text_and_both_draft_hist
     w.stop_quit();
     restored(&mut w, &mut ui);
     assert_eq!(std::fs::read(path).expect("source"), source);
+}
+
+#[test]
+fn two_editors_keep_their_own_angle_selection_numbers_and_rule_replacements() {
+    if !native() {
+        return;
+    }
+    let degrees = [-70., 180.];
+    let radians = degrees.map(|v| DirectedAngle::from_degrees(v).expect("angle").radians());
+    // Two independent pairs provide actual solved labels in both copies of the same drawing.
+    let mut curves = Vec::new();
+    for (r, y) in radians.into_iter().zip([-8., 8.]) {
+        curves.push(line([-12., y], [-4., y]));
+        curves.push(line([2., y], [2. + 8. * r.cos(), y + 8. * r.sin()]));
+    }
+    let mut f = fixtures::Drawing::new(curves.clone(), false);
+    let ids = [StableEntityId::new(), StableEntityId::new()];
+    let vector = |i: usize| {
+        let id = curves[i].id;
+        SketchSegmentRef::new(
+            SketchPointRef::new(id, SketchPointSelector::Start),
+            SketchPointRef::new(id, SketchPointSelector::End),
+        )
+    };
+    let saved = [0, 1].map(|i| SketchConstraint {
+        id: ids[i],
+        rule: SketchConstraintRule::DirectedAngle {
+            a: vector(2 * i),
+            b: vector(2 * i + 1),
+            angle: Expression::constant(radians[i]).expect("directed angle"),
+        },
+    });
+    f.doc
+        .write_changes(&saved.clone().map(|constraint| EditChange::AddConstraint {
+            sketch: f.sketch,
+            constraint,
+        }))
+        .expect("two saved dimensions");
+    let bytes = std::fs::read(&f.path).expect("source");
+    let open_angles = || {
+        let mut w = open(&f.path, Drawn::Native);
+        enter(&mut w, f.sketch, ModelEdit::Sketch);
+        let ui = Ui::new(&mut w);
+        (w, ui)
+    };
+    let (mut a, mut a_ui) = open_angles();
+    let (mut b, mut b_ui) = open_angles();
+    let original = draft(&b).state.clone();
+    let base = version(&a);
+    let labels = |w: &mut Window, ui: &Ui| {
+        super::widgets::text(&ui.paint(
+            &mut w.creates.sketch.viewport,
+            w.input.camera(),
+            w.input.region(),
+        ))
+        .into_iter()
+        .filter(|s| s.starts_with("A>B "))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(labels(&mut a, &a_ui), ["A>B -70°", "A>B 180°"]);
+    click_label(&mut a, &mut a_ui, ids[0]);
+    a_ui.replace_dimension_text(&mut a, "110");
+    a_ui.press(&mut a, "Set", false);
+    a_ui.settle(&mut a);
+    let a_state = draft(&a).state.clone();
+    assert_eq!(a_state.selected, [Selection::Constraint(ids[0])]);
+    assert_eq!(value_field(&a, ids[0]), "110");
+    assert_eq!(draft(&b).state, original);
+    assert!(b.creates.sketch.viewport.value_field.is_none());
+    assert_eq!(labels(&mut b, &b_ui), ["A>B -70°", "A>B 180°"]);
+    click_label(&mut b, &mut b_ui, ids[1]);
+    b_ui.replace_dimension_text(&mut b, "0");
+    b_ui.press(&mut b, "Set", false);
+    b_ui.settle(&mut b);
+    assert_eq!(draft(&b).state.selected, [Selection::Constraint(ids[1])]);
+    assert_eq!(value_field(&b, ids[1]), "0");
+    assert_eq!(draft(&a).state, a_state);
+    assert_eq!(labels(&mut a, &a_ui), ["A>B 110°", "A>B 180°"]);
+    assert_eq!(labels(&mut b, &b_ui), ["A>B -70°", "A>B 0°"]);
+    for (w, i, value) in [(&a, 0, 110.), (&b, 1, 0.)] {
+        let mut expected = saved.clone();
+        let SketchConstraintRule::DirectedAngle { angle, .. } = &mut expected[i].rule else {
+            panic!("angle rule");
+        };
+        *angle = Expression::constant(DirectedAngle::from_degrees(value).expect("angle").radians())
+            .expect("constant");
+        assert_eq!(draft(w).state.constraints, expected);
+        assert_eq!(draft(w).undo.len(), 1);
+        assert!(draft(w).redo.is_empty());
+        assert_eq!(version(w), base);
+        assert!(!w.sessions.can_undo() && !w.sessions.can_redo());
+    }
+    assert_eq!(std::fs::read(&f.path).expect("source"), bytes);
 }

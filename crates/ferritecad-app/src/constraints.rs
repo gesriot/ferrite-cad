@@ -3805,64 +3805,6 @@ pub(crate) mod tests {
         assert!(removed.add.is_empty());
     }
 
-    /// Two copies of the same document, published two ways, are one document.
-    ///
-    /// The newly minted constraint UUIDs are the only thing allowed to differ,
-    /// and they are matched off one by one rather than ignored, so a copy with
-    /// a different *number* of constraints still fails.
-    fn same_publication(
-        ui: &Path,
-        peer: &Path,
-        stored_curves: &[ferritecad_document::SketchCurve],
-        constraints: usize,
-    ) {
-        let a = Document::open_read_only(ui).expect("worker copy");
-        let b = Document::open_read_only(peer).expect("CLI copy");
-        assert_eq!(a.meta().document_id, b.meta().document_id);
-        assert_eq!(crate::test_names::names(&a), crate::test_names::names(&b));
-        assert_eq!(
-            a.dependencies().expect("dependencies"),
-            b.dependencies().expect("dependencies")
-        );
-        for mut left in a.objects().expect("objects") {
-            let right = b.object(left.id).expect("read").expect("same object");
-            if let (
-                ferritecad_document::ObjectPayload::Sketch(s),
-                ferritecad_document::ObjectPayload::Sketch(t),
-            ) = (&mut left.payload, &right.payload)
-            {
-                assert_eq!(s.curves, stored_curves, "the saved guess moved");
-                assert_eq!(s.constraints.len(), constraints);
-                assert_eq!(t.constraints.len(), constraints);
-                for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
-                    if x.id != y.id {}
-                }
-                assert_eq!(s, t);
-            } else {
-                assert_eq!(left, right);
-            }
-        }
-        a.close().expect("close");
-        b.close().expect("close");
-        for format in ["stl", "fbx"] {
-            let mut exports = Vec::new();
-            for model in [ui, peer] {
-                let output = model.with_extension(format);
-                let result = std::process::Command::new(crate::creates::tests::ferritecad())
-                    .arg(format!("export-{format}"))
-                    .arg(model)
-                    .arg("-o")
-                    .arg(&output)
-                    .arg("--json")
-                    .output()
-                    .expect("export");
-                assert!(result.status.success(), "{result:?}");
-                exports.push(std::fs::read(output).expect("export bytes"));
-            }
-            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
-        }
-    }
-
     #[test]
     fn fixed_point_widgets_pick_an_endpoint_and_replace_the_stored_pin_in_one_step() {
         let (_root, path, source) = fixture();

@@ -1302,42 +1302,6 @@ pub(super) fn dimension_stored(source: &ExtrudeEditSource) -> Sketch {
 }
 
 #[test]
-fn two_forms_over_one_document_keep_their_own_selection_text_and_pending_replacement() {
-    // Copies of a document share their curve and rule UUIDs; the forms must not.
-    let (_root, path, source) = lengths_document();
-    let (d60, d30) = (
-        rule_of(&dimension_stored(&source), 60.),
-        rule_of(&dimension_stored(&source), 30.),
-    );
-    let mut a = Rig::over(None, &path, &source, 1., enlarged);
-    let mut b = Rig::over(None, &path, &source, 1., enlarged);
-    a.target(Target::Dimension);
-    b.target(Target::Dimension);
-    let at = a.at_label("60 mm");
-    a.click(at);
-    a.settle();
-    a.type_length("70");
-    a.press("Replace dimension");
-    let at = b.at_label("30 mm");
-    b.click(at);
-    b.settle();
-    b.type_length("33");
-    assert_eq!((a.picks().0, b.picks().0), (Some(a.ids[0]), Some(b.ids[1])));
-    assert_eq!(a.ids, b.ids, "one document, one set of UUIDs");
-    assert_eq!((a.typed().as_str(), b.typed().as_str()), ("70", "33"));
-    let (wa, wb) = (a.frame(vec![]), b.frame(vec![]));
-    assert!(has_label(&wa, "60 → 70 mm") && has_label(&wa, "30 mm"));
-    assert!(has_label(&wb, "60 mm") && has_label(&wb, "30 mm"));
-    assert_eq!(a.edits().remove, vec![d60]);
-    assert_eq!(b.edits(), SketchConstraintEdits::default());
-    b.press("Replace dimension");
-    assert_eq!(b.edits().remove, vec![d30]);
-    assert_eq!(a.edits().remove, vec![d60], "the other form is untouched");
-    assert!(has_label(&a.frame(vec![]), "30 mm"));
-    assert!(has_label(&b.frame(vec![]), "30 → 33 mm") && has_label(&b.frame(vec![]), "60 mm"));
-}
-
-#[test]
 fn overlapping_labels_are_reached_in_stored_order_and_the_list_reaches_the_one_underneath() {
     let (_root, path, source) = lengths_document();
     let (d60, d30) = (
