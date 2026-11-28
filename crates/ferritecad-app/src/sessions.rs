@@ -3504,6 +3504,30 @@ pub(crate) mod tests {
             ObjectId,
         ) -> (crate::constraints::Editor, ferritecad_jobs::EditRequest),
     ) {
+        native_sketch_session(root, source, height, readers, |path, reading, sketch| {
+            let (form, request) = draft(path, reading, sketch);
+            let mut forms = crate::sketch::Editor::default();
+            forms.constraints = form;
+            let changes = request.changes.clone();
+            (forms, request, changes)
+        });
+    }
+
+    fn native_sketch_session(
+        root: &Path,
+        source: &Path,
+        height: f64,
+        readers: Option<SavedReader<'_>>,
+        draft: impl FnOnce(
+            &Path,
+            &crate::sketch_facts::Source,
+            ObjectId,
+        ) -> (
+            crate::sketch::Editor,
+            ferritecad_jobs::EditRequest,
+            Vec<ferritecad_document::EditChange>,
+        ),
+    ) {
         let original = std::fs::read(source).expect("source");
         let opened = crate::sketch_facts::read(source).expect("reading");
         let feature = ferritecad_fixtures::expression_slot(
@@ -3527,11 +3551,9 @@ pub(crate) mod tests {
             .iter()
             .map(|c| c.id)
             .collect();
-        let (form, request) = draft(&after_height, &reading, sketch);
+        let (mut window_form, request, peer_changes) = draft(&after_height, &reading, sketch);
         assert_eq!(request.expected, reading.version, "the form's version");
         apply_constraints_native(&mut sessions, &request);
-        let mut window_form = crate::sketch::Editor::default();
-        window_form.constraints = form;
         assert!(window_form.active());
         window_form.finish_session_change();
         assert!(
@@ -3546,8 +3568,17 @@ pub(crate) mod tests {
         );
         let applied = sessions.export_path().expect("accepted");
         let new_ids: Vec<_> = stored_constraints(&applied).iter().map(|c| c.id).collect();
-        assert_ne!(new_ids, old_ids, "the constraints did not change");
-        for removed in &crate::transaction_tests::constraints(&request).remove {
+        let edited = crate::transaction_tests::constraints(&request);
+        if edited.add.is_empty() && edited.remove.is_empty() {
+            assert_eq!(new_ids, old_ids, "Set preserves every constraint UUID");
+            assert_ne!(
+                stored_constraints(&applied),
+                stored_constraints(&after_height)
+            );
+        } else {
+            assert_ne!(new_ids, old_ids, "the constraints did not change");
+        }
+        for removed in &edited.remove {
             assert!(!new_ids.contains(removed), "{removed} was not removed");
         }
 
@@ -3572,13 +3603,20 @@ pub(crate) mod tests {
                 peer1.as_os_str(),
             ])
         };
-        constraint_peer(&peer1, &request, root, &peer2);
+        crate::sketch_mode::tests::cli::cli_edit(
+            &peer1,
+            &peer2,
+            crate::sketch_facts::read(&peer1)
+                .expect("CLI source")
+                .version,
+            &peer_changes,
+        );
         let (original_stl, original_fbx) = peer_bytes(source, root, "c-original");
         let (h_stl, h_fbx) = peer_bytes(&peer1, root, "c-height");
         let (c_stl, c_fbx) = peer_bytes(&peer2, root, "c-constraints");
         assert_eq!(
             same_model_with_explicit_new_ids(&applied, &peer2, sketch, &old_ids, "Apply").len(),
-            crate::transaction_tests::constraints(&request).add.len(),
+            edited.add.len(),
             "every added constraint pairs with the command line's"
         );
 
@@ -3666,7 +3704,7 @@ pub(crate) mod tests {
         forged
             .changes
             .push(ferritecad_document::EditChange::RemoveConstraint {
-                sketch: crate::transaction_tests::sketch(&forged),
+                sketch,
                 constraint: ferritecad_types::StableEntityId::new(),
             });
         refused_constraints_native(&mut sessions, &forged);
@@ -3675,7 +3713,7 @@ pub(crate) mod tests {
         assert!(!sessions.can_redo());
         assert_eq!(
             same_model_with_explicit_new_ids(source, &peer2, sketch, &old_ids, "branch").len(),
-            crate::transaction_tests::constraints(&request).add.len(),
+            edited.add.len(),
             "the branch wrote the file"
         );
     }
@@ -4019,9 +4057,8 @@ pub(crate) mod tests {
     }
 
     /// §31L: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a
-    /// Fixed centre that solve it at (0, 0) r 10; the label of the Radius, chosen under the
-    /// Dimension target, replaces it by a diameter of 17 mm (the Radius 8.5), through the same
-    /// session route.
+    /// Fixed centre that solve it at (0, 0) r 10; the label of the Radius, selected in the viewport,
+    /// accepts a diameter of 17 mm and keeps the saved radius UUID at 8.5 mm.
     #[test]
     fn native_a_saved_radius_chosen_by_its_label_and_replaced_by_a_diameter_is_applied_like_the_command_line()
      {
@@ -4036,7 +4073,7 @@ pub(crate) mod tests {
         let path = root.path().join("cylinder.fcad");
         crate::constraints::tests::canvas::write_guessed_circle(&path);
         let seen = std::cell::Cell::new(None);
-        native_constraint_gate_with(
+        native_sketch_session(
             root.path(),
             &path,
             9.5,
@@ -4049,9 +4086,7 @@ pub(crate) mod tests {
                 )
             })),
             |path, source, sketch| {
-                crate::constraints::tests::dimension::native_dimension_circle(
-                    path, source, sketch, &seen,
-                )
+                crate::sketch_mode::tests::saved_radius::set_diameter(path, source, sketch, &seen)
             },
         );
     }

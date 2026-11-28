@@ -1355,106 +1355,7 @@ pub(crate) fn saved_dimensioned_rectangle(saved: &Path, stl: &[u8], height: f64,
     }
 }
 
-/// §31L, native: the form for the cylinder of `write_guessed_circle` (the circle (4.5, 0) r 1.2
-/// stored, a Radius of 10 and a Fixed centre at the origin kept). The label states the saved
-/// R 10, not the stored 1.2; chosen under the Dimension target, a diameter of 17 mm replaces the
-/// Radius by 8.5 and leaves the Fixed centre alone; the request equals Remove plus Add diameter.
-pub(crate) fn native_dimension_circle(
-    path: &Path,
-    source: &ExtrudeEditSource,
-    sketch: ObjectId,
-    seen: &std::cell::Cell<Option<Replaced>>,
-) -> (Editor, EditRequest) {
-    let (mut rig, loaded) = Rig::native(path, source, sketch);
-    let real = presented(&loaded, sketch);
-    let (circle, stored) = (rig.ids[0], rig.stored.clone());
-    let rule = rule_of(&stored, 10.);
-    let SketchGeometry::Circle { center, radius } = real[0].1 else {
-        panic!("a Circle")
-    };
-    assert!(
-        center.x.abs() < 1e-6 && center.y.abs() < 1e-6 && (radius - 10.).abs() < 1e-6,
-        "the solved circle is ({}, {}) r {radius}",
-        center.x,
-        center.y
-    );
-    let held = rig.solved();
-    assert_eq!(
-        held[0].shape,
-        Shape::Circle {
-            center: [center.x, center.y],
-            radius
-        }
-    );
-    let out = rig.frame(vec![]);
-    assert_eq!(
-        labels(&out)
-            .iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>(),
-        ["R 10 mm"],
-        "the saved target, not the stored 1.2"
-    );
-    let l = label(&out, "R 10 mm");
-    // It stands just outside the SOLVED ring: the nearest point of the ring to the box is
-    // within a few points of the box, and the box is not inside the ring.
-    let centre = rig.screen([center.x, center.y]);
-    let ring = rig.screen([center.x + radius, center.y]).x - centre.x;
-    let towards = (l.rect.center() - centre).normalized();
-    let gap = l.rect.distance_to_pos(centre + towards * ring);
-    assert!(
-        gap <= 5. && (l.rect.center() - centre).length() > ring,
-        "the label is {gap} points from the solved ring"
-    );
-    rig.target(Target::Dimension);
-    rig.click(l.rect.center());
-    rig.settle();
-    assert_eq!(rig.picks().0, Some(circle));
-    press_exact(&mut rig, "Diameter");
-    rig.type_amount("17");
-    rig.press("Replace dimension");
-    let prepared = rig.edits();
-    assert_eq!(prepared.remove, vec![rule]);
-    assert_eq!(prepared.add, vec![radius_add(circle, 8.5)]);
-    assert!(has_label(&rig.frame(vec![]), "R 10 → 8.5 mm"));
-    assert_eq!(rig.solved(), held, "a prepared replacement draws nothing");
-    let lists = by_lists(path, source, sketch, |ctx, e| {
-        click(ctx, e, &format!("Circle · {}", short(circle)));
-        click_remove_on_row(ctx, e, "Radius 10 mm");
-        enter_field(ctx, e, "Diameter mm", "17", false);
-        click(ctx, e, "Add diameter");
-    });
-    assert_eq!(
-        prepared,
-        crate::transaction_tests::constraints(&lists),
-        "the label and the lists asked for different things"
-    );
-    rig.press("Apply constraints");
-    let request = rig.e.take_apply_request().expect("Apply asked");
-    assert_eq!(
-        crate::transaction_tests::constraints(&request),
-        crate::transaction_tests::constraints(&lists)
-    );
-    assert_eq!(
-        (
-            crate::transaction_tests::constraints(&request).remove.len(),
-            crate::transaction_tests::constraints(&request).add.len()
-        ),
-        (1, 1)
-    );
-    let fixed = stored
-        .constraints
-        .iter()
-        .find(|c| matches!(c.rule, SketchConstraintRule::Fixed { .. }))
-        .expect("the Fixed centre");
-    seen.set(Some((rule, fixed.id)));
-    println!(
-        "\nFCAD_31L_NATIVE_CIRCLE_REQUEST stored=(4.5,0,1.2) solved=(0,0,10) diameter=17 removes=1 adds=1"
-    );
-    (rig.e, request)
-}
-
-/// §31L, native: the SAVED cylinder. The form of its cold rebuild holds R 8.5 with a new UUID and
+/// §31L, native: the SAVED cylinder. The form of its cold rebuild holds R 8.5 with its stored UUID and
 /// the Fixed centre under its own; the drawing of that rebuild is the circle (0, 0) r 8.5; every
 /// rim vertex of the exported STL, read here and not by the writer, is on it.
 pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, was: Replaced) {
@@ -1486,7 +1387,7 @@ pub(crate) fn saved_dimensioned_circle(saved: &Path, stl: &[u8], height: f64, wa
     );
     let (dimensions, _) = e.draft_dimensions().expect("a draft");
     assert_eq!(dimensions.len(), 1);
-    assert_ne!(dimensions[0].id, was.0, "the Radius is a new rule");
+    assert_eq!(dimensions[0].id, was.0, "Set keeps the Radius UUID");
     let kept = facts.constraint_sketches[0]
         .stored
         .as_ref()

@@ -373,6 +373,15 @@ fn focused_dimensions_freeze_during_a_job_or_handle_capture_and_resume_on_click(
             .expect("start edit worker");
         assert!(w.edits.running());
         ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        match label {
+            "Radius" => {
+                ui.press(&mut w, "Diameter (Ø)", false);
+            }
+            "Diameter" => {
+                ui.press(&mut w, "Radius (R)", false);
+            }
+            _ => {}
+        }
         assert_eq!(field(&w), "20", "{label} during a job");
         assert_eq!(state(&w), before);
         finish.send(()).expect("release worker");
@@ -384,6 +393,15 @@ fn focused_dimensions_freeze_during_a_job_or_handle_capture_and_resume_on_click(
         super::dragging::press(&mut w, handle);
         assert!(w.creates.sketch.viewport.gesturing(), "{label} handle");
         ui.frame(&mut w, vec![egui::Event::Text("7".into())]);
+        match label {
+            "Radius" => {
+                ui.press(&mut w, "Diameter (Ø)", false);
+            }
+            "Diameter" => {
+                ui.press(&mut w, "Radius (R)", false);
+            }
+            _ => {}
+        }
         assert_eq!(field(&w), "13.5", "{label} during capture");
         assert_eq!(state(&w), before);
         super::dragging::release(&mut w);
@@ -905,8 +923,26 @@ fn a_saved_parameter_dimension_is_read_only_and_keeps_its_source() {
         return;
     }
     let side = line([-5., 0.], [5., 0.]);
-    let id = side.id;
-    let mut f = fixtures::Drawing::new(vec![side], false);
+    let expression = ferritecad_document::Expression::new("width", 10.).expect("width");
+    let rule = SketchConstraintRule::Distance {
+        a: SketchPointRef::new(side.id, SketchPointSelector::Start),
+        b: SketchPointRef::new(side.id, SketchPointSelector::End),
+        distance: expression.clone(),
+    };
+    check_parameter_dimension(side, rule);
+    let circle = curve(SketchGeometry::Circle {
+        center: point(0., 0.),
+        radius: 10.,
+    });
+    let rule = SketchConstraintRule::Radius {
+        curve: circle.id,
+        radius: expression,
+    };
+    check_parameter_dimension(circle, rule);
+}
+
+fn check_parameter_dimension(curve: SketchCurve, rule: SketchConstraintRule) {
+    let mut f = fixtures::Drawing::new(vec![curve], false);
     let constraint = StableEntityId::new();
     f.doc
         .write_changes(&[
@@ -920,12 +956,7 @@ fn a_saved_parameter_dimension_is_read_only_and_keeps_its_source() {
                 sketch: f.sketch,
                 constraint: SketchConstraint {
                     id: constraint,
-                    rule: SketchConstraintRule::Distance {
-                        a: SketchPointRef::new(id, SketchPointSelector::Start),
-                        b: SketchPointRef::new(id, SketchPointSelector::End),
-                        distance: ferritecad_document::Expression::new("width", 10.)
-                            .expect("fixture operation"),
-                    },
+                    rule,
                 },
             },
         ])
@@ -941,7 +972,9 @@ fn a_saved_parameter_dimension_is_read_only_and_keeps_its_source() {
             .iter()
             .any(|s| s == "This value is an expression; edit it in Parameters.")
     );
-    assert!(!labels.iter().any(|s| s == "Set"));
+    for hidden in ["Set", "Radius (R)", "Diameter (Ø)"] {
+        assert!(!labels.iter().any(|s| s == hidden));
+    }
     let d = w
         .creates
         .sketch

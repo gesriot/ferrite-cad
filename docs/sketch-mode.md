@@ -75,7 +75,8 @@ can be snapped to but cannot be used as constraint points.
 
 A new dimension starts at its measured value. Click its label to select it. Type a
 **Value** in millimetres or degrees and press Enter or **Set**. Selecting another item
-discards the unsubmitted text. Diameter shows the full width; the stored rule is a radius.
+discards the unsubmitted text. Select **Diameter (Ø)** on a saved radius to enter the full width with
+the same constraint UUID. Only the radius is saved, so reopening the sketch shows **Radius (R)**.
 A dimension driven by an expression shows its source instead: edit it in **Parameters**.
 Click a marker to select a geometric rule.
 The selected marker or dimension is highlighted like a selected curve.
