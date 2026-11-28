@@ -666,3 +666,91 @@ pub(crate) fn write_marked_rectangle(path: &std::path::Path) {
     document.write_changes(&prepared).expect("rules");
     document.close().expect("close");
 }
+
+/// The standalone SketchY Revolve frame, written without a kernel.
+pub(crate) fn write_sector(path: &std::path::Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
+    use ferritecad_document::{
+        Body, DatumPlane, Dependency, DependencyRole, Document, Point2, Revolve, RevolveAxis,
+        RevolveExtent, Sketch, SketchCurve, SolidOperation,
+    };
+    use ferritecad_types::{Result, StableEntityId, Transform};
+    let mut d = Document::create(path).expect("document");
+    let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
+    let n = points.len();
+    d.write(|w| {
+        w.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
+        let curves = (0..n)
+            .map(|i| {
+                Ok(SketchCurve {
+                    id: labels[i],
+                    construction: false,
+                    geometry: SketchGeometry::Line {
+                        start: Point2::new(points[i][0], points[i][1])?,
+                        end: Point2::new(points[(i + 1) % n][0], points[(i + 1) % n][1])?,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        w.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
+        )?;
+        w.put_object(
+            revolve,
+            None,
+            2,
+            Some("Revolve1"),
+            &ObjectPayload::Revolve(Revolve {
+                regions: Vec::new(),
+                profile: sketch,
+                axis: RevolveAxis::SketchY,
+                extent: RevolveExtent::Partial {
+                    angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))?,
+                },
+                operation: SolidOperation::NewBody,
+                previous: None,
+            }),
+        )?;
+        w.put_object(
+            body,
+            None,
+            3,
+            Some("Body"),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(revolve),
+                rollback: None,
+            }),
+        )?;
+        for (dependent, dependency, role) in [
+            (sketch, plane, DependencyRole::Plane),
+            (revolve, sketch, DependencyRole::Profile),
+            (body, revolve, DependencyRole::BodyTip),
+        ] {
+            w.add_dependency(Dependency {
+                dependent,
+                dependency,
+                role,
+            })?;
+        }
+        Ok(())
+    })
+    .expect("sector");
+    d.close().expect("close");
+    revolve
+}

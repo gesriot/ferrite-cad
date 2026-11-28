@@ -374,19 +374,13 @@ fn gate(axis: bool, constrained: bool, name: &str) {
         );
         peer_before = cp;
         height = 13.75;
-        let read = crate::sketch_facts::read(&s.export_path().expect("current")).expect("reading");
+        let (_, constrained) = crate::sketch_mode::tests::curve_edits::stored(
+            &s.export_path().expect("accepted constraints"),
+        );
         assert_eq!(
-            read.constraint_sketches[0]
-                .stored
-                .as_ref()
-                .expect("stored")
-                .curves,
-            crate::sketch_facts::read(&profile)
-                .expect("profile")
-                .constraint_sketches[0]
-                .stored
-                .as_ref()
-                .expect("stored")
+            constrained.curves,
+            crate::sketch_mode::tests::curve_edits::stored(&profile)
+                .1
                 .curves,
             "solved coordinates must not be stored"
         );
@@ -428,13 +422,12 @@ fn gate(axis: bool, constrained: bool, name: &str) {
     assert_eq!(
         crate::sketch_facts::read(&applied)
             .expect("reading")
-            .constraint_sketches
+            .objects
             .iter()
-            .find_map(|s| match s.profile_use {
-                Some(crate::sketch_facts::SketchProfileUse::PartialRevolve {
-                    axis: revolve_axis,
-                    ..
-                }) => Some(revolve_axis),
+            .find_map(|o| match &o.payload {
+                ObjectPayload::Revolve(r)
+                    if matches!(r.extent, ferritecad_document::RevolveExtent::Partial { .. }) =>
+                    Some(r.axis),
                 _ => None,
             })
             .expect("partial profile"),
@@ -585,11 +578,7 @@ fn native_constraints_then_angle_preserve_stored_approximation_and_cli_cells() {
 fn a_refused_angle_apply_leaves_no_publication() {
     let root = tempfile::tempdir().expect("root");
     let source = root.path().join("source.fcad");
-    crate::constraints::tests::revolve::write_sector(
-        &source,
-        &crate::sketch::tests::angle_apply::RADIAL,
-        137.5,
-    );
+    crate::feature_tests::write_sector(&source, &crate::sketch::tests::angle_apply::RADIAL, 137.5);
     let bytes = std::fs::read(&source).expect("source");
     let mut s = Sessions::default();
     s.adopt(test_open::topology(&source, root.path()).expect("session"));
@@ -618,7 +607,7 @@ fn mixed_angle_apply_needs_no_solver_until_the_profile_is_constrained() {
     let source = create(root.path(), false);
     // Store constraints through the document API without asking the absent solver to solve.
     let reading = crate::sketch_facts::read(&source).expect("reading");
-    let id = reading.constraint_sketches[0].sketch;
+    let id = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
     let mut d = Document::open(&source).expect("document");
     let o = d.object(id).expect("row").expect("Sketch");
     let ObjectPayload::Sketch(mut sketch) = o.payload else {

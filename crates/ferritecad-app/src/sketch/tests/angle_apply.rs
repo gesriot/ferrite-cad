@@ -55,7 +55,7 @@ impl Window {
 pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
-    crate::constraints::tests::revolve::write_sector(&path, &RADIAL, 137.5);
+    crate::feature_tests::write_sector(&path, &RADIAL, 137.5);
     let reading = crate::sketch_facts::read(&path).expect("reading");
     (root, path, reading)
 }

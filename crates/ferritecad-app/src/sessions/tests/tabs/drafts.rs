@@ -153,7 +153,7 @@ impl Window {
     fn constraints_draft(&mut self, a: usize, b: usize) {
         let current = self.sessions.export_path().expect("shown");
         let reading = crate::sketch_facts::read(&current).expect("reading");
-        let sketch = reading.constraint_sketches[0].sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
         let (editor, _asked) = crate::constraints::tests::session_apply::typed_parallel(
             &current, &reading, sketch, a, b,
         );
@@ -1699,7 +1699,7 @@ fn native_replace_length_drafts_of_two_copies_apply_to_their_own_tab_like_the_co
     let b_file = root.path().join("b.fcad");
     std::fs::copy(&path, &a_file).expect("a");
     std::fs::copy(&path, &b_file).expect("b");
-    let sketch = source.constraint_sketches[0].sketch;
+    let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&source);
     let old: Vec<_> = stored_constraints(&a_file).iter().map(|c| c.id).collect();
     let mut w = Window::new(Drawn::Native, None);
     let draft = |w: &mut Window, length: &str| {

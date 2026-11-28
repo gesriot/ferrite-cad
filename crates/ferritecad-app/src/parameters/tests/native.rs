@@ -276,7 +276,7 @@ fn native_values_edit_the_stored_revolve_angle_from_an_angle_parameter() {
     }
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join("sector.fcad");
-    let revolve = crate::constraints::tests::revolve::write_sector(
+    let revolve = crate::feature_tests::write_sector(
         &path,
         crate::constraints::tests::revolve::SECTOR_P.as_slice(),
         45.,

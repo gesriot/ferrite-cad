@@ -443,14 +443,14 @@ fn recovery_child_entry() {
             apply_native(&mut s, feature, 21.5);
             let current = s.export_path().expect("current");
             let reading = crate::sketch_facts::read(&current).expect("reading");
-            let choice = &reading.constraint_sketches[0];
-            let curve = choice.stored.as_ref().expect("stored").curves[0].id;
+            let (sketch, drawing) = crate::sketch_mode::tests::curve_edits::sketch_fact(&reading);
+            let curve = drawing.curves[0].id;
             apply_constraints_native(
                 &mut s,
                 &ferritecad_jobs::EditRequest {
                     changes: crate::transaction_tests::constraint_changes(
                         &(current.clone()),
-                        choice.sketch,
+                        sketch,
                         &(ferritecad_document::SketchConstraintEdits {
                             remove: Vec::new(),
                             add: vec![ferritecad_document::AddSketchConstraint::Line(

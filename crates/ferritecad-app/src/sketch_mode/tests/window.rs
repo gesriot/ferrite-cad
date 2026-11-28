@@ -712,12 +712,7 @@ fn saved_polygon_circle_and_annulus_offer_no_retired_editors_in_tree_menu_or_wor
         let row = (f.sketch, None, None);
         assert_eq!(
             commands::actions(source, row),
-            vec![
-                ModelEdit::Sketch,
-                ModelEdit::Extrude,
-                ModelEdit::Revolve,
-                ModelEdit::Constraints,
-            ]
+            vec![ModelEdit::Sketch, ModelEdit::Extrude, ModelEdit::Revolve,]
         );
         // The tree buttons and context menu use this same catalogue.
         let offers = commands::offers(source, row, Ok(commands::Access::Idle));
@@ -725,6 +720,7 @@ fn saved_polygon_circle_and_annulus_offer_no_retired_editors_in_tree_menu_or_wor
             "Edit vertices…",
             "Edit circle…",
             "Edit annulus…",
+            "Edit constraints…",
             "Restore saved vertices",
             "Save edited copy…",
         ];

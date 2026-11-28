@@ -3165,8 +3165,8 @@ pub(crate) mod tests {
     /// directory, the constrained file, its Sketch and the Sketch's own row text.
     fn constrained_chamfer_plate() -> (tempfile::TempDir, PathBuf, ObjectId) {
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
-        let choice = source.constraint_sketches[0].clone();
-        let curves = choice.stored.expect("stored").curves;
+        let (sketch, drawing) = crate::sketch_mode::tests::curve_edits::sketch_fact(&source);
+        let curves = &drawing.curves;
         let start = |index: usize| match curves[index % curves.len()].geometry {
             ferritecad_document::SketchGeometry::Line { start, .. } => start,
             _ => panic!("a Line"),
@@ -3212,7 +3212,7 @@ pub(crate) mod tests {
         }
         let changes = crate::transaction_tests::constraint_changes(
             &path,
-            choice.sketch,
+            sketch,
             &SketchConstraintEdits {
                 remove: vec![],
                 add: additions.into_iter().map(Into::into).collect(),
@@ -3235,7 +3235,7 @@ pub(crate) mod tests {
             "-o".as_ref(),
             constrained.as_os_str(),
         ]);
-        (root, constrained, choice.sketch)
+        (root, constrained, sketch)
     }
 
     #[test]
@@ -3358,14 +3358,9 @@ pub(crate) mod tests {
 
     /// Every stored constraint of the document's Sketch, in stored order.
     fn stored_constraints(path: &Path) -> Vec<ferritecad_document::SketchConstraint> {
-        crate::sketch_facts::read(path)
-            .expect("reading")
-            .constraint_sketches[0]
-            .stored
-            .as_ref()
-            .expect("stored")
+        crate::sketch_mode::tests::curve_edits::stored(path)
+            .1
             .constraints
-            .clone()
     }
 
     /// Every SQL cell agrees except the stamp, after substituting only newly
@@ -3451,7 +3446,7 @@ pub(crate) mod tests {
     #[test]
     fn constraint_comparison_keeps_the_sketch_row_metadata() {
         let (root, source, reading) = crate::fillets::tests::plate();
-        let sketch = reading.constraint_sketches[0].sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
         let other = root.path().join("renamed-sketch.fcad");
         std::fs::copy(&source, &other).expect("copy");
         let old: Vec<_> = stored_constraints(&source).iter().map(|c| c.id).collect();
@@ -3516,7 +3511,7 @@ pub(crate) mod tests {
             ferritecad_document::ExpressionSlot::ExtrudeDistance,
         )
         .object;
-        let sketch = opened.constraint_sketches[0].sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&opened);
         let private = tempfile::tempdir().expect("private root");
         let mut sessions = Sessions::default();
         sessions.adopt(
@@ -3772,14 +3767,11 @@ pub(crate) mod tests {
                 AddLineConstraint, AddSketchConstraint, LineConstraintKind, SketchConstraintEdits,
             };
             let mut document = Document::open(&path).expect("document");
-            let choice = crate::sketch_facts::Source::read(&document)
-                .expect("catalog")
-                .constraint_sketches[0]
-                .clone();
-            let curve = choice.stored.as_ref().expect("stored").curves[0].id;
+            let (sketch, drawing) = ferritecad_fixtures::sketch(&document).expect("Sketch");
+            let curve = drawing.curves[0].id;
             let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
-                choice.sketch,
+                sketch,
                 &SketchConstraintEdits {
                     remove: vec![],
                     add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
@@ -3796,7 +3788,7 @@ pub(crate) mod tests {
             document.write_changes(&prepared).expect("joints");
             let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
-                choice.sketch,
+                sketch,
                 &SketchConstraintEdits {
                     remove: vec![horizontal],
                     add: vec![],
@@ -3851,14 +3843,11 @@ pub(crate) mod tests {
                 AddLineConstraint, AddSketchConstraint, LineConstraintKind, SketchConstraintEdits,
             };
             let mut document = Document::open(&path).expect("document");
-            let choice = crate::sketch_facts::Source::read(&document)
-                .expect("catalog")
-                .constraint_sketches[0]
-                .clone();
-            let curve = choice.stored.as_ref().expect("stored").curves[0].id;
+            let (sketch, drawing) = ferritecad_fixtures::sketch(&document).expect("Sketch");
+            let curve = drawing.curves[0].id;
             let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
-                choice.sketch,
+                sketch,
                 &SketchConstraintEdits {
                     remove: vec![],
                     add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
@@ -3875,7 +3864,7 @@ pub(crate) mod tests {
             document.write_changes(&prepared).expect("joints");
             let prepared = ferritecad_fixtures::constraint_changes(
                 &document,
-                choice.sketch,
+                sketch,
                 &SketchConstraintEdits {
                     remove: vec![horizontal],
                     add: vec![],
@@ -4362,7 +4351,7 @@ pub(crate) mod tests {
             return;
         }
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
-        let sketch = source.constraint_sketches[0].sketch;
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&source);
         let curves = source.constraint_sketches[0]
             .stored
             .as_ref()

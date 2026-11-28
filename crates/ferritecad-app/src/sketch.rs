@@ -412,7 +412,6 @@ pub(crate) fn number(s: &str) -> Result<f64> {
 #[allow(clippy::panic)]
 pub(crate) mod tests {
     use super::*;
-    use crate::sketch_facts::SketchProfileUse;
     use ferritecad_jobs::EditRequest;
     pub(crate) mod analytic_apply;
     pub(crate) mod angle_apply;
@@ -1147,17 +1146,19 @@ pub(crate) mod tests {
         );
         let feature = angle.object;
         // §27F: the sector's coordinates are a separate, available edit.
-        let sketch = &reading.constraint_sketches[0];
+        let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&reading);
         assert!(crate::sketch_mode::tests::curve_edits::begin(
             &mut Editor::default(),
             &source,
             &reading,
-            sketch.sketch,
+            sketch,
         ));
-        assert!(matches!(
-            sketch.profile_use,
-            Some(SketchProfileUse::PartialRevolve { radians: angle, .. }) if angle.radians().to_degrees() == 137.5
-        ));
+        assert!(reading.objects.iter().any(|o| matches!(&o.payload,
+            ferritecad_document::ObjectPayload::Revolve(r)
+                if o.id == feature && r.profile == sketch && matches!(&r.extent,
+                    ferritecad_document::RevolveExtent::Partial {angle}
+                        if angle.value().to_degrees()==137.5)
+        )));
 
         let mut e = Editor::default();
         let ctx = egui::Context::default();

@@ -16,10 +16,17 @@ pub(crate) fn stored(path: &Path) -> (ObjectId, ferritecad_document::Sketch) {
 }
 
 pub(crate) fn sketch_id(source: &Source) -> ObjectId {
+    sketch_fact(source).0
+}
+
+pub(crate) fn sketch_fact(source: &Source) -> (ObjectId, &Sketch) {
     source
         .objects
         .iter()
-        .find_map(|o| matches!(o.payload, ObjectPayload::Sketch(_)).then_some(o.id))
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Sketch(sketch) => Some((o.id, sketch)),
+            _ => None,
+        })
         .expect("fixture sketch")
 }
 

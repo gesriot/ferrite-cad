@@ -390,11 +390,7 @@ pub(super) fn form_families(quit: bool) {
     let sector = root.path().join("sector.fcad");
     crate::feature_tests::write_round(&circle, [1., 2.], &[10.], 12., false);
     crate::feature_tests::write_round(&annulus, [1., 2.], &[10., 4.], 12., false);
-    crate::constraints::tests::revolve::write_sector(
-        &sector,
-        &crate::sketch::tests::angle_apply::RADIAL,
-        137.5,
-    );
+    crate::feature_tests::write_sector(&sector, &crate::sketch::tests::angle_apply::RADIAL, 137.5);
     // All saved-object branches of Editor::saved_object_open, including Add/Edit.
     for (kind, path) in [
         ("height", &polygon.1),

@@ -3,96 +3,12 @@
 //! with a bore, driven through its real widgets and its real worker; §27H:
 //! the same on a solid profile closed on the axis along its stated Line.
 use super::*;
-use ferritecad_document::{
-    Body, DatumPlane, Dependency, DependencyRole, ObjectPayload, Point2, Revolve, RevolveAxis,
-    RevolveExtent, SketchCurve, SolidOperation,
-};
-use ferritecad_types::Transform;
+use ferritecad_document::SketchCurve;
 
 pub(crate) use crate::sketch_mode::tests::revolved_profile::{SECTOR_P, SHAFT_T};
 
-/// The standalone SketchY Revolve frame, written without a kernel.
-pub(crate) fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
-    let mut d = Document::create(path).expect("document");
-    let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
-    let n = points.len();
-    d.write(|w| {
-        w.put_object(
-            plane,
-            None,
-            0,
-            Some("XY"),
-            &ObjectPayload::DatumPlane(DatumPlane::Fixed {
-                placement: Transform::IDENTITY,
-            }),
-        )?;
-        let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
-        let curves = (0..n)
-            .map(|i| {
-                Ok(SketchCurve {
-                    id: labels[i],
-                    construction: false,
-                    geometry: SketchGeometry::Line {
-                        start: Point2::new(points[i][0], points[i][1])?,
-                        end: Point2::new(points[(i + 1) % n][0], points[(i + 1) % n][1])?,
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        w.put_object(
-            sketch,
-            None,
-            1,
-            Some("Profile"),
-            &ObjectPayload::Sketch(Sketch {
-                plane,
-                curves,
-                constraints: Vec::new(),
-            }),
-        )?;
-        w.put_object(
-            revolve,
-            None,
-            2,
-            Some("Revolve1"),
-            &ObjectPayload::Revolve(Revolve {
-                regions: Vec::new(),
-                profile: sketch,
-                axis: RevolveAxis::SketchY,
-                extent: RevolveExtent::Partial {
-                    angle: ferritecad_document::Expression::constant(f64::to_radians(degrees))?,
-                },
-                operation: SolidOperation::NewBody,
-                previous: None,
-            }),
-        )?;
-        w.put_object(
-            body,
-            None,
-            3,
-            Some("Body"),
-            &ObjectPayload::Body(Body {
-                tip_feature: Some(revolve),
-                rollback: None,
-            }),
-        )?;
-        for (dependent, dependency, role) in [
-            (sketch, plane, DependencyRole::Plane),
-            (revolve, sketch, DependencyRole::Profile),
-            (body, revolve, DependencyRole::BodyTip),
-        ] {
-            w.add_dependency(Dependency {
-                dependent,
-                dependency,
-                role,
-            })?;
-        }
-        Ok(())
-    })
-    .expect("sector");
-    d.close().expect("close");
-    revolve
-}
+use crate::feature_tests::write_sector;
+
 pub(crate) fn reading(path: &Path) -> ExtrudeEditSource {
     let d = Document::open_read_only(path).expect("open");
     let source = crate::sketch_facts::Source::read(&d).expect("catalog");
