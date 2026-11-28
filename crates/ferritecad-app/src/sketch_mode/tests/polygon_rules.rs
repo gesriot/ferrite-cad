@@ -14,7 +14,7 @@ pub(super) fn ends(sketch: &Sketch, i: usize) -> (Point2, Point2) {
     (start, end)
 }
 
-pub(super) fn solve(sketch: ObjectId, drawing: &mut Sketch) -> usize {
+pub(crate) fn solve(sketch: ObjectId, drawing: &mut Sketch) -> usize {
     let (next, report) = ferritecad_eval::solve_sketch(drawing, sketch)
         .expect("consistent plate constraints")
         .expect("constrained sketch");
@@ -112,4 +112,32 @@ pub(super) fn distance(
         peer.constraints.last_mut().expect("distance").rule = rule(mm);
         solve(sketch, peer);
     }
+}
+
+/// Reproduce Finish from the stored coordinates and the independently solved preview.
+pub(crate) fn geometry_for_display(
+    sketch: ObjectId,
+    expected: &mut Sketch,
+    shown: &Sketch,
+) -> Vec<EditChange> {
+    let mut prediction = expected.clone();
+    solve(sketch, &mut prediction);
+    let mut changes = Vec::new();
+    for i in 0..expected.curves.len() {
+        let (a, b) = ends(&prediction, i);
+        let (c, d) = ends(shown, i);
+        if [a.x - c.x, a.y - c.y, b.x - d.x, b.y - d.y]
+            .iter()
+            .any(|delta| delta.abs() > 1e-6)
+        {
+            let curve = &shown.curves[i];
+            expected.curves[i].geometry = curve.geometry.clone();
+            changes.push(EditChange::SetCurveGeometry {
+                sketch,
+                curve: curve.id,
+                geometry: curve.geometry.clone(),
+            });
+        }
+    }
+    changes
 }

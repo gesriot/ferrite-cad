@@ -609,3 +609,18 @@ pub(crate) fn set_grid(forms: &mut Forms, label: &str) {
 pub(crate) fn set_guides(forms: &mut Forms, label: &str) {
     set_guides_with(&egui::Context::default(), forms, label);
 }
+
+/// Set an existing visible dimension through the viewport field and finish the draft.
+pub(crate) fn set_dimension(
+    w: &mut Window,
+    id: ObjectId,
+    dimension: StableEntityId,
+    text: &str,
+) -> EditRequest {
+    enter(w, id, ModelEdit::Sketch);
+    let mut ui = Ui::new(w);
+    super::constraint_widgets::click_label(w, &mut ui, dimension);
+    ui.replace_dimension_text(w, text);
+    ui.press(w, "Set", false);
+    finish(w, &mut ui)
+}

@@ -546,13 +546,13 @@ fn deleting_a_circle_explicitly_removes_its_whole_curve_radius_constraint() {
 }
 
 mod circular_rules;
-mod cli;
+pub(crate) mod cli;
 mod collinear;
 mod diameter;
 mod dimension_history;
 mod dragging;
 mod dressed_plate;
 mod polygon_plates;
-mod polygon_rules;
+pub(crate) mod polygon_rules;
 pub(crate) mod revolved_profile;
 mod saved_angle;

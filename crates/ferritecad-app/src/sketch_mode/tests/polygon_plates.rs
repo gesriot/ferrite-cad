@@ -80,25 +80,12 @@ fn edits_for_display(
             constraint: c.clone(),
         })
         .collect();
-    let mut prediction = expected.clone();
-    solve(sketch, &mut prediction);
     let mut full = rules.clone();
-    for i in 0..saved.curves.len() {
-        let (a, b) = ends(&prediction, i);
-        let (c, d) = ends(shown, i);
-        if [a.x - c.x, a.y - c.y, b.x - d.x, b.y - d.y]
-            .iter()
-            .any(|delta| delta.abs() > 1e-6)
-        {
-            let curve = &shown.curves[i];
-            expected.curves[i].geometry = curve.geometry.clone();
-            full.push(EditChange::SetCurveGeometry {
-                sketch,
-                curve: curve.id,
-                geometry: curve.geometry.clone(),
-            });
-        }
-    }
+    full.extend(super::polygon_rules::geometry_for_display(
+        sketch,
+        &mut expected,
+        shown,
+    ));
     full.extend(additions.iter().cloned());
     rules.extend(additions);
     (expected, rules, full)
