@@ -278,7 +278,7 @@ fn native_values_edit_the_stored_revolve_angle_from_an_angle_parameter() {
     let path = root.path().join("sector.fcad");
     let revolve = crate::feature_tests::write_sector(
         &path,
-        crate::constraints::tests::revolve::SECTOR_P.as_slice(),
+        crate::sketch_mode::tests::revolved_profile::SECTOR_P.as_slice(),
         45.,
     );
     let mut document = Document::open(&path).expect("document");

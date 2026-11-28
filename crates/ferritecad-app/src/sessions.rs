@@ -3729,26 +3729,17 @@ pub(crate) mod tests {
             return;
         }
         let (root, constrained, _) = constrained_chamfer_plate();
-        native_constraint_gate(root.path(), &constrained, 9.5, |path, source, sketch| {
-            let stored = source.constraint_sketches[0]
-                .stored
-                .as_ref()
-                .expect("stored");
-            let across = stored
-                .curves
-                .iter()
-                .position(|c| {
-                    stored_length_of(stored, c.id).is_some_and(|mm| (mm - 41.125).abs() < 1e-9)
-                })
-                .expect("the width Line");
-            crate::constraints::tests::session_apply::typed_replace_length(
-                path,
-                source,
-                sketch,
-                across + 1,
-                "38.5",
-            )
-        });
+        native_sketch_session(
+            root.path(),
+            &constrained,
+            9.5,
+            None,
+            |path, source, sketch| {
+                use crate::sketch_mode::tests::{curve_edits::sketch_fact, saved_polygons};
+                let dimension = saved_polygons::dimension_id(sketch_fact(source).1, 41.125);
+                saved_polygons::set(path, source, sketch, dimension, "38.5")
+            },
+        );
     }
 
     fn stored_length_of(
@@ -4001,7 +3992,7 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("cylinder.fcad");
-        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        crate::feature_tests::write_guessed_circle(&path);
         native_constraint_gate_with(
             root.path(),
             &path,
@@ -4017,12 +4008,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// §31L: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into
-    /// 60 × 30 mm. The label of the saved 60 mm length, chosen on the canvas of the accepted
-    /// solved drawing under the Dimension target, replaces that rule by 70 mm; the request is
-    /// applied into an unsaved session after a height step, exported before Save, undone, redone
-    /// and saved, each against the command line given the same request, and the saved model is
-    /// read back by the form of its cold rebuild and by an STL reader that is not the writer.
+    /// Set the 60 mm side on the solved rectangle; the other side keeps its 30 mm dimension.
     #[test]
     fn native_a_saved_length_chosen_by_its_label_and_replaced_is_applied_like_the_command_line() {
         if !native() {
@@ -4036,12 +4022,12 @@ pub(crate) mod tests {
         let path = root.path().join("rectangle.fcad");
         crate::feature_tests::write_dimensioned_rectangle(&path);
         let seen = std::cell::Cell::new(None);
-        native_constraint_gate_with(
+        native_sketch_session(
             root.path(),
             &path,
             9.5,
             Some(("dimension-labels-rectangle", &|saved, stl| {
-                crate::constraints::tests::dimension::saved_dimensioned_rectangle(
+                crate::sketch_mode::tests::saved_polygons::saved_rectangle(
                     saved,
                     stl,
                     9.5,
@@ -4049,9 +4035,11 @@ pub(crate) mod tests {
                 )
             })),
             |path, source, sketch| {
-                crate::constraints::tests::dimension::native_dimension_rectangle(
-                    path, source, sketch, &seen,
-                )
+                use crate::sketch_mode::tests::{curve_edits::sketch_fact, saved_polygons};
+                let drawing = sketch_fact(source).1;
+                let width = saved_polygons::dimension_id(drawing, 60.);
+                seen.set(Some((width, saved_polygons::dimension_id(drawing, 30.))));
+                saved_polygons::set(path, source, sketch, width, "70")
             },
         );
     }
@@ -4071,14 +4059,14 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("cylinder.fcad");
-        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        crate::feature_tests::write_guessed_circle(&path);
         let seen = std::cell::Cell::new(None);
         native_sketch_session(
             root.path(),
             &path,
             9.5,
             Some(("dimension-labels-circle", &|saved, stl| {
-                crate::constraints::tests::dimension::saved_dimensioned_circle(
+                crate::sketch_mode::tests::saved_radius::saved_dimensioned_circle(
                     saved,
                     stl,
                     9.5,
@@ -4091,14 +4079,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// §31M: a quadrilateral whose Sketch stores a rough guess and keeps rules that solve it into
-    /// another shape (an anchor, three lengths and two saved directed angles, the second with its
-    /// first vector reversed). The label of the saved -100° angle, chosen on the canvas of the
-    /// accepted solved drawing under the Dimension target, replaces that rule by -130°, keeping both
-    /// exact vectors; the request is applied into an unsaved session after a height step, exported
-    /// before Save, undone, redone and saved, each against the command line given the same request,
-    /// and the saved model is read back by the form of its cold rebuild, by the sign of the turn
-    /// between the very vectors the rule names, and by an STL reader that is not the writer.
+    /// Change a saved reversed angle, preserving both directed segments through Save and Undo.
     #[test]
     fn native_a_saved_angle_chosen_by_its_label_and_replaced_is_applied_like_the_command_line() {
         if !native() {
@@ -4114,12 +4095,12 @@ pub(crate) mod tests {
         let pristine = root.path().join("pristine.fcad");
         std::fs::copy(&path, &pristine).expect("a copy of the source");
         let seen = std::cell::Cell::new(None);
-        native_constraint_gate_with(
+        native_sketch_session(
             root.path(),
             &path,
             9.5,
             Some(("angle-dimension-quad", &|saved, stl| {
-                crate::constraints::tests::turn_label::saved_angled_quad(
+                crate::sketch_mode::tests::saved_polygons::saved_angled_quad(
                     saved,
                     stl,
                     9.5,
@@ -4127,16 +4108,19 @@ pub(crate) mod tests {
                 )
             })),
             |path, source, sketch| {
-                crate::constraints::tests::turn_label::native_angle_quad(
-                    path, source, sketch, &seen,
-                )
+                use crate::sketch_mode::tests::{curve_edits::sketch_fact, saved_polygons};
+                let drawing = sketch_fact(source).1;
+                let ids = [-100_f64, 100.]
+                    .map(|deg| saved_polygons::dimension_id(drawing, deg.to_radians()));
+                seen.set(Some((ids[0], ids[1])));
+                saved_polygons::set(path, source, sketch, ids[0], "-130")
             },
         );
         // The reader of the saved result is not a rubber stamp: given the pristine source and its
         // own export in place of the result, it must fail (the angle is still -100°).
         let (source_stl, _) = peer_bytes(&pristine, root.path(), "angle-pristine");
         let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::constraints::tests::turn_label::saved_angled_quad(
+            crate::sketch_mode::tests::saved_polygons::saved_angled_quad(
                 &pristine,
                 &source_stl,
                 9.5,
@@ -4149,14 +4133,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// §31N: a rectangle whose Sketch stores a rough guess and keeps rules that solve it into another
-    /// shape (a pin, a horizontal, a vertical, two lengths, and an EqualLength and a Parallel of Lines 1
-    /// and 3 that stand on one place). The marker of the EqualLength, chosen on the canvas of the accepted
-    /// solved drawing under the Rule target, is removed by the one explicit action; the request is
-    /// applied into an unsaved session after a height step, exported before Save, undone, redone and
-    /// saved, each against the command line given the same request, and the saved model is read back
-    /// by the solver's own degrees of freedom, by the form of its cold rebuild and by an STL reader
-    /// that is not the writer.
+    /// Removing EqualLength frees one corner; the saved solid must keep the displayed rectangle.
     #[test]
     fn native_a_saved_equal_length_chosen_by_its_marker_and_removed_is_applied_like_the_command_line()
      {
@@ -4173,12 +4150,12 @@ pub(crate) mod tests {
         let pristine = root.path().join("pristine.fcad");
         std::fs::copy(&path, &pristine).expect("a copy of the source");
         let seen = std::cell::Cell::new(None);
-        native_constraint_gate_with(
+        native_sketch_session(
             root.path(),
             &path,
             9.5,
             Some(("constraint-markers-rectangle", &|saved, stl| {
-                crate::constraints::tests::marker::saved_unequal_rectangle(
+                crate::sketch_mode::tests::saved_polygons::saved_unequal_rectangle(
                     saved,
                     stl,
                     9.5,
@@ -4186,16 +4163,16 @@ pub(crate) mod tests {
                 )
             })),
             |path, source, sketch| {
-                crate::constraints::tests::marker::native_marked_rectangle(
+                crate::sketch_mode::tests::saved_polygons::unequal_rectangle(
                     path, source, sketch, &seen,
                 )
             },
         );
-        // The reader of the saved result is not a rubber stamp: given the pristine source and its own
-        // export in place of the result, it must fail (Line 3 is still 60 mm and nothing is free).
+        // The pristine source still has EqualLength and no free corner. Its own STL must
+        // fail the reader for the freed rectangle.
         let (source_stl, _) = peer_bytes(&pristine, root.path(), "markers-pristine");
         let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::constraints::tests::marker::saved_unequal_rectangle(
+            crate::sketch_mode::tests::saved_polygons::saved_unequal_rectangle(
                 &pristine,
                 &source_stl,
                 9.5,
@@ -4209,8 +4186,7 @@ pub(crate) mod tests {
     }
 
     /// §31N: a cylinder whose Sketch stores the circle (4.5, 0) r 1.2 and keeps a Radius and a Fixed
-    /// centre that solve it at (0, 0) r 10. The marker of the Fixed centre, chosen under the Rule target,
-    /// is removed through the same session route; the centre is then where the Sketch stored it.
+    /// centre that solve it at (0, 0) r 10. Removing the pin preserves the displayed circle.
     #[test]
     fn native_a_saved_fixed_centre_chosen_by_its_marker_and_removed_is_applied_like_the_command_line()
      {
@@ -4223,16 +4199,16 @@ pub(crate) mod tests {
         }
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("cylinder.fcad");
-        crate::constraints::tests::canvas::write_guessed_circle(&path);
+        crate::feature_tests::write_guessed_circle(&path);
         let pristine = root.path().join("pristine.fcad");
         std::fs::copy(&path, &pristine).expect("a copy of the source");
         let seen = std::cell::Cell::new(None);
-        native_constraint_gate_with(
+        native_sketch_session(
             root.path(),
             &path,
             9.5,
             Some(("constraint-markers-circle", &|saved, stl| {
-                crate::constraints::tests::marker::saved_unpinned_circle(
+                crate::sketch_mode::tests::saved_markers::saved_unpinned_circle(
                     saved,
                     stl,
                     9.5,
@@ -4240,12 +4216,12 @@ pub(crate) mod tests {
                 )
             })),
             |path, source, sketch| {
-                crate::constraints::tests::marker::native_marked_circle(path, source, sketch, &seen)
+                crate::sketch_mode::tests::saved_markers::unpin_circle(path, source, sketch, &seen)
             },
         );
         let (source_stl, _) = peer_bytes(&pristine, root.path(), "centre-pristine");
         let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::constraints::tests::marker::saved_unpinned_circle(
+            crate::sketch_mode::tests::saved_markers::saved_unpinned_circle(
                 &pristine,
                 &source_stl,
                 9.5,
@@ -4387,12 +4363,9 @@ pub(crate) mod tests {
         }
         let (root, path, source) = crate::chamfers::tests::chamfered(2.375);
         let sketch = crate::sketch_mode::tests::curve_edits::sketch_id(&source);
-        let curves = source.constraint_sketches[0]
-            .stored
-            .as_ref()
-            .expect("stored")
-            .curves
-            .clone();
+        let curves = &crate::sketch_mode::tests::curve_edits::sketch_fact(&source)
+            .1
+            .curves;
         let original = std::fs::read(&path).expect("bytes");
         let private = tempfile::tempdir().expect("private");
         let mut sessions = Sessions::default();

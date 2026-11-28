@@ -121,3 +121,75 @@ pub(crate) fn set_diameter(
     assert_eq!(request.changes, changes);
     (w.creates.sketch, request, changes)
 }
+
+/// Read the reopened cylinder through its accepted presentation, painted dimensions and STL.
+pub(crate) fn saved_dimensioned_circle(
+    path: &Path,
+    stl: &[u8],
+    height: f64,
+    (radius_id, fixed_id): (StableEntityId, StableEntityId),
+) {
+    let mut w = open(path, Drawn::Native);
+    let (id, drawing) = stored(path);
+    let source = w.scene.edit_source.as_ref().expect("saved source");
+    let presentation = w
+        .scene
+        .sketches
+        .presentation(source, id)
+        .expect("cold drawing");
+    let [circle] = presentation.curves() else {
+        panic!("one saved circle")
+    };
+    let SketchGeometry::Circle { center, radius } = *circle.geometry() else {
+        panic!("circle")
+    };
+    assert!(center.x.abs() < 1e-6 && center.y.abs() < 1e-6 && (radius - 8.5).abs() < 1e-6);
+    assert_eq!(drawing.constraints.len(), 2);
+    assert!(
+        drawing
+            .constraints
+            .iter()
+            .any(|c| c.id == fixed_id && matches!(c.rule, SketchConstraintRule::Fixed { .. }))
+    );
+    assert!(
+        drawing
+            .constraints
+            .iter()
+            .any(|c| c.id == radius_id && matches!(c.rule, SketchConstraintRule::Radius { .. }))
+    );
+    enter(&mut w, id, ModelEdit::Sketch);
+    let ui = Ui::new(&mut w);
+    let editor = &mut w.creates.sketch.viewport;
+    let captions = text(&ui.paint(editor, w.input.camera(), w.input.region()));
+    assert_eq!(
+        captions
+            .iter()
+            .filter(|s| s.starts_with("R "))
+            .collect::<Vec<_>>(),
+        ["R 8.5 mm"]
+    );
+    assert!(editor.labels.iter().any(|(id, _)| *id == radius_id));
+    check_rim(stl, height, center, radius);
+}
+
+pub(super) fn check_rim(stl: &[u8], height: f64, center: Point2, radius: f64) {
+    let (faces, volume) = crate::feature_tests::read_stl(stl);
+    let exact = std::f64::consts::PI * radius * radius * height;
+    assert!(
+        volume <= exact * (1. + 1e-9) && volume >= 0.97 * exact,
+        "{volume} vs {exact}"
+    );
+    let rim: Vec<_> = faces
+        .iter()
+        .flatten()
+        .filter(|p| p[2].abs() < 1e-4)
+        .collect();
+    assert!(rim.len() >= 24, "{} rim vertices", rim.len());
+    for p in rim {
+        let d = (p[0] - center.x).hypot(p[1] - center.y);
+        assert!(
+            (d - radius).abs() < 1e-3,
+            "a rim vertex {p:?} is {d} from the centre"
+        );
+    }
+}

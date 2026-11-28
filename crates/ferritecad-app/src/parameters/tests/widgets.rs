@@ -72,7 +72,6 @@ impl Ui {
             scene: crate::workspace::Scene {
                 document: w.scene.document.as_deref(),
                 edit_source: w.scene.edit_source.as_ref(),
-                sketches: &w.scene.sketches,
                 definitions: &[],
                 chosen_row: None,
                 offers: &[],

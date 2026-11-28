@@ -1520,53 +1520,6 @@ impl Rig {
     }
 }
 
-/// §31K: a cylinder whose Sketch STORES a small circle (4.5, 0) of radius 1.2 and keeps a
-/// Radius of 10 and a Fixed centre at (0, 0): the solved circle is the big one around the
-/// origin, and the stored one lies inside it, far from its ring and its centre.
-pub(crate) fn write_guessed_circle(path: &Path) {
-    ferritecad_jobs::create_document_with_kernel(
-        ferritecad_jobs::CreateDocumentRequest::new(
-            path,
-            ferritecad_jobs::NewDocument::CircleExtrude(
-                ferritecad_document::CircleExtrusion::new([4.5, 0.], 1.2, 15.).expect("a circle"),
-            ),
-            "test",
-        ),
-        ferritecad_occt::OcctKernel::new,
-        &OperationContext::default(),
-    )
-    .expect("the source");
-    let mut document = Document::open(path).expect("document");
-    let choice = crate::sketch_facts::Source::read(&document)
-        .expect("catalogue")
-        .constraint_sketches[0]
-        .clone();
-    let circle = choice.stored.as_ref().expect("stored").curves[0].id;
-    let prepared = ferritecad_fixtures::constraint_changes(
-        &document,
-        choice.sketch,
-        &SketchConstraintEdits {
-            remove: vec![],
-            add: vec![
-                AddSketchConstraint::Circle {
-                    curve: circle,
-                    kind: CircleConstraintKind::Radius(CircleRadiusMm::new(10.).expect("radius")),
-                },
-                AddSketchConstraint::Circle {
-                    curve: circle,
-                    kind: CircleConstraintKind::FixedCenter {
-                        x: SketchCoordinateMm::new(0.).expect("x"),
-                        y: SketchCoordinateMm::new(0.).expect("y"),
-                    },
-                },
-            ],
-        },
-    )
-    .expect("prepare");
-    document.write_changes(&prepared).expect("rules");
-    document.close().expect("close");
-}
-
 /// §31K, native: the form for the cylinder written by `write_guessed_circle`. The canvas
 /// holds the solved circle (0, 0) r 10, not the stored (4.5, 0) r 1.2. The ring takes
 /// the Radius, the centre the Fixed centre, each replacing the persisted rule.

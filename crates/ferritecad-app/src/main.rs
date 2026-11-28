@@ -6098,7 +6098,6 @@ impl Live {
             scene: workspace::Scene {
                 document: scene.document.as_deref(),
                 edit_source: scene.edit_source.as_ref(),
-                sketches: &scene.sketches,
                 definitions: &definitions,
                 chosen_row,
                 offers: &offers,
